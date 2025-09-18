@@ -1,35 +1,55 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 
-function App() {
-  const [count, setCount] = useState(0)
+// Explicitly target the index file so TS resolves it in bundler mode
+import WelcomePage from "@/app/welcome/index"
 
+// Temporary placeholders so routing compiles while other pages are WIP.
+// Replace these when your real pages are ready.
+function AuthPlaceholder() {
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
+    <main className="min-h-dvh grid place-items-center p-8">
+      <div className="max-w-xl text-center">
+        <h1 className="text-2xl font-bold">Auth</h1>
+        <p className="mt-2 text-muted-foreground">
+          Replace this with your <code>src/app/auth</code> page.
         </p>
+        <a className="mt-4 inline-block underline" href="/welcome">Back to Welcome</a>
       </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    </main>
   )
 }
 
-export default App
+function StudentDashboardPlaceholder() {
+  return (
+    <main className="min-h-dvh grid place-items-center p-8">
+      <div className="max-w-xl text-center">
+        <h1 className="text-2xl font-bold">Student Dashboard</h1>
+        <p className="mt-2 text-muted-foreground">
+          Replace this with your <code>src/app/student-dashboard</code> page.
+        </p>
+        <a className="mt-4 inline-block underline" href="/welcome">Back to Welcome</a>
+      </div>
+    </main>
+  )
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* ✅ First page: redirect root to /welcome */}
+        <Route path="/" element={<Navigate to="/welcome" replace />} />
+
+        {/* Welcome route */}
+        <Route path="/welcome" element={<WelcomePage />} />
+
+        {/* Stubs (safe to remove once real pages exist) */}
+        <Route path="/auth" element={<AuthPlaceholder />} />
+        <Route path="/student-dashboard" element={<StudentDashboardPlaceholder />} />
+
+        {/* Catch-all → Welcome */}
+        <Route path="*" element={<Navigate to="/welcome" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
