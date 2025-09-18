@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import * as React from "react"
 import {
   closestCenter,
@@ -33,8 +34,6 @@ import {
   IconTrendingUp,
 } from "@tabler/icons-react"
 import {
-  ColumnDef,
-  ColumnFiltersState,
   flexRender,
   getCoreRowModel,
   getFacetedRowModel,
@@ -42,10 +41,12 @@ import {
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
-  Row,
-  SortingState,
   useReactTable,
-  VisibilityState,
+  type ColumnDef,
+  type ColumnFiltersState,
+  type Row,
+  type SortingState,
+  type VisibilityState,
 } from "@tanstack/react-table"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 import { toast } from "sonner"
@@ -55,10 +56,10 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  ChartConfig,
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
+  type ChartConfig,
 } from "@/components/ui/chart"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -103,6 +104,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
+import type { CheckedState } from "@radix-ui/react-checkbox"
 
 export const schema = z.object({
   id: z.number(),
@@ -142,27 +144,39 @@ const columns: ColumnDef<z.infer<typeof schema>>[] = [
   },
   {
     id: "select",
-    header: ({ table }) => (
-      <div className="flex items-center justify-center">
-        <Checkbox
-          checked={
-            table.getIsAllPageRowsSelected() ||
-            (table.getIsSomePageRowsSelected() && "indeterminate")
-          }
-          onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-          aria-label="Select all"
-        />
-      </div>
-    ),
-    cell: ({ row }) => (
-      <div className="flex items-center justify-center">
-        <Checkbox
-          checked={row.getIsSelected()}
-          onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label="Select row"
-        />
-      </div>
-    ),
+    header: ({ table }) => {
+      const all = table.getIsAllPageRowsSelected()
+      const some = table.getIsSomePageRowsSelected()
+      const headerChecked: CheckedState = all
+        ? true
+        : some
+          ? "indeterminate"
+          : false
+
+      return (
+        <div className="flex items-center justify-center">
+          <Checkbox
+            checked={headerChecked}
+            onCheckedChange={(value) =>
+              table.toggleAllPageRowsSelected(Boolean(value))
+            }
+            aria-label="Select all"
+          />
+        </div>
+      )
+    },
+    cell: ({ row }) => {
+      const rowChecked: CheckedState = row.getIsSelected() ? true : false
+      return (
+        <div className="flex items-center justify-center">
+          <Checkbox
+            checked={rowChecked}
+            onCheckedChange={(value) => row.toggleSelected(Boolean(value))}
+            aria-label="Select row"
+          />
+        </div>
+      )
+    },
     enableSorting: false,
     enableHiding: false,
   },
@@ -458,7 +472,7 @@ export function DataTable({
                       className="capitalize"
                       checked={column.getIsVisible()}
                       onCheckedChange={(value) =>
-                        column.toggleVisibility(!!value)
+                        column.toggleVisibility(Boolean(value))
                       }
                     >
                       {column.id}
@@ -495,9 +509,9 @@ export function DataTable({
                           {header.isPlaceholder
                             ? null
                             : flexRender(
-                                header.column.columnDef.header,
-                                header.getContext()
-                              )}
+                              header.column.columnDef.header,
+                              header.getContext()
+                            )}
                         </TableHead>
                       )
                     })}
