@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom"
 import { useState } from "react"
+import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -21,6 +22,16 @@ export default function LoginPage() {
 
     return (
         <main className="min-h-dvh grid place-items-center px-4 py-10">
+            {/* Back to Welcome */}
+            <div className="absolute left-4 top-4 sm:left-6 sm:top-6">
+                <Button asChild variant="ghost" className="gap-2">
+                    <Link to="/welcome" aria-label="Back to Welcome">
+                        <ArrowLeft className="h-4 w-4" />
+                        <span className="hidden sm:inline">Back to Welcome</span>
+                    </Link>
+                </Button>
+            </div>
+
             <Card className="w-full max-w-md">
                 <CardHeader className="space-y-1">
                     <CardTitle className="text-2xl">Welcome back</CardTitle>
@@ -37,10 +48,10 @@ export default function LoginPage() {
                             <Input id="password" name="password" type="password" required />
                         </div>
                         <div className="flex items-center justify-between text-sm">
-                            <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-2">
                                 <input id="remember" name="remember" type="checkbox" className="size-4 rounded border" />
-                                <Label htmlFor="remember" className="text-muted-foreground">Remember me</Label>
-                            </div>
+                                <span className="text-muted-foreground">Remember me</span>
+                            </label>
                             <Link to="/auth/forgot" className="underline underline-offset-4 hover:text-foreground">
                                 Forgot password?
                             </Link>

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom"
 import { useState } from "react"
+import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -32,6 +33,16 @@ export default function RegisterPage() {
 
     return (
         <main className="min-h-dvh grid place-items-center px-4 py-10">
+            {/* Back to Welcome */}
+            <div className="absolute left-4 top-4 sm:left-6 sm:top-6">
+                <Button asChild variant="ghost" className="gap-2">
+                    <Link to="/welcome" aria-label="Back to Welcome">
+                        <ArrowLeft className="h-4 w-4" />
+                        <span className="hidden sm:inline">Back to Welcome</span>
+                    </Link>
+                </Button>
+            </div>
+
             <Card className="w-full max-w-md">
                 <CardHeader className="space-y-1">
                     <CardTitle className="text-2xl">Create account</CardTitle>
@@ -55,12 +66,12 @@ export default function RegisterPage() {
                             <Label htmlFor="confirm">Confirm password</Label>
                             <Input id="confirm" name="confirm" type="password" required />
                         </div>
-                        <div className="flex items-start gap-2 text-sm">
+                        <label className="flex items-start gap-2 text-sm">
                             <input id="tos" name="tos" type="checkbox" required className="mt-1 size-4 rounded border" />
-                            <Label htmlFor="tos" className="text-muted-foreground">
+                            <span className="text-muted-foreground">
                                 I agree to the Terms of Service and Privacy Policy.
-                            </Label>
-                        </div>
+                            </span>
+                        </label>
                         {error ? <p className="text-sm text-destructive">{error}</p> : null}
                         <Button type="submit" disabled={loading}>
                             {loading ? "Creating…" : "Create account"}
