@@ -1,10 +1,13 @@
 import * as React from "react"
 import {
+  IconBell,
   IconCalendarEvent,
   IconDashboard,
   IconFileDescription,
   IconInnerShadowTop,
+  IconReportAnalytics,
   IconSettings,
+  IconHelp,
 } from "@tabler/icons-react"
 import { NavUser } from "@/components/nav-user"
 import {
@@ -41,8 +44,23 @@ const data = {
       url: "/dashboard/student/schedule",
       icon: IconCalendarEvent,
     },
+    {
+      title: "Results",
+      url: "/dashboard/student/results",
+      icon: IconReportAnalytics,
+    },
+    {
+      title: "Notifications",
+      url: "/dashboard/student/notifications",
+      icon: IconBell,
+    },
   ],
   navSecondary: [
+    {
+      title: "Help & Support",
+      url: "/dashboard/student/help",
+      icon: IconHelp,
+    },
     {
       title: "Profile & Settings",
       url: "/dashboard/student/settings",
@@ -89,8 +107,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 <SidebarMenuButton
                   asChild
                   className={`relative transition-colors ${isActive
-                    ? "bg-muted/70 font-medium text-foreground"
-                    : "hover:bg-muted/40"
+                      ? "bg-muted/70 font-medium text-foreground"
+                      : "hover:bg-muted/40"
                     }`}
                 >
                   <NavLink
@@ -113,7 +131,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           })}
         </SidebarMenu>
 
-        {/* Secondary nav (Profile & Settings) with active indicator */}
+        {/* Secondary nav (Help/Settings) with active indicator */}
         <SidebarMenu className="mt-auto">
           {data.navSecondary.map((item) => {
             const Icon = item.icon
@@ -126,8 +144,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 <SidebarMenuButton
                   asChild
                   className={`relative transition-colors ${isActive
-                    ? "bg-muted/70 font-medium text-foreground"
-                    : "hover:bg-muted/40"
+                      ? "bg-muted/70 font-medium text-foreground"
+                      : "hover:bg-muted/40"
                     }`}
                 >
                   <NavLink

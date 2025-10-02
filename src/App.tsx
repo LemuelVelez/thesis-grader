@@ -16,6 +16,13 @@ import StudentSubmissions from "@/app/dashboard/student/submissions"
 import StudentSchedule from "@/app/dashboard/student/schedule"
 import StudentSettings from "@/app/dashboard/student/settings"
 
+// Previously added pages
+import StudentResults from "@/app/dashboard/student/results"
+import StudentNotifications from "@/app/dashboard/student/notifications"
+
+// ✅ New: Help & Support / FAQ
+import StudentHelpSupport from "@/app/dashboard/student/help-support"
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -46,6 +53,22 @@ export default function App() {
         <Route
           path="/dashboard/student/settings"
           element={<StudentSettings />}
+        />
+
+        {/* Previously added */}
+        <Route
+          path="/dashboard/student/results"
+          element={<StudentResults />}
+        />
+        <Route
+          path="/dashboard/student/notifications"
+          element={<StudentNotifications />}
+        />
+
+        {/* ✅ New: Help & Support / FAQ */}
+        <Route
+          path="/dashboard/student/help"
+          element={<StudentHelpSupport />}
         />
 
         {/* Back-compat for the Welcome "Student dashboard" button */}
