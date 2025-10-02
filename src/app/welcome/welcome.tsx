@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom"
-import { useState, type ElementType } from "react"
+import { useEffect, useRef, useState, type ElementType } from "react"
 import {
     IconChecklist,
     IconUsersGroup,
@@ -17,54 +17,99 @@ export default function WelcomePage() {
     const location = useLocation()
     const navigate = useNavigate()
     const [mobileOpen, setMobileOpen] = useState(false)
+    const [active, setActive] = useState<"home" | "about">("home")
+
+    // ---- glitch guards ----
+    const scrollingRef = useRef<{ isProgrammatic: boolean; t?: number | null }>({ isProgrammatic: false, t: null })
+    const headerRef = useRef<HTMLElement | null>(null)
 
     const prefersReducedMotion =
         typeof window !== "undefined" &&
         window.matchMedia &&
         window.matchMedia("(prefers-reduced-motion: reduce)").matches
 
-    const easeInOutCubic = (t: number) =>
-        t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+    const getHeaderOffset = () => {
+        const h = headerRef.current?.offsetHeight ?? 84
+        return Math.max(h, 64) + 8 // small buffer
+    }
 
-    const smoothScrollTo = (toY: number, duration = 900) => {
+    const smoothScrollTo = (toY: number, duration = 700) => {
         if (prefersReducedMotion) {
             window.scrollTo(0, toY)
             return
         }
-        const startY = window.scrollY || window.pageYOffset
-        const diff = toY - startY
-        if (diff === 0) return
-
-        let start: number | null = null
-        const step = (timestamp: number) => {
-            if (start === null) start = timestamp
-            const elapsed = timestamp - start
-            const progress = Math.min(elapsed / duration, 1)
-            const eased = easeInOutCubic(progress)
-            window.scrollTo(0, startY + diff * eased)
-            if (elapsed < duration) requestAnimationFrame(step)
+        // Mark that we are scrolling programmatically to avoid active-state flicker
+        if (scrollingRef.current.t) {
+            window.clearTimeout(scrollingRef.current.t as number)
+            scrollingRef.current.t = null
         }
-        requestAnimationFrame(step)
+        scrollingRef.current.isProgrammatic = true
+
+        // Use native smooth-scrolling (avoids double-anim "glitch" from custom RAF + CSS)
+        try {
+            window.scrollTo({ top: toY, behavior: "smooth" })
+        } catch {
+            // Very old browsers fallback
+            window.scrollTo(0, toY)
+        }
+
+        // Release the guard shortly after expected duration
+        scrollingRef.current.t = window.setTimeout(() => {
+            scrollingRef.current.isProgrammatic = false
+            scrollingRef.current.t = null
+            // final sync of active state after scroll settles
+            updateActiveByScroll()
+        }, duration + 120)
     }
 
-    const scrollToId = (id: string, offset = 84, duration = 900) => {
+    const scrollToId = (id: string, duration = 700) => {
         const el = document.getElementById(id)
         if (!el) return
-        const y = el.getBoundingClientRect().top + window.scrollY - Math.max(offset, 0)
+        const y = el.getBoundingClientRect().top + window.scrollY - getHeaderOffset()
         smoothScrollTo(y, duration)
     }
+
+    const updateActiveByScroll = () => {
+        if (scrollingRef.current.isProgrammatic) return
+        const about = document.getElementById("about")
+        if (!about) {
+            setActive("home")
+            return
+        }
+        const top = about.getBoundingClientRect().top
+        if (top <= getHeaderOffset()) {
+            setActive("about")
+        } else {
+            setActive("home")
+        }
+    }
+
+    useEffect(() => {
+        updateActiveByScroll()
+        const onScroll = () => updateActiveByScroll()
+        const onResize = () => updateActiveByScroll()
+        window.addEventListener("scroll", onScroll, { passive: true })
+        window.addEventListener("resize", onResize)
+        return () => {
+            window.removeEventListener("scroll", onScroll)
+            window.removeEventListener("resize", onResize)
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
     const handleHomeClick: React.MouseEventHandler<HTMLAnchorElement> = (e) => {
         if (location.pathname === "/welcome") {
             e.preventDefault()
-            smoothScrollTo(0, 900)
+            smoothScrollTo(0, 700)
+            setActive("home")
             setMobileOpen(false)
         }
     }
 
     const handleAboutClick: React.MouseEventHandler<HTMLAnchorElement> = (e) => {
         e.preventDefault()
-        scrollToId("about", 84, 900)
+        scrollToId("about", 700)
+        setActive("about")
         setMobileOpen(false)
     }
 
@@ -76,7 +121,12 @@ export default function WelcomePage() {
                 <div className="absolute inset-0 opacity-[0.06] [background:linear-gradient(to_right,transparent_0,transparent_31px,hsl(var(--ring)/.6)_32px),linear-gradient(to_bottom,transparent_0,transparent_31px,hsl(var(--ring)/.6)_32px)] [background-size:32px_32px]" />
             </div>
 
-            <header className="sticky top-0 z-40 w-full border-b bg-background/75 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <header
+                ref={(n) => {
+                    headerRef.current = n
+                }}
+                className="sticky top-0 z-40 w-full border-b bg-background/75 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+            >
                 <div
                     className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6"
                     style={{ WebkitTapHighlightColor: "transparent" }}
@@ -86,7 +136,8 @@ export default function WelcomePage() {
                         onClick={(e) => {
                             if (location.pathname === "/welcome") {
                                 e.preventDefault()
-                                smoothScrollTo(0, 900)
+                                smoothScrollTo(0, 700)
+                                setActive("home")
                             } else {
                                 e.preventDefault()
                                 navigate("/welcome")
@@ -96,7 +147,10 @@ export default function WelcomePage() {
                         style={{ WebkitTapHighlightColor: "transparent" }}
                         aria-label="ThesisGrader Home"
                     >
-                        <span className="inline-block size-4 rounded-full bg-[radial-gradient(100%_100%_at_30%_20%,hsl(var(--primary))_0%,hsl(var(--primary)/.6)_70%,hsl(var(--primary)/.2)_100%)] shadow-[0_0_0_3px_hsl(var(--primary)/.2)]" aria-hidden />
+                        <span
+                            className="inline-block size-4 rounded-full bg-[radial-gradient(100%_100%_at_30%_20%,hsl(var(--primary))_0%,hsl(var(--primary)/.6)_70%,hsl(var(--primary)/.2)_100%)] shadow-[0_0_0_3px_hsl(var(--primary)/.2)]"
+                            aria-hidden
+                        />
                         <span className="text-sm sm:text-base">ThesisGrader</span>
                     </Link>
 
@@ -104,27 +158,39 @@ export default function WelcomePage() {
                         <Link
                             to="/welcome"
                             onClick={handleHomeClick}
-                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            aria-current={active === "home" ? "page" : undefined}
+                            className="relative inline-flex items-center px-0.5 pb-1 transition-colors"
                             style={{ WebkitTapHighlightColor: "transparent" }}
                         >
-                            Home
+                            <span className={active === "home" ? "text-foreground" : "text-muted-foreground hover:text-foreground"}>
+                                Home
+                            </span>
+                            <span
+                                aria-hidden
+                                className={`pointer-events-none absolute left-0 -bottom-1 h-0.5 w-full rounded-full bg-[hsl(var(--primary))] transition-opacity duration-300 ${active === "home" ? "opacity-100" : "opacity-0"
+                                    }`}
+                            />
                         </Link>
+
                         <a
                             href="#about"
                             onClick={handleAboutClick}
-                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            aria-current={active === "about" ? "page" : undefined}
+                            className="relative inline-flex items-center px-0.5 pb-1 transition-colors"
                             style={{ WebkitTapHighlightColor: "transparent" }}
                         >
-                            About
+                            <span className={active === "about" ? "text-foreground" : "text-muted-foreground hover:text-foreground"}>
+                                About
+                            </span>
+                            <span
+                                aria-hidden
+                                className={`pointer-events-none absolute left-0 -bottom-1 h-0.5 w-full rounded-full bg-[hsl(var(--primary))] transition-opacity duration-300 ${active === "about" ? "opacity-100" : "opacity-0"
+                                    }`}
+                            />
                         </a>
                     </nav>
 
                     <div className="hidden md:flex items-center gap-2">
-                        <Button asChild variant="ghost" className="cursor-pointer">
-                            <Link to="/docs" style={{ WebkitTapHighlightColor: "transparent" }}>
-                                Docs
-                            </Link>
-                        </Button>
                         <Button asChild className="cursor-pointer">
                             <Link to="/auth/login" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Login
@@ -154,14 +220,22 @@ export default function WelcomePage() {
                         <Link
                             to="/welcome"
                             onClick={handleHomeClick}
-                            className="rounded-lg px-3 py-3 text-foreground/90 hover:bg-accent/60 active:bg-accent transition"
+                            aria-current={active === "home" ? "page" : undefined}
+                            className={`rounded-lg px-3 py-3 transition cursor-pointer ${active === "home"
+                                ? "bg-accent/60 text-foreground border-l-4 border-[hsl(var(--primary))]"
+                                : "text-foreground/90 hover:bg-accent/60 active:bg-accent"
+                                }`}
                         >
                             Home
                         </Link>
                         <a
                             href="#about"
                             onClick={handleAboutClick}
-                            className="rounded-lg px-3 py-3 text-foreground/90 hover:bg-accent/60 active:bg-accent transition"
+                            aria-current={active === "about" ? "page" : undefined}
+                            className={`rounded-lg px-3 py-3 transition cursor-pointer ${active === "about"
+                                ? "bg-accent/60 text-foreground border-l-4 border-[hsl(var(--primary))]"
+                                : "text-foreground/90 hover:bg-accent/60 active:bg-accent"
+                                }`}
                         >
                             About
                         </a>
@@ -210,7 +284,11 @@ export default function WelcomePage() {
                     </p>
 
                     <div className="mt-7 grid w-full grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:items-center sm:justify-center lg:justify-start">
-                        <Button asChild variant="default" className="cursor-pointer shadow-lg shadow-[hsl(var(--ring)/.25)] hover:shadow-[hsl(var(--ring)/.35)]">
+                        <Button
+                            asChild
+                            variant="default"
+                            className="cursor-pointer shadow-lg shadow-[hsl(var(--ring)/.25)] hover:shadow-[hsl(var(--ring)/.35)]"
+                        >
                             <Link to="/auth/login" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Get started
                             </Link>
@@ -268,21 +346,13 @@ export default function WelcomePage() {
                             title="Role-aware flows"
                             desc="Student, Adviser, Panel, Chair, and Admin journeys are streamlined."
                         />
-                        <Feature
-                            icon={IconShieldLock}
-                            title="Privacy-first"
-                            desc="RBAC, consent receipts, and audit logs per RA 10173."
-                        />
+                        <Feature icon={IconShieldLock} title="Privacy-first" desc="RBAC, consent receipts, and audit logs per RA 10173." />
                         <Feature
                             icon={IconCalendarEvent}
                             title="Defense scheduling"
                             desc="Conflict checks, notifications, attendance, and timelines."
                         />
-                        <Feature
-                            icon={IconChartBar}
-                            title="Analytics"
-                            desc="Distributions, time-to-result, and reliability summaries."
-                        />
+                        <Feature icon={IconChartBar} title="Analytics" desc="Distributions, time-to-result, and reliability summaries." />
                     </div>
                 </div>
             </section>
@@ -292,27 +362,15 @@ export default function WelcomePage() {
                     <div className="w-full max-w-2xl lg:col-span-2">
                         <h2 className="text-center text-xl font-bold lg:text-left">About the Study</h2>
                         <p className="mt-2 max-w-3xl text-balance text-center text-sm leading-relaxed text-muted-foreground lg:text-left">
-                            ThesisGrader standardizes rubric-based assessment, supports panel calibration, automates weighted scoring,
-                            anchors comments to criteria, and preserves a complete audit trail—improving fairness, timeliness, and
-                            transparency in thesis reviews.
+                            ThesisGrader standardizes rubric-based assessment, supports panel calibration, automates weighted scoring, anchors
+                            comments to criteria, and preserves a complete audit trail—improving fairness, timeliness, and transparency in
+                            thesis reviews.
                         </p>
 
                         <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                            <MiniCard
-                                icon={IconFileCertificate}
-                                title="Transparent results"
-                                text="Per-criterion breakdowns, comments, and signed PDFs."
-                            />
-                            <MiniCard
-                                icon={IconChecklist}
-                                title="Reliable scoring"
-                                text="Calibration workflows; κ/ICC targets for consistency."
-                            />
-                            <MiniCard
-                                icon={IconShieldLock}
-                                title="Compliance-ready"
-                                text="Consent, audit logging, and retention controls."
-                            />
+                            <MiniCard icon={IconFileCertificate} title="Transparent results" text="Per-criterion breakdowns, comments, and signed PDFs." />
+                            <MiniCard icon={IconChecklist} title="Reliable scoring" text="Calibration workflows; κ/ICC targets for consistency." />
+                            <MiniCard icon={IconShieldLock} title="Compliance-ready" text="Consent, audit logging, and retention controls." />
                         </div>
                     </div>
 
