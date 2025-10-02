@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { useState } from "react"
 import { ArrowLeft, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 export default function LoginPage() {
+    const navigate = useNavigate()
     const [loading, setLoading] = useState(false)
     const [showPassword, setShowPassword] = useState(false)
 
@@ -16,8 +17,11 @@ export default function LoginPage() {
         const form = new FormData(e.currentTarget)
         const email = String(form.get("email") || "")
         const password = String(form.get("password") || "")
-        // TODO: wire to real auth service
+        // TODO: wire to real auth service; backend will handle role-based redirect.
         console.log("login", { email, password })
+
+        // For now, route students to the Student Dashboard after "login"
+        navigate("/dashboard/student", { replace: true })
         setLoading(false)
     }
 

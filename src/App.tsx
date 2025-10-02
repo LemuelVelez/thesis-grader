@@ -9,21 +9,9 @@ import RegisterPage from "@/app/auth/register"
 import ForgotPasswordPage from "@/app/auth/forgot-password"
 import ResetPasswordPage from "@/app/auth/reset-password"
 
-// Temporary placeholders so routing compiles while other pages are WIP.
-// Replace these when your real pages are ready.
-function StudentDashboardPlaceholder() {
-  return (
-    <main className="min-h-dvh grid place-items-center p-8">
-      <div className="max-w-xl text-center">
-        <h1 className="text-2xl font-bold">Student Dashboard</h1>
-        <p className="mt-2 text-muted-foreground">
-          Replace this with your <code>src/app/student-dashboard</code> page.
-        </p>
-        <a className="mt-4 inline-block underline" href="/welcome">Back to Welcome</a>
-      </div>
-    </main>
-  )
-}
+// Student pages
+import StudentDashboard from "@/app/dashboard/student/dashboard"
+import StudentSubmissions from "@/app/dashboard/student/submissions"
 
 export default function App() {
   return (
@@ -42,8 +30,18 @@ export default function App() {
         <Route path="/auth/forgot" element={<ForgotPasswordPage />} />
         <Route path="/auth/reset" element={<ResetPasswordPage />} />
 
-        {/* Other stubs (safe to remove once real pages exist) */}
-        <Route path="/student-dashboard" element={<StudentDashboardPlaceholder />} />
+        {/* ✅ Student routes */}
+        <Route path="/dashboard/student" element={<StudentDashboard />} />
+        <Route
+          path="/dashboard/student/submissions"
+          element={<StudentSubmissions />}
+        />
+
+        {/* Back-compat for the Welcome "Student dashboard" button */}
+        <Route
+          path="/student-dashboard"
+          element={<Navigate to="/dashboard/student" replace />}
+        />
 
         {/* Catch-all → Welcome */}
         <Route path="*" element={<Navigate to="/welcome" replace />} />

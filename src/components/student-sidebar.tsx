@@ -1,24 +1,10 @@
 import * as React from "react"
 import {
-  IconCamera,
-  IconChartBar,
   IconDashboard,
-  IconDatabase,
-  IconFileAi,
   IconFileDescription,
-  IconFileWord,
-  IconFolder,
-  IconHelp,
   IconInnerShadowTop,
-  IconListDetails,
-  IconReport,
-  IconSearch,
   IconSettings,
-  IconUsers,
 } from "@tabler/icons-react"
-
-import { NavDocuments } from "@/components/nav-documents"
-import { NavMain } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
 import {
@@ -30,86 +16,25 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { NavLink, useLocation } from "react-router-dom"
 
 const data = {
   user: {
-    name: "shadcn",
-    email: "m@example.com",
+    name: "Student User",
+    email: "student@example.edu",
     avatar: "/avatars/shadcn.jpg",
   },
+  // Focus the main nav on student flows
   navMain: [
     {
       title: "Dashboard",
-      url: "#",
+      url: "/dashboard/student",
       icon: IconDashboard,
     },
     {
-      title: "Lifecycle",
-      url: "#",
-      icon: IconListDetails,
-    },
-    {
-      title: "Analytics",
-      url: "#",
-      icon: IconChartBar,
-    },
-    {
-      title: "Projects",
-      url: "#",
-      icon: IconFolder,
-    },
-    {
-      title: "Team",
-      url: "#",
-      icon: IconUsers,
-    },
-  ],
-  navClouds: [
-    {
-      title: "Capture",
-      icon: IconCamera,
-      isActive: true,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Proposal",
+      title: "Submissions",
+      url: "/dashboard/student/submissions",
       icon: IconFileDescription,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Prompts",
-      icon: IconFileAi,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
     },
   ],
   navSecondary: [
@@ -118,37 +43,12 @@ const data = {
       url: "#",
       icon: IconSettings,
     },
-    {
-      title: "Get Help",
-      url: "#",
-      icon: IconHelp,
-    },
-    {
-      title: "Search",
-      url: "#",
-      icon: IconSearch,
-    },
-  ],
-  documents: [
-    {
-      name: "Data Library",
-      url: "#",
-      icon: IconDatabase,
-    },
-    {
-      name: "Reports",
-      url: "#",
-      icon: IconReport,
-    },
-    {
-      name: "Word Assistant",
-      url: "#",
-      icon: IconFileWord,
-    },
   ],
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const location = useLocation()
+
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -156,21 +56,55 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
-              className="data-[slot=sidebar-menu-button]:!p-1.5"
+              className="data-[slot=sidebar-menu-button]:!p-1.5 border-none"
             >
-              <a href="#">
+              <NavLink to="/dashboard/student">
                 <IconInnerShadowTop className="!size-5" />
-                <span className="text-base font-semibold">Acme Inc.</span>
-              </a>
+                <span className="text-base font-semibold">ThesisGrader</span>
+              </NavLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
+
       <SidebarContent>
-        <NavMain items={data.navMain} />
-        <NavDocuments items={data.documents} />
+        {/* Main nav with minimal active highlight */}
+        <SidebarMenu>
+          {data.navMain.map((item) => {
+            const Icon = item.icon
+            const isActive = location.pathname === item.url
+            return (
+              <SidebarMenuItem key={item.title}>
+                <SidebarMenuButton
+                  asChild
+                  className={`relative transition-colors ${isActive
+                    ? "bg-muted/70 font-medium text-foreground"
+                    : "hover:bg-muted/40"
+                    }`}
+                >
+                  <NavLink
+                    to={item.url}
+                    aria-current={isActive ? "page" : undefined}
+                    className="flex items-center gap-2 pl-3"
+                  >
+                    {/* Minimal left indicator bar */}
+                    <span
+                      className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1.5 rounded-full ${isActive ? "bg-primary" : "bg-transparent"
+                        }`}
+                      aria-hidden="true"
+                    />
+                    <Icon className="!size-4" />
+                    <span>{item.title}</span>
+                  </NavLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )
+          })}
+        </SidebarMenu>
+
         <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
+
       <SidebarFooter>
         <NavUser user={data.user} />
       </SidebarFooter>

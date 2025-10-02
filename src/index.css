@@ -67,6 +67,14 @@
   --sidebar-accent-foreground: 240 5.9% 10%;
   --sidebar-border: 220 13% 91%;
   --sidebar-ring: 217.2 91.2% 59.8%;
+
+  /* Scrollbar (light) */
+  --scrollbar-size: 10px;
+  /* Lighten the track to avoid dark backgrounds and keep a blue-ish tone */
+  --scrollbar-track: color-mix(in hsl, hsl(var(--muted)) 70%, white 30%);
+  /* Softer blue thumb for better contrast */
+  --scrollbar-thumb: color-mix(in hsl, hsl(var(--primary)) 70%, white 30%);
+  --scrollbar-thumb-hover: color-mix(in hsl, hsl(var(--primary)) 85%, white 15%);
 }
 
 /* Tailwind CSS variable bridge */
@@ -148,6 +156,46 @@
   --sidebar-accent-foreground: 240 4.8% 95.9%;
   --sidebar-border: 222 36% 17%;
   --sidebar-ring: 217.2 91.2% 59.8%;
+
+  /* Scrollbar (dark) — keep it lighter so it never looks “black” */
+  --scrollbar-track: color-mix(in hsl, hsl(var(--secondary)) 55%, white 45%);
+  --scrollbar-thumb: color-mix(in hsl, hsl(var(--primary)) 80%, white 20%);
+  --scrollbar-thumb-hover: color-mix(in hsl, hsl(var(--primary)) 90%, white 10%);
+}
+
+/* Global scrollbar styling (applies to sidebar + dashboard scroll areas) */
+/* Make layout stable when scrollbars appear */
+html { scrollbar-gutter: stable both-edges; }
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* WebKit (Chromium, Safari, Edge) */
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  /* Fallback then token */
+  background: hsl(var(--muted));
+  background: var(--scrollbar-track);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  /* Fallback then token */
+  background: hsl(var(--primary));
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+  border: 2px solid var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 @layer base {
