@@ -1,4 +1,3 @@
-// src/app/welcome/index.tsx
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { useState, type ElementType } from "react"
 import {
@@ -71,12 +70,13 @@ export default function WelcomePage() {
 
     return (
         <main className="relative min-h-dvh w-full bg-background text-foreground">
+            {/* Blue ambient background */}
             <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
-                <div className="absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_-10%,hsl(var(--primary)/0.12),transparent_60%)]" />
-                <div className="absolute inset-0 opacity-[0.05] [background:linear-gradient(to_right,transparent_0,transparent_31px,hsl(var(--foreground)/.6)_32px),linear-gradient(to_bottom,transparent_0,transparent_31px,hsl(var(--foreground)/.6)_32px)] [background-size:32px_32px]" />
+                <div className="absolute inset-0 bg-[radial-gradient(70%_70%_at_50%_-10%,hsl(var(--primary)/0.15),transparent_60%)]" />
+                <div className="absolute inset-0 opacity-[0.06] [background:linear-gradient(to_right,transparent_0,transparent_31px,hsl(var(--ring)/.6)_32px),linear-gradient(to_bottom,transparent_0,transparent_31px,hsl(var(--ring)/.6)_32px)] [background-size:32px_32px]" />
             </div>
 
-            <header className="sticky top-0 z-40 w-full border-b bg-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <header className="sticky top-0 z-40 w-full border-b bg-background/75 backdrop-blur supports-[backdrop-filter]:bg-background/60">
                 <div
                     className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6"
                     style={{ WebkitTapHighlightColor: "transparent" }}
@@ -96,7 +96,7 @@ export default function WelcomePage() {
                         style={{ WebkitTapHighlightColor: "transparent" }}
                         aria-label="ThesisGrader Home"
                     >
-                        <span className="inline-block size-4 rounded-full bg-primary" aria-hidden />
+                        <span className="inline-block size-4 rounded-full bg-[radial-gradient(100%_100%_at_30%_20%,hsl(var(--primary))_0%,hsl(var(--primary)/.6)_70%,hsl(var(--primary)/.2)_100%)] shadow-[0_0_0_3px_hsl(var(--primary)/.2)]" aria-hidden />
                         <span className="text-sm sm:text-base">ThesisGrader</span>
                     </Link>
 
@@ -120,12 +120,12 @@ export default function WelcomePage() {
                     </nav>
 
                     <div className="hidden md:flex items-center gap-2">
-                        <Button asChild variant="ghost">
+                        <Button asChild variant="ghost" className="cursor-pointer">
                             <Link to="/docs" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Docs
                             </Link>
                         </Button>
-                        <Button asChild>
+                        <Button asChild className="cursor-pointer">
                             <Link to="/auth/login" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Login
                             </Link>
@@ -138,7 +138,7 @@ export default function WelcomePage() {
                         aria-expanded={mobileOpen}
                         aria-controls="mobile-menu"
                         onClick={() => setMobileOpen((v) => !v)}
-                        className="md:hidden inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm hover:bg-accent/50 active:scale-[0.98] transition"
+                        className="md:hidden inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm hover:bg-accent/60 active:scale-[0.98] transition cursor-pointer"
                         style={{ WebkitTapHighlightColor: "transparent" }}
                     >
                         {mobileOpen ? <IconX className="size-5" /> : <IconMenu2 className="size-5" />}
@@ -195,12 +195,12 @@ export default function WelcomePage() {
             >
                 <div className="order-1 flex w-full max-w-xl flex-col items-center text-center lg:order-1 lg:items-start lg:text-left">
                     <h1 className="text-balance text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
-                        <span className="bg-gradient-to-b from-foreground to-foreground/70 bg-clip-text text-transparent">
+                        <span className="bg-gradient-to-b from-[hsl(var(--primary))] to-[hsl(var(--primary)/0.65)] bg-clip-text text-transparent">
                             THESISGRADER
                         </span>
                     </h1>
 
-                    <p className="mt-2 text-lg font-semibold text-primary">
+                    <p className="mt-2 text-lg font-semibold text-[hsl(var(--ring))]">
                         Web-Based Evaluation &amp; Grading for Thesis Panel Review
                     </p>
 
@@ -210,19 +210,23 @@ export default function WelcomePage() {
                     </p>
 
                     <div className="mt-7 grid w-full grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:items-center sm:justify-center lg:justify-start">
-                        <Button asChild variant="default" className="text-primary-foreground">
+                        <Button asChild variant="default" className="cursor-pointer shadow-lg shadow-[hsl(var(--ring)/.25)] hover:shadow-[hsl(var(--ring)/.35)]">
                             <Link to="/auth/login" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Get started
                             </Link>
                         </Button>
 
-                        <Button asChild variant="outline">
+                        <Button asChild variant="outline" className="cursor-pointer">
                             <Link to="/student-dashboard" style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Student dashboard
                             </Link>
                         </Button>
 
-                        <Button asChild variant="ghost" className="justify-self-start underline-offset-4 hover:underline sm:justify-self-auto">
+                        <Button
+                            asChild
+                            variant="ghost"
+                            className="justify-self-start underline-offset-4 hover:underline sm:justify-self-auto cursor-pointer"
+                        >
                             <a href="#about" onClick={handleAboutClick} style={{ WebkitTapHighlightColor: "transparent" }}>
                                 Learn more
                             </a>
@@ -238,7 +242,7 @@ export default function WelcomePage() {
                 </div>
 
                 <div className="order-2 grid w-full max-w-xl content-center gap-4 justify-self-center lg:order-2">
-                    <Card className="backdrop-blur">
+                    <Card className="backdrop-blur transition-shadow hover:shadow-xl hover:shadow-[hsl(var(--ring)/.15)]">
                         <CardHeader className="flex flex-row items-start justify-between gap-4">
                             <div>
                                 <CardTitle className="text-lg">Outcomes-Aligned Rubrics</CardTitle>
@@ -246,7 +250,7 @@ export default function WelcomePage() {
                                     Versioned criteria with weights &amp; descriptors, plus transparent computation traces.
                                 </p>
                             </div>
-                            <div className="rounded-xl border bg-muted p-3">
+                            <div className="rounded-xl border border-[hsl(var(--ring)/.2)] bg-[hsl(var(--ring)/.08)] p-3 text-[hsl(var(--ring))]">
                                 <IconChecklist className="size-6" />
                             </div>
                         </CardHeader>
@@ -283,7 +287,7 @@ export default function WelcomePage() {
                 </div>
             </section>
 
-            <section id="about" className="border-t bg-muted/30">
+            <section id="about" className="border-t bg-[hsl(var(--primary)/.03)]">
                 <div className="mx-auto grid w-full max-w-6xl place-items-center gap-6 px-4 py-12 sm:px-6 lg:grid-cols-3">
                     <div className="w-full max-w-2xl lg:col-span-2">
                         <h2 className="text-center text-xl font-bold lg:text-left">About the Study</h2>
@@ -359,10 +363,10 @@ function Feature({
     desc: string
 }) {
     return (
-        <Card className="transition-transform hover:-translate-y-0.5">
+        <Card className="transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[hsl(var(--ring)/.15)]">
             <CardContent className="p-5">
                 <div className="flex items-center gap-3">
-                    <div className="rounded-xl border bg-muted p-2">
+                    <div className="rounded-xl border border-[hsl(var(--ring)/.2)] bg-[hsl(var(--ring)/.08)] p-2 text-[hsl(var(--ring))]">
                         <Icon className="size-5" />
                     </div>
                     <h3 className="text-base font-semibold">{title}</h3>
@@ -383,10 +387,10 @@ function MiniCard({
     text: string
 }) {
     return (
-        <Card>
+        <Card className="transition-all hover:shadow-md hover:shadow-[hsl(var(--ring)/.12)]">
             <CardContent className="p-5">
                 <div className="mb-2 flex items-center gap-3">
-                    <div className="rounded-xl border bg-muted p-2">
+                    <div className="rounded-xl border border-[hsl(var(--ring)/.2)] bg-[hsl(var(--ring)/.08)] p-2 text-[hsl(var(--ring))]">
                         <Icon className="size-5" />
                     </div>
                     <h3 className="text-base font-semibold">{title}</h3>
@@ -399,7 +403,7 @@ function MiniCard({
 
 function Stat({ value, label }: { value: string; label: string }) {
     return (
-        <div className="rounded-lg border p-3 text-left sm:text-center">
+        <div className="rounded-lg border border-[hsl(var(--ring)/.2)] bg-[hsl(var(--ring)/.06)] p-3 text-left sm:text-center">
             <div className="text-2xl font-bold leading-none">{value}</div>
             <div className="mt-1 text-xs text-muted-foreground">{label}</div>
         </div>

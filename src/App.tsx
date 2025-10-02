@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 
 // Explicitly target the index file so TS resolves it in bundler mode
-import WelcomePage from "@/app/welcome/index"
+import WelcomePage from "@/app/welcome/welcome"
 
 // Auth pages
 import LoginPage from "@/app/auth/login"
