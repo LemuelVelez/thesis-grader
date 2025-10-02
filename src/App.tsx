@@ -27,11 +27,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* ✅ First page: redirect root to /welcome */}
-        <Route path="/" element={<Navigate to="/welcome" replace />} />
+        {/* ✅ Root now serves the Welcome page directly */}
+        <Route path="/" element={<WelcomePage />} />
 
-        {/* Welcome route */}
-        <Route path="/welcome" element={<WelcomePage />} />
+        {/* Back-compat: old /welcome links now point to / */}
+        <Route path="/welcome" element={<Navigate to="/" replace />} />
 
         {/* ✅ Auth routes */}
         <Route path="/auth" element={<Navigate to="/auth/login" replace />} />
@@ -77,8 +77,8 @@ export default function App() {
           element={<Navigate to="/dashboard/student" replace />}
         />
 
-        {/* Catch-all → Welcome */}
-        <Route path="*" element={<Navigate to="/welcome" replace />} />
+        {/* Catch-all → Root Welcome */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

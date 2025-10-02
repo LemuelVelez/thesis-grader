@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "react-router-dom"
 import { useState } from "react"
-import { ArrowLeft, Eye, EyeOff } from "lucide-react"
+import { ArrowLeft, Eye, EyeOff, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -88,8 +88,20 @@ export default function LoginPage() {
                             </Link>
                         </div>
 
-                        <Button type="submit" disabled={loading} className="cursor-pointer">
-                            {loading ? "Signing in…" : "Sign in"}
+                        <Button
+                            type="submit"
+                            disabled={loading}
+                            aria-busy={loading}
+                            className="cursor-pointer gap-2"
+                        >
+                            {loading ? (
+                                <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    <span>Signing in…</span>
+                                </>
+                            ) : (
+                                "Sign in"
+                            )}
                         </Button>
                     </form>
 

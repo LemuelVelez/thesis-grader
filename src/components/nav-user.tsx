@@ -1,10 +1,9 @@
 import {
-  IconCreditCard,
   IconDotsVertical,
   IconLogout,
-  IconNotification,
   IconUserCircle,
 } from "@tabler/icons-react"
+import { useNavigate } from "react-router-dom"
 
 import {
   Avatar,
@@ -37,6 +36,23 @@ export function NavUser({
   }
 }) {
   const { isMobile } = useSidebar()
+  const navigate = useNavigate()
+
+  const handleLogout = () => {
+    try {
+      // Clear any local/session state if used for auth tokens.
+      localStorage.removeItem("authToken")
+      sessionStorage.removeItem("authToken")
+    } catch {
+      // no-op
+    }
+    // Redirect to root (Welcome)
+    navigate("/", { replace: true })
+  }
+
+  const goToSettings = () => {
+    navigate("/dashboard/student/settings")
+  }
 
   return (
     <SidebarMenu>
@@ -82,21 +98,13 @@ export function NavUser({
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              <DropdownMenuItem>
+              <DropdownMenuItem onClick={goToSettings} className="cursor-pointer">
                 <IconUserCircle />
-                Account
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <IconCreditCard />
-                Billing
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <IconNotification />
-                Notifications
+                Account Settings
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={handleLogout} className="cursor-pointer">
               <IconLogout />
               Log out
             </DropdownMenuItem>
