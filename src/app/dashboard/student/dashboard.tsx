@@ -71,23 +71,29 @@ export default function StudentDashboard() {
             />
           </div>
 
-          {/* Trend + Outline */}
-          <div className="grid gap-6 lg:grid-cols-5">
-            <div className="lg:col-span-2">
+          {/* Trend + Outline (VERTICAL LAYOUT) */}
+          <div className="flex flex-col gap-6">
+            <div>
               <ChartAreaInteractive />
             </div>
-            <Card className="lg:col-span-3 @container">
-              <CardHeader className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+
+            <Card className="@container">
+              {/* Stacked header for vertical flow */}
+              <CardHeader className="flex flex-col gap-2">
                 <div>
                   <CardTitle className="text-base sm:text-lg">Outline & Section Controls</CardTitle>
                   <CardDescription>Drag to reorder, edit targets, and assign reviewers.</CardDescription>
                 </div>
-                <Button asChild size="sm" variant="outline" className="cursor-pointer">
-                  <Link to="/dashboard/student/submissions">Go to Submissions</Link>
-                </Button>
+                <div>
+                  <Button asChild size="sm" variant="outline" className="cursor-pointer">
+                    <Link to="/dashboard/student/submissions">Go to Submissions</Link>
+                  </Button>
+                </div>
               </CardHeader>
+
               <Separator />
               <CardContent className="pt-4">
+                {/* Data table area */}
                 <DataTable data={data} />
               </CardContent>
             </Card>

@@ -1,11 +1,11 @@
 import * as React from "react"
 import {
+  IconCalendarEvent,
   IconDashboard,
   IconFileDescription,
   IconInnerShadowTop,
   IconSettings,
 } from "@tabler/icons-react"
-import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
 import {
   Sidebar,
@@ -16,7 +16,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { NavLink, useLocation } from "react-router-dom"
+import { NavLink, useLocation, matchPath } from "react-router-dom"
 
 const data = {
   user: {
@@ -36,11 +36,16 @@ const data = {
       url: "/dashboard/student/submissions",
       icon: IconFileDescription,
     },
+    {
+      title: "Schedule",
+      url: "/dashboard/student/schedule",
+      icon: IconCalendarEvent,
+    },
   ],
   navSecondary: [
     {
-      title: "Settings",
-      url: "#",
+      title: "Profile & Settings",
+      url: "/dashboard/student/settings",
       icon: IconSettings,
     },
   ],
@@ -72,7 +77,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           {data.navMain.map((item) => {
             const Icon = item.icon
-            const isActive = location.pathname === item.url
+
+            // Exact match for dashboard root; nested for others
+            const isActive = !!matchPath(
+              { path: item.url, end: item.url === "/dashboard/student" },
+              location.pathname
+            )
+
             return (
               <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton
@@ -102,7 +113,41 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           })}
         </SidebarMenu>
 
-        <NavSecondary items={data.navSecondary} className="mt-auto" />
+        {/* Secondary nav (Profile & Settings) with active indicator */}
+        <SidebarMenu className="mt-auto">
+          {data.navSecondary.map((item) => {
+            const Icon = item.icon
+            const isActive = !!matchPath(
+              { path: item.url, end: false },
+              location.pathname
+            )
+            return (
+              <SidebarMenuItem key={item.title}>
+                <SidebarMenuButton
+                  asChild
+                  className={`relative transition-colors ${isActive
+                    ? "bg-muted/70 font-medium text-foreground"
+                    : "hover:bg-muted/40"
+                    }`}
+                >
+                  <NavLink
+                    to={item.url}
+                    aria-current={isActive ? "page" : undefined}
+                    className="flex items-center gap-2 pl-3"
+                  >
+                    <span
+                      className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1.5 rounded-full ${isActive ? "bg-primary" : "bg-transparent"
+                        }`}
+                      aria-hidden="true"
+                    />
+                    <Icon className="!size-4" />
+                    <span>{item.title}</span>
+                  </NavLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )
+          })}
+        </SidebarMenu>
       </SidebarContent>
 
       <SidebarFooter>

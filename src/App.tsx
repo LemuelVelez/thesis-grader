@@ -1,3 +1,4 @@
+// src\App.tsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 
 // Explicitly target the index file so TS resolves it in bundler mode
@@ -12,6 +13,8 @@ import ResetPasswordPage from "@/app/auth/reset-password"
 // Student pages
 import StudentDashboard from "@/app/dashboard/student/dashboard"
 import StudentSubmissions from "@/app/dashboard/student/submissions"
+import StudentSchedule from "@/app/dashboard/student/schedule"
+import StudentSettings from "@/app/dashboard/student/settings"
 
 export default function App() {
   return (
@@ -35,6 +38,14 @@ export default function App() {
         <Route
           path="/dashboard/student/submissions"
           element={<StudentSubmissions />}
+        />
+        <Route
+          path="/dashboard/student/schedule"
+          element={<StudentSchedule />}
+        />
+        <Route
+          path="/dashboard/student/settings"
+          element={<StudentSettings />}
         />
 
         {/* Back-compat for the Welcome "Student dashboard" button */}
