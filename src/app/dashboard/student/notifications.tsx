@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// src/app/dashboard/student/notifications.tsx
 import * as React from "react"
 import { Link } from "react-router-dom"
 import { AppSidebar } from "@/components/student-sidebar"
@@ -126,9 +125,7 @@ export default function StudentNotifications() {
     }
 
     function toggleRead(id: string) {
-        setItems((prev) =>
-            prev.map((n) => (n.id === id ? { ...n, read: !n.read } : n))
-        )
+        setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: !n.read } : n)))
     }
 
     function iconForType(t: NotifType) {
@@ -158,11 +155,12 @@ export default function StudentNotifications() {
                                 Submission updates, schedule changes, and result releases.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
+                        {/* Buttons: vertical on mobile, horizontal on sm+ */}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
-                            <Button asChild variant="outline" className="cursor-pointer">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student/settings">Preferences</Link>
                             </Button>
                         </div>
@@ -170,16 +168,20 @@ export default function StudentNotifications() {
 
                     {/* Controls */}
                     <Card>
-                        <CardHeader className="gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        {/* Stack controls on mobile, horizontal on sm+ */}
+                        <CardHeader className="gap-3 sm:flex-row sm:items-end sm:justify-between">
                             <div>
                                 <CardTitle className="text-base sm:text-lg">Inbox</CardTitle>
                                 <CardDescription>Filter by status or type, or search by keyword.</CardDescription>
                             </div>
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <div className="flex items-center gap-2">
-                                    <Label htmlFor="status" className="sr-only">Status</Label>
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                {/* Status */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
+                                    <Label htmlFor="status" className="sr-only">
+                                        Status
+                                    </Label>
                                     <Select value={status} onValueChange={(v) => setStatus(v as "all" | "unread")}>
-                                        <SelectTrigger id="status" className="w-36 cursor-pointer">
+                                        <SelectTrigger id="status" className="w-full cursor-pointer sm:w-36">
                                             <SelectValue placeholder="All" />
                                         </SelectTrigger>
                                         <SelectContent align="end">
@@ -189,10 +191,13 @@ export default function StudentNotifications() {
                                     </Select>
                                 </div>
 
-                                <div className="flex items-center gap-2">
-                                    <Label htmlFor="type" className="sr-only">Type</Label>
+                                {/* Type */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
+                                    <Label htmlFor="type" className="sr-only">
+                                        Type
+                                    </Label>
                                     <Select value={kind} onValueChange={(v) => setKind(v as any)}>
-                                        <SelectTrigger id="type" className="w-44 cursor-pointer">
+                                        <SelectTrigger id="type" className="w-full cursor-pointer sm:w-44">
                                             <SelectValue placeholder="All types" />
                                         </SelectTrigger>
                                         <SelectContent align="end">
@@ -205,23 +210,27 @@ export default function StudentNotifications() {
                                     </Select>
                                 </div>
 
-                                <div className="flex items-center gap-2">
-                                    <Label htmlFor="q" className="sr-only">Search</Label>
+                                {/* Search */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
+                                    <Label htmlFor="q" className="sr-only">
+                                        Search
+                                    </Label>
                                     <Input
                                         id="q"
                                         value={query}
                                         onChange={(e) => setQuery(e.target.value)}
                                         placeholder="Search notifications…"
-                                        className="w-64"
+                                        className="w-full sm:w-64"
                                     />
                                 </div>
 
-                                <div className="flex gap-2">
-                                    <Button onClick={markAllRead} variant="outline" className="cursor-pointer">
+                                {/* Bulk actions: stack on mobile */}
+                                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                                    <Button onClick={markAllRead} variant="outline" className="w-full cursor-pointer sm:w-auto">
                                         <IconCheck className="mr-2 size-4" />
                                         Mark all read
                                     </Button>
-                                    <Button onClick={clearRead} variant="destructive" className="cursor-pointer">
+                                    <Button onClick={clearRead} variant="destructive" className="w-full cursor-pointer sm:w-auto">
                                         <IconAlertCircle className="mr-2 size-4" />
                                         Clear read
                                     </Button>
@@ -230,7 +239,8 @@ export default function StudentNotifications() {
                         </CardHeader>
                         <Separator />
                         <CardContent className="pt-4">
-                            <div className="overflow-hidden rounded-lg border">
+                            {/* Table: horizontal scroll on small screens */}
+                            <div className="overflow-x-auto rounded-lg border">
                                 <Table>
                                     <TableHeader className="bg-muted">
                                         <TableRow>
@@ -262,20 +272,21 @@ export default function StudentNotifications() {
                                                         )}
                                                     </TableCell>
                                                     <TableCell className="pt-4 text-muted-foreground">{n.body}</TableCell>
-                                                    <TableCell className="pt-4 whitespace-nowrap">
+                                                    <TableCell className="whitespace-nowrap pt-4">
                                                         {new Date(n.createdAt).toLocaleString()}
                                                     </TableCell>
                                                     <TableCell className="pt-3 text-right">
-                                                        <div className="flex justify-end gap-2">
+                                                        {/* Row actions: vertical on mobile, horizontal on sm+ */}
+                                                        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:justify-end">
                                                             {n.read ? (
-                                                                <Badge variant="secondary">Read</Badge>
+                                                                <Badge variant="secondary" className="justify-center">Read</Badge>
                                                             ) : (
-                                                                <Badge>Unread</Badge>
+                                                                <Badge className="justify-center">Unread</Badge>
                                                             )}
                                                             <Button
                                                                 size="sm"
                                                                 variant="outline"
-                                                                className="cursor-pointer"
+                                                                className="w-full cursor-pointer sm:w-auto"
                                                                 onClick={() => toggleRead(n.id)}
                                                             >
                                                                 {n.read ? "Mark unread" : "Mark read"}
@@ -291,13 +302,14 @@ export default function StudentNotifications() {
                         </CardContent>
                     </Card>
 
-                    <div className="rounded-md border p-3 text-sm text-muted-foreground flex items-start gap-2">
-                        <IconClock className="size-4 mt-0.5" />
+                    <div className="flex items-start gap-2 rounded-md border p-3 text-sm text-muted-foreground">
+                        <IconClock className="mt-0.5 size-4" />
                         <span>
                             Tip: You can change delivery channels (email/SMS/push) in{" "}
                             <Link to="/dashboard/student/settings" className="underline underline-offset-2">
                                 Settings → Notifications
-                            </Link>.
+                            </Link>
+                            .
                         </span>
                     </div>
                 </main>
