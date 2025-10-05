@@ -142,14 +142,15 @@ export default function StudentSchedule() {
                                 View available defense slots, book a schedule, and track confirmations.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
+                        {/* Buttons: vertical on mobile, horizontal on sm+ */}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
                         </div>
                     </div>
 
-                    {/* Summary */}
+                    {/* Summary (already vertical on mobile) */}
                     <div className="grid gap-4 sm:grid-cols-2">
                         <Card>
                             <CardHeader className="flex flex-row items-start justify-between space-y-0">
@@ -196,29 +197,32 @@ export default function StudentSchedule() {
 
                     {/* Book a slot */}
                     <Card>
-                        <CardHeader className="gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        {/* Header: stack search below title on mobile */}
+                        <CardHeader className="gap-3 sm:flex-row sm:items-end sm:justify-between">
                             <div>
                                 <CardTitle className="text-base sm:text-lg">Book a Defense Slot</CardTitle>
                                 <CardDescription>Select a date and time, then submit your booking request.</CardDescription>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <div className="flex items-center gap-2">
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
                                     <Label htmlFor="search" className="sr-only">Search</Label>
                                     <Input
                                         id="search"
                                         placeholder="Search by room or time…"
                                         value={q}
                                         onChange={(e) => setQ(e.target.value)}
-                                        className="w-56"
+                                        className="w-full sm:w-56"
                                     />
                                 </div>
                             </div>
                         </CardHeader>
                         <Separator />
-                        <CardContent className="pt-4 space-y-4">
+                        <CardContent className="space-y-4 pt-4">
                             {banner.kind !== "none" && (
                                 <div
-                                    className={`flex items-start gap-2 rounded-md border p-3 text-sm ${banner.kind === "success" ? "border-green-600/30 bg-green-600/10" : "border-amber-600/30 bg-amber-600/10"
+                                    className={`flex items-start gap-2 rounded-md border p-3 text-sm ${banner.kind === "success"
+                                        ? "border-green-600/30 bg-green-600/10"
+                                        : "border-amber-600/30 bg-amber-600/10"
                                         }`}
                                 >
                                     {banner.kind === "success" ? (
@@ -230,11 +234,12 @@ export default function StudentSchedule() {
                                 </div>
                             )}
 
+                            {/* Inputs grid: single column on mobile, 3 cols on sm+ */}
                             <div className="grid gap-4 sm:grid-cols-3">
                                 <div className="space-y-2">
                                     <Label htmlFor="date">Date</Label>
                                     <Select value={date} onValueChange={setDate}>
-                                        <SelectTrigger id="date" className="cursor-pointer">
+                                        <SelectTrigger id="date" className="cursor-pointer w-full">
                                             <SelectValue placeholder="Select date" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -250,7 +255,7 @@ export default function StudentSchedule() {
                                 <div className="space-y-2">
                                     <Label htmlFor="slot">Time Slot</Label>
                                     <Select value={slotId} onValueChange={setSlotId}>
-                                        <SelectTrigger id="slot" className="cursor-pointer">
+                                        <SelectTrigger id="slot" className="cursor-pointer w-full">
                                             <SelectValue placeholder="Select time slot" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -270,18 +275,21 @@ export default function StudentSchedule() {
                                         value={note}
                                         onChange={(e) => setNote(e.target.value)}
                                         placeholder="e.g., Final Defense"
+                                        className="w-full"
                                     />
                                 </div>
                             </div>
 
-                            <div className="flex justify-end">
-                                <Button onClick={handleBook} className="cursor-pointer">
+                            {/* Primary action: full width on mobile */}
+                            <div className="flex w-full flex-col sm:w-auto sm:flex-row sm:justify-end">
+                                <Button onClick={handleBook} className="w-full cursor-pointer sm:w-auto">
                                     <IconClock className="mr-2 size-4" />
                                     Book Slot
                                 </Button>
                             </div>
 
-                            <div className="overflow-hidden rounded-lg border">
+                            {/* Bookings table: enable horizontal scroll on small screens */}
+                            <div className="overflow-x-auto rounded-lg border">
                                 <Table>
                                     <TableHeader className="bg-muted">
                                         <TableRow>
@@ -307,7 +315,7 @@ export default function StudentSchedule() {
                                                     <TableRow key={b.id}>
                                                         <TableCell>{new Date(s.date).toLocaleDateString()}</TableCell>
                                                         <TableCell className="whitespace-nowrap">{to12h(s.time)}</TableCell>
-                                                        <TableCell className="whitespace-nowrap flex items-center gap-2">
+                                                        <TableCell className="flex items-center gap-2 whitespace-nowrap">
                                                             <IconMapPin className="size-4" />
                                                             {s.location}
                                                         </TableCell>
