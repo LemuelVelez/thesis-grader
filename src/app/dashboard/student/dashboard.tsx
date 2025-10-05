@@ -35,13 +35,14 @@ export default function StudentDashboard() {
                 Track your thesis sections, progress, and recent activity.
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Button asChild variant="outline" className="cursor-pointer">
+            {/* Buttons: vertical on mobile, horizontal on sm+ */}
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+              <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                 <Link to="/dashboard/student/submissions">
                   View Submissions
                 </Link>
               </Button>
-              <Button className="cursor-pointer">
+              <Button className="w-full cursor-pointer sm:w-auto">
                 <IconPencil className="mr-2 size-4" />
                 New Upload
               </Button>
@@ -85,7 +86,12 @@ export default function StudentDashboard() {
                   <CardDescription>Drag to reorder, edit targets, and assign reviewers.</CardDescription>
                 </div>
                 <div>
-                  <Button asChild size="sm" variant="outline" className="cursor-pointer">
+                  <Button
+                    asChild
+                    size="sm"
+                    variant="outline"
+                    className="w-full cursor-pointer sm:w-auto"
+                  >
                     <Link to="/dashboard/student/submissions">Go to Submissions</Link>
                   </Button>
                 </div>
