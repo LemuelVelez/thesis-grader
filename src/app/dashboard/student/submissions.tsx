@@ -73,13 +73,12 @@ export default function StudentSubmissions() {
                                 Upload, track, and download your submitted sections.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
-                                <Link to="/dashboard/student">
-                                    Back to Dashboard
-                                </Link>
+                        {/* Buttons: vertical on mobile, horizontal on sm+ */}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
+                                <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
-                            <Button className="cursor-pointer">
+                            <Button className="w-full cursor-pointer sm:w-auto">
                                 <IconFilePlus className="mr-2 size-4" />
                                 New Submission
                             </Button>
@@ -95,17 +94,22 @@ export default function StudentSubmissions() {
 
                     {/* Controls */}
                     <Card>
-                        <CardHeader className="gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        <CardHeader className="gap-3 sm:flex-row sm:items-end sm:justify-between">
                             <div>
                                 <CardTitle className="text-base sm:text-lg">Submissions</CardTitle>
                                 <CardDescription>Filter by status, reviewer, or section name.</CardDescription>
                             </div>
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <div className="flex items-center gap-2">
+
+                            {/* Controls: vertical on mobile, horizontal on sm+ */}
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                {/* Status select */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
                                     <IconFilter className="size-4 text-muted-foreground" />
-                                    <Label htmlFor="status" className="sr-only">Status</Label>
+                                    <Label htmlFor="status" className="sr-only">
+                                        Status
+                                    </Label>
                                     <Select value={status} onValueChange={(v) => setStatus(v as any)}>
-                                        <SelectTrigger id="status" className="w-36">
+                                        <SelectTrigger id="status" className="w-full sm:w-36 cursor-pointer">
                                             <SelectValue placeholder="All statuses" />
                                         </SelectTrigger>
                                         <SelectContent align="end">
@@ -115,21 +119,26 @@ export default function StudentSubmissions() {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    <Label htmlFor="q" className="sr-only">Search</Label>
+
+                                {/* Search */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
+                                    <Label htmlFor="q" className="sr-only">
+                                        Search
+                                    </Label>
                                     <Input
                                         id="q"
                                         value={query}
                                         placeholder="Search sections, reviewers…"
                                         onChange={(e) => setQuery(e.target.value)}
-                                        className="w-64"
+                                        className="w-full sm:w-64"
                                     />
                                 </div>
                             </div>
                         </CardHeader>
                         <Separator />
                         <CardContent className="pt-4">
-                            <div className="overflow-hidden rounded-lg border">
+                            {/* Table: allow horizontal scroll on small screens */}
+                            <div className="overflow-x-auto rounded-lg border">
                                 <Table>
                                     <TableHeader className="bg-muted">
                                         <TableRow>
@@ -143,7 +152,7 @@ export default function StudentSubmissions() {
                                     <TableBody>
                                         {filtered.length === 0 ? (
                                             <TableRow>
-                                                <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
+                                                <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                                                     No submissions match your filters.
                                                 </TableCell>
                                             </TableRow>
@@ -161,12 +170,13 @@ export default function StudentSubmissions() {
                                                         )}
                                                     </TableCell>
                                                     <TableCell className="text-right">
-                                                        <div className="flex justify-end gap-2">
-                                                            <Button size="sm" variant="outline" className="cursor-pointer">
+                                                        {/* Actions: vertical on mobile, horizontal on sm+ */}
+                                                        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:justify-end">
+                                                            <Button size="sm" variant="outline" className="w-full cursor-pointer sm:w-auto">
                                                                 <IconEye className="mr-2 size-4" />
                                                                 View
                                                             </Button>
-                                                            <Button size="sm" className="cursor-pointer" variant="outline">
+                                                            <Button size="sm" variant="outline" className="w-full cursor-pointer sm:w-auto">
                                                                 <IconDownload className="mr-2 size-4" />
                                                                 PDF
                                                             </Button>
