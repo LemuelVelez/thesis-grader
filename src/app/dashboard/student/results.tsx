@@ -82,6 +82,9 @@ export default function StudentResults() {
         referenceNo: "RG-2025-1002-0007",
     }
 
+    const inFavor = votesSummary["Pass"] + votesSummary["Pass w/ Revisions"]
+    const totalVotes = PANEL_VOTES.length
+
     return (
         <SidebarProvider>
             <AppSidebar />
@@ -96,11 +99,12 @@ export default function StudentResults() {
                                 Official grade, decision, and rubric breakdown from the panel review.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
+                        {/* Buttons: vertical on mobile, horizontal on sm+ */}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
-                            <Button variant="outline" className="cursor-pointer">
+                            <Button variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <IconDownload className="mr-2 size-4" />
                                 Download Result Slip (PDF)
                             </Button>
@@ -136,14 +140,22 @@ export default function StudentResults() {
                                 </div>
                             </CardHeader>
                             <CardContent>
-                                <div className="flex items-center gap-3">
+                                <div className="flex flex-wrap items-center gap-3">
                                     {decision.tone === "ok" && <Badge className="whitespace-nowrap">Passed (Minor Revisions)</Badge>}
-                                    {decision.tone === "warn" && <Badge variant="secondary" className="whitespace-nowrap">Conditional Pass (Major Revisions)</Badge>}
-                                    {decision.tone === "err" && <Badge variant="destructive" className="whitespace-nowrap">Failed / Re-defend</Badge>}
+                                    {decision.tone === "warn" && (
+                                        <Badge variant="secondary" className="whitespace-nowrap">
+                                            Conditional Pass (Major Revisions)
+                                        </Badge>
+                                    )}
+                                    {decision.tone === "err" && (
+                                        <Badge variant="destructive" className="whitespace-nowrap">
+                                            Failed / Re-defend
+                                        </Badge>
+                                    )}
                                     <span className="text-sm text-muted-foreground">Ref #: {release.referenceNo}</span>
                                 </div>
                                 <p className="text-muted-foreground mt-1 text-xs">
-                                    Released on {new Date(release.releasedAt).toLocaleString()}.
+                                    Released on {new Date(release.releasedAt).toLocaleString(undefined, { hour12: true })}.
                                 </p>
                             </CardContent>
                         </Card>
@@ -159,7 +171,7 @@ export default function StudentResults() {
                             </CardHeader>
                             <CardContent>
                                 <div className="text-2xl font-bold">
-                                    {votesSummary["Pass"] + votesSummary["Pass w/ Revisions"]}/3 in favor
+                                    {inFavor}/{totalVotes} in favor
                                 </div>
                                 <p className="text-muted-foreground mt-1 text-xs">
                                     Chair + members tallies (see detail below).
@@ -170,13 +182,14 @@ export default function StudentResults() {
 
                     {/* Rubric breakdown */}
                     <Card>
-                        <CardHeader className="gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        {/* Header: stack on mobile, horizontal on sm+ */}
+                        <CardHeader className="gap-3 sm:flex-row sm:items-end sm:justify-between">
                             <div>
                                 <CardTitle className="text-base sm:text-lg">Rubric Breakdown</CardTitle>
                                 <CardDescription>Weighted per-criterion scores based on the official rubric.</CardDescription>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <Button variant="outline" className="cursor-pointer">
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                <Button variant="outline" className="w-full cursor-pointer sm:w-auto">
                                     <IconDownload className="mr-2 size-4" />
                                     Download Detailed Rubric (PDF)
                                 </Button>
@@ -184,7 +197,7 @@ export default function StudentResults() {
                         </CardHeader>
                         <Separator />
                         <CardContent className="pt-4">
-                            <div className="overflow-hidden rounded-lg border">
+                            <div className="overflow-x-auto rounded-lg border">
                                 <Table>
                                     <TableHeader className="bg-muted">
                                         <TableRow>
@@ -196,7 +209,8 @@ export default function StudentResults() {
                                     </TableHeader>
                                     <TableBody>
                                         {CRITERIA.map((c) => {
-                                            const weighted = Math.round(((c.score * c.weight) / 100 + Number.EPSILON) * 100) / 100
+                                            const weighted =
+                                                Math.round(((c.score * c.weight) / 100 + Number.EPSILON) * 100) / 100
                                             return (
                                                 <TableRow key={c.id}>
                                                     <TableCell>{c.name}</TableCell>
@@ -226,7 +240,7 @@ export default function StudentResults() {
                         </CardHeader>
                         <Separator />
                         <CardContent className="pt-4">
-                            <div className="overflow-hidden rounded-lg border">
+                            <div className="overflow-x-auto rounded-lg border">
                                 <Table>
                                     <TableHeader className="bg-muted">
                                         <TableRow>
@@ -243,7 +257,9 @@ export default function StudentResults() {
                                                 <TableCell className="whitespace-nowrap">{p.role}</TableCell>
                                                 <TableCell className="whitespace-nowrap">
                                                     {p.vote === "Pass" && <Badge>Pass</Badge>}
-                                                    {p.vote === "Pass w/ Revisions" && <Badge variant="secondary">Pass w/ Revisions</Badge>}
+                                                    {p.vote === "Pass w/ Revisions" && (
+                                                        <Badge variant="secondary">Pass w/ Revisions</Badge>
+                                                    )}
                                                     {p.vote === "Re-defend" && <Badge variant="destructive">Re-defend</Badge>}
                                                 </TableCell>
                                                 <TableCell className="text-muted-foreground">{p.remarks ?? "—"}</TableCell>
@@ -253,13 +269,15 @@ export default function StudentResults() {
                                 </Table>
                             </div>
 
-                            <div className="mt-4 rounded-md border p-3 text-sm text-muted-foreground flex items-start gap-2">
-                                <IconInfoCircle className="size-4 mt-0.5" />
+                            <div className="mt-4 flex items-start gap-2 rounded-md border p-3 text-sm text-muted-foreground">
+                                <IconInfoCircle className="mt-0.5 size-4" />
                                 <span>
-                                    For revision items, please see the annoted PDF from your panel and the comments thread in{" "}
+                                    For revision items, please see the annotated PDF from your panel and the comments
+                                    thread in{" "}
                                     <Link to="/dashboard/student/notifications" className="underline underline-offset-2">
                                         Notifications
-                                    </Link>.
+                                    </Link>
+                                    .
                                 </span>
                             </div>
                         </CardContent>

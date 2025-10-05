@@ -1,4 +1,3 @@
-// src/app/dashboard/student/schedule.tsx
 import * as React from "react"
 import { Link } from "react-router-dom"
 import { AppSidebar } from "@/components/student-sidebar"
