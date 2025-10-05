@@ -22,6 +22,7 @@ import {
     IconShieldCheckered,
     IconUserCircle,
     IconTrash,
+    IconUpload,
 } from "@tabler/icons-react"
 
 export default function StudentSettings() {
@@ -32,6 +33,8 @@ export default function StudentSettings() {
     const [program, setProgram] = React.useState("BS Computer Science")
     const [email] = React.useState("juan.delacruz@jrmsu.edu.ph")
     const [phone, setPhone] = React.useState("")
+    const [avatarUrl, setAvatarUrl] = React.useState<string>("/avatars/shadcn.jpg")
+    const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
     // Security
     const [pwdCurrent, setPwdCurrent] = React.useState("")
@@ -54,6 +57,14 @@ export default function StudentSettings() {
 
     function saveProfile() {
         setBanner({ kind: "ok", text: "Profile saved. Changes will reflect in your next session." })
+    }
+
+    function onPickAvatar(e: React.ChangeEvent<HTMLInputElement>) {
+        const file = e.target.files?.[0]
+        if (!file) return
+        const url = URL.createObjectURL(file)
+        setAvatarUrl(url)
+        setBanner({ kind: "ok", text: "Avatar selected. Save profile to apply." })
     }
 
     function saveNotifications() {
@@ -93,8 +104,8 @@ export default function StudentSettings() {
                                 Manage your account information, security, notifications, and privacy.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
                         </div>
@@ -124,12 +135,26 @@ export default function StudentSettings() {
                             <div className="flex flex-col gap-6 sm:flex-row">
                                 <div className="flex items-center gap-4">
                                     <Avatar className="size-16">
-                                        <AvatarImage src="/avatars/shadcn.jpg" alt="Student avatar" />
+                                        <AvatarImage src={avatarUrl} alt="Student avatar" />
                                         <AvatarFallback>JD</AvatarFallback>
                                     </Avatar>
-                                    <div className="flex gap-2">
-                                        <Button variant="outline" className="cursor-pointer">Change</Button>
-                                        <Button variant="ghost" className="cursor-pointer">Remove</Button>
+                                    {/* Single Upload button (replaces Change/Remove) */}
+                                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={onPickAvatar}
+                                        />
+                                        <Button
+                                            variant="outline"
+                                            className="w-full cursor-pointer sm:w-auto"
+                                            onClick={() => fileInputRef.current?.click()}
+                                        >
+                                            <IconUpload className="mr-2 size-4" />
+                                            Upload
+                                        </Button>
                                     </div>
                                 </div>
 
@@ -173,8 +198,8 @@ export default function StudentSettings() {
                                 </div>
                             </div>
                         </CardContent>
-                        <CardFooter className="justify-end">
-                            <Button onClick={saveProfile} className="cursor-pointer">
+                        <CardFooter className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end">
+                            <Button onClick={saveProfile} className="w-full cursor-pointer sm:w-auto">
                                 <IconUserCircle className="mr-2 size-4" />
                                 Save Profile
                             </Button>
@@ -188,7 +213,7 @@ export default function StudentSettings() {
                             <CardDescription>Update your password regularly to keep your account secure.</CardDescription>
                         </CardHeader>
                         <Separator />
-                        <CardContent className="pt-4 grid gap-4 sm:grid-cols-3">
+                        <CardContent className="grid gap-4 pt-4 sm:grid-cols-3">
                             <div className="space-y-2">
                                 <Label htmlFor="currentPwd">Current password</Label>
                                 <Input
@@ -216,13 +241,13 @@ export default function StudentSettings() {
                                     onChange={(e) => setPwdConfirm(e.target.value)}
                                 />
                             </div>
-                            <div className="flex items-center gap-2 sm:col-span-3">
+                            <div className="sm:col-span-3 flex items-center gap-2">
                                 <Switch id="showPwd" checked={showPwd} onCheckedChange={setShowPwd} />
                                 <Label htmlFor="showPwd">Show passwords</Label>
                             </div>
                         </CardContent>
-                        <CardFooter className="justify-end">
-                            <Button onClick={changePassword} className="cursor-pointer">
+                        <CardFooter className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end">
+                            <Button onClick={changePassword} className="w-full cursor-pointer sm:w-auto">
                                 <IconKey className="mr-2 size-4" />
                                 Update Password
                             </Button>
@@ -236,7 +261,7 @@ export default function StudentSettings() {
                             <CardDescription>Choose how you want to receive updates (submission status, schedules, results).</CardDescription>
                         </CardHeader>
                         <Separator />
-                        <CardContent className="pt-4 grid gap-4 sm:grid-cols-2">
+                        <CardContent className="grid gap-4 pt-4 sm:grid-cols-2">
                             <div className="flex items-center justify-between rounded-lg border p-3">
                                 <div className="flex items-center gap-2">
                                     <IconBell className="size-4" />
@@ -272,8 +297,8 @@ export default function StudentSettings() {
                                 </Select>
                             </div>
                         </CardContent>
-                        <CardFooter className="justify-end">
-                            <Button onClick={saveNotifications} className="cursor-pointer">
+                        <CardFooter className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end">
+                            <Button onClick={saveNotifications} className="w-full cursor-pointer sm:w-auto">
                                 <IconBell className="mr-2 size-4" />
                                 Save Preferences
                             </Button>
@@ -289,13 +314,11 @@ export default function StudentSettings() {
                             </CardDescription>
                         </CardHeader>
                         <Separator />
-                        <CardContent className="pt-4 grid gap-4">
+                        <CardContent className="grid gap-4 pt-4">
                             <div className="flex items-center justify-between rounded-lg border p-3">
                                 <div className="space-y-0.5">
                                     <div className="font-medium">Share manuscript metadata with adviser</div>
-                                    <div className="text-xs text-muted-foreground">
-                                        Title, keywords, and revision status for guidance.
-                                    </div>
+                                    <div className="text-xs text-muted-foreground">Title, keywords, and revision status for guidance.</div>
                                 </div>
                                 <Switch checked={shareWithAdviser} onCheckedChange={setShareWithAdviser} />
                             </div>
@@ -315,17 +338,17 @@ export default function StudentSettings() {
                             </div>
                         </CardContent>
                         <CardFooter className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="flex gap-2">
-                                <Button variant="outline" className="cursor-pointer">
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                                <Button variant="outline" className="w-full cursor-pointer sm:w-auto">
                                     <IconDownload className="mr-2 size-4" />
                                     Download My Data (JSON)
                                 </Button>
-                                <Button variant="destructive" className="cursor-pointer">
+                                <Button variant="destructive" className="w-full cursor-pointer sm:w-auto">
                                     <IconTrash className="mr-2 size-4" />
                                     Request Account Deletion
                                 </Button>
                             </div>
-                            <Button onClick={savePrivacy} className="cursor-pointer">
+                            <Button onClick={savePrivacy} className="w-full cursor-pointer sm:w-auto">
                                 <IconShieldCheckered className="mr-2 size-4" />
                                 Save Privacy Settings
                             </Button>
