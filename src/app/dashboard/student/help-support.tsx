@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// src/app/dashboard/student/help-support.tsx
 import * as React from "react"
 import { Link } from "react-router-dom"
 import { AppSidebar } from "@/components/student-sidebar"
@@ -95,8 +94,9 @@ export default function StudentHelpSupport() {
                             <h1 className="text-xl font-semibold leading-tight sm:text-2xl">Help &amp; Support</h1>
                             <p className="text-muted-foreground text-sm">Find answers quickly or reach out to us.</p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <Button asChild variant="outline" className="cursor-pointer">
+                        {/* Buttons: vertical on mobile, horizontal on sm+ */}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                            <Button asChild variant="outline" className="w-full cursor-pointer sm:w-auto">
                                 <Link to="/dashboard/student">Back to Dashboard</Link>
                             </Button>
                         </div>
@@ -104,13 +104,14 @@ export default function StudentHelpSupport() {
 
                     {/* Controls (vertical on mobile) */}
                     <Card>
-                        <CardHeader className="gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        <CardHeader className="gap-3 sm:flex-row sm:items-end sm:justify-between">
                             <div>
                                 <CardTitle className="text-base sm:text-lg">Search FAQs</CardTitle>
                                 <CardDescription>Filter by category or search keywords.</CardDescription>
                             </div>
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <div className="flex items-center gap-2">
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                {/* Search */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
                                     <IconSearch className="size-4 text-muted-foreground" />
                                     <Label htmlFor="q" className="sr-only">
                                         Search
@@ -120,16 +121,17 @@ export default function StudentHelpSupport() {
                                         placeholder="Search questions…"
                                         value={q}
                                         onChange={(e) => setQ(e.target.value)}
-                                        className="w-64"
+                                        className="w-full sm:w-64"
                                     />
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                {/* Category */}
+                                <div className="flex w-full items-center gap-2 sm:w-auto">
                                     <Label htmlFor="cat" className="sr-only">
                                         Category
                                     </Label>
                                     <Select value={cat} onValueChange={(v) => setCat(v as any)}>
-                                        <SelectTrigger id="cat" className="w-48 cursor-pointer">
+                                        <SelectTrigger id="cat" className="w-full cursor-pointer sm:w-48">
                                             <SelectValue placeholder="All categories" />
                                         </SelectTrigger>
                                         <SelectContent align="end">
@@ -147,7 +149,7 @@ export default function StudentHelpSupport() {
                         </CardHeader>
                         <Separator />
                         <CardContent className="pt-4">
-                            {/* Responsive grid: vertical stack on mobile */}
+                            {/* Responsive grid: single column on mobile, 3 cols on lg+ */}
                             <div className="grid gap-6 lg:grid-cols-3">
                                 {/* Quick actions */}
                                 <div className="space-y-4">
@@ -157,19 +159,19 @@ export default function StudentHelpSupport() {
                                             <CardDescription>Fast ways to get help</CardDescription>
                                         </CardHeader>
                                         <CardContent className="grid gap-2">
-                                            <Button variant="outline" className="justify-start cursor-pointer">
+                                            <Button variant="outline" className="w-full justify-start cursor-pointer">
                                                 <IconMessageCircle2 className="mr-2 size-4" />
                                                 Open a Ticket
                                             </Button>
-                                            <Button variant="outline" className="justify-start cursor-pointer">
+                                            <Button variant="outline" className="w-full justify-start cursor-pointer">
                                                 <IconMail className="mr-2 size-4" />
                                                 Email Support
                                             </Button>
-                                            <Button variant="outline" className="justify-start cursor-pointer">
+                                            <Button variant="outline" className="w-full justify-start cursor-pointer">
                                                 <IconPhone className="mr-2 size-4" />
                                                 Call Coordinator
                                             </Button>
-                                            <Button asChild variant="ghost" className="justify-start cursor-pointer">
+                                            <Button asChild variant="ghost" className="w-full justify-start cursor-pointer">
                                                 <Link to="/dashboard/student/submissions">
                                                     <IconFileDescription className="mr-2 size-4" />
                                                     Go to Submissions
@@ -178,8 +180,8 @@ export default function StudentHelpSupport() {
                                         </CardContent>
                                     </Card>
 
-                                    <div className="rounded-md border p-3 text-xs text-muted-foreground flex items-start gap-2">
-                                        <IconAlertCircle className="size-4 mt-0.5" />
+                                    <div className="flex items-start gap-2 rounded-md border p-3 text-xs text-muted-foreground">
+                                        <IconAlertCircle className="mt-0.5 size-4" />
                                         <span>
                                             Tip: For revision items after defense, check{" "}
                                             <Link to="/dashboard/student/results" className="underline underline-offset-2">
