@@ -1,7 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
 import * as React from "react"
+import { useRouter } from "next/navigation"
 import { IconDotsVertical, IconLogout, IconUserCircle } from "@tabler/icons-react"
+
+import { useAuth } from "@/hooks/use-auth"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
@@ -16,16 +20,21 @@ import {
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar"
 
 type NavUserProps = {
+    /**
+     * Optional override user (if you want to pass user manually).
+     * If not provided, this component will use `useAuth()` to get the current user.
+     */
     user?: {
         name?: string | null
         email?: string | null
         avatar?: string | null
+        avatar_key?: string | null
     }
     /**
-     * Optional handler if you want the "Log out" item to actually do something.
-     * If not provided, the menu item will be disabled.
+     * Optional handler if you want the "Log out" item to do something custom.
+     * If not provided, NavUser will attempt POST /api/auth/logout and then redirect to "/".
      */
-    onLogout?: () => void
+    onLogout?: () => Promise<void> | void
 }
 
 function getInitials(name: string) {
@@ -38,36 +47,81 @@ function getInitials(name: string) {
     return init || n.slice(0, 2).toUpperCase()
 }
 
-export function NavUser({ user, onLogout }: NavUserProps) {
+function inferAvatarUrl(u: any): string {
+    // Prefer explicit avatar url if provided.
+    const direct = String(u?.avatar ?? "").trim()
+    if (direct) return direct
+
+    // If avatar_key is already a full URL or a public path, allow it.
+    const key = String(u?.avatar_key ?? "").trim()
+    if (!key) return ""
+    if (/^https?:\/\//i.test(key)) return key
+    if (key.startsWith("/")) return key
+
+    // Otherwise we don't know your avatar serving route (S3 signed URL, etc.).
+    // Returning empty prevents broken-image icons.
+    return ""
+}
+
+export function NavUser({ user: userProp, onLogout }: NavUserProps) {
+    const router = useRouter()
     const { isMobile } = useSidebar()
 
-    const name = String(user?.name ?? "Account")
-    const email = String(user?.email ?? "")
-    const avatar = user?.avatar ?? ""
+    // Current user from auth hook (works with your existing NavMain pattern)
+    const { loading, user: authUser } = useAuth()
+
+    // Use prop override if passed; otherwise use the authenticated user.
+    const u: any = userProp ?? authUser ?? null
+
+    // Single active indicator like other sidebar items:
+    // drive `isActive` based on dropdown open state (not data-state classes),
+    // to avoid duplicate active visuals.
+    const [open, setOpen] = React.useState(false)
+
+    const name = String(u?.name ?? "Account")
+    const email = String(u?.email ?? "")
+    const avatarUrl = React.useMemo(() => inferAvatarUrl(u), [u])
 
     const initials = React.useMemo(() => getInitials(name), [name])
+
+    const handleLogout = React.useCallback(async () => {
+        try {
+            if (onLogout) {
+                await onLogout()
+            } else {
+                // Best-effort default logout.
+                // If you already have an /api/auth/logout route, this will work.
+                // If not, it fails silently and we still redirect away.
+                await fetch("/api/auth/logout", { method: "POST" }).catch(() => null)
+            }
+        } finally {
+            setOpen(false)
+            router.push("/")
+            router.refresh()
+        }
+    }, [onLogout, router])
+
+    // While auth is loading and no userProp override is provided, show a stable UI
+    const showLoading = !userProp && loading
 
     return (
         <SidebarMenu>
             <SidebarMenuItem>
-                <DropdownMenu>
+                <DropdownMenu open={open} onOpenChange={setOpen}>
                     <DropdownMenuTrigger asChild>
-                        <SidebarMenuButton
-                            size="lg"
-                            className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-                        >
+                        <SidebarMenuButton size="lg" isActive={open}>
                             <Avatar className="h-8 w-8 rounded-lg grayscale">
-                                <AvatarImage src={avatar || undefined} alt={name} />
+                                <AvatarImage src={avatarUrl || undefined} alt={name} />
                                 <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                             </Avatar>
 
                             <div className="grid flex-1 text-left text-sm leading-tight">
-                                <span className="truncate font-medium">{name}</span>
-                                {email ? (
-                                    <span className="truncate text-xs text-muted-foreground">{email}</span>
-                                ) : (
-                                    <span className="truncate text-xs text-muted-foreground">Signed in</span>
-                                )}
+                                <span className="truncate font-medium">
+                                    {showLoading ? "Loading..." : name}
+                                </span>
+                                <span className="truncate text-xs text-muted-foreground">
+                                    {showLoading ? " " : email || "Signed in"}
+                                </span>
                             </div>
 
                             <IconDotsVertical className="ml-auto size-4" />
@@ -83,12 +137,14 @@ export function NavUser({ user, onLogout }: NavUserProps) {
                         <DropdownMenuLabel className="p-0 font-normal">
                             <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
                                 <Avatar className="h-8 w-8 rounded-lg">
-                                    <AvatarImage src={avatar || undefined} alt={name} />
+                                    <AvatarImage src={avatarUrl || undefined} alt={name} />
                                     <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                 </Avatar>
 
                                 <div className="grid flex-1 text-left text-sm leading-tight">
-                                    <span className="truncate font-medium">{name}</span>
+                                    <span className="truncate font-medium">
+                                        {showLoading ? "Loading..." : name}
+                                    </span>
                                     {email ? (
                                         <span className="truncate text-xs text-muted-foreground">{email}</span>
                                     ) : null}
@@ -108,11 +164,11 @@ export function NavUser({ user, onLogout }: NavUserProps) {
                         <DropdownMenuSeparator />
 
                         <DropdownMenuItem
-                            disabled={!onLogout}
+                            disabled={showLoading || !u}
                             onSelect={(e) => {
-                                if (!onLogout) return
                                 e.preventDefault()
-                                onLogout()
+                                if (showLoading || !u) return
+                                void handleLogout()
                             }}
                         >
                             <IconLogout />
@@ -125,8 +181,4 @@ export function NavUser({ user, onLogout }: NavUserProps) {
     )
 }
 
-/**
- * Fixes: `import NavUser from "@/components/nav-user"` in dashboard-layout.tsx
- * while still keeping the named export available.
- */
 export default NavUser

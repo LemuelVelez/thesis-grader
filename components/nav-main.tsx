@@ -16,10 +16,30 @@ import {
 } from "@/components/ui/sidebar"
 import { useAuth } from "@/hooks/use-auth"
 
+function normalizePath(p: string) {
+    if (!p) return ""
+    if (p !== "/" && p.endsWith("/")) return p.slice(0, -1)
+    return p
+}
+
+function isRoleRootHref(href: string) {
+    // Overview links are role roots like /dashboard/admin (and optionally /dashboard)
+    const h = normalizePath(href)
+    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin)$/.test(h)
+}
+
 function isActivePath(pathname: string, href: string) {
-    if (!pathname) return false
-    if (pathname === href) return true
-    return pathname.startsWith(href + "/")
+    const p = normalizePath(pathname)
+    const h = normalizePath(href)
+    if (!p || !h) return false
+
+    if (p === h) return true
+
+    // Prevent "Overview" (role root) from being active on nested routes
+    if (isRoleRootHref(h)) return false
+
+    // All other items treat nested routes as active
+    return p.startsWith(h + "/")
 }
 
 export default function NavMain() {

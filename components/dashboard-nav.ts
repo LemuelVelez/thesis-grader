@@ -6,7 +6,6 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
     LayoutDashboard,
-    Home,
     Calendar,
     ClipboardList,
     Users,
@@ -39,28 +38,43 @@ function roleBasePath(role: string | null | undefined) {
     return "/dashboard"
 }
 
+function normalizePath(p: string) {
+    if (!p) return ""
+    if (p !== "/" && p.endsWith("/")) return p.slice(0, -1)
+    return p
+}
+
+function isRoleRootHref(href: string) {
+    const h = normalizePath(href)
+    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin)$/.test(h)
+}
+
 function isActivePath(pathname: string, href: string) {
-    if (!pathname) return false
-    if (pathname === href) return true
-    // treat nested routes as active except for the role root itself
-    return href !== "/dashboard" && pathname.startsWith(href + "/")
+    const p = normalizePath(pathname)
+    const h = normalizePath(href)
+    if (!p) return false
+
+    if (p === h) return true
+
+    // Prevent role-root "Dashboard" from being active on nested routes
+    if (isRoleRootHref(h)) return false
+
+    return p.startsWith(h + "/")
 }
 
 /**
- * Exported menu builder (so you can reuse later in Dashboard layout).
- * Uses your structure:
- *   /dashboard/student
- *   /dashboard/staff
- *   /dashboard/admin
+ * Exported menu builder.
  *
- * Includes: Overview + Settings
+ * IMPORTANT CHANGE:
+ * - "Overview" and "Dashboard" were duplicates (both represent the role root).
+ * - We now keep a single entry: "Dashboard" -> role root.
  */
 export function getDashboardNav(role: string | null | undefined): NavGroup[] {
     const base = roleBasePath(role)
 
+    // Single root entry (no duplicate Overview)
     const main: NavItem[] = [
-        { label: "Overview", href: base, icon: Home },
-        { label: "Dashboard", href: `${base}/home`, icon: LayoutDashboard },
+        { label: "Dashboard", href: base, icon: LayoutDashboard },
         { label: "Settings", href: `${base}/settings`, icon: Settings },
     ]
 
@@ -107,8 +121,8 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
         ]
     }
 
-    // Unknown role fallback (keeps UI stable)
-    return [{ title: "Main", items: [{ label: "Overview", href: "/dashboard", icon: Home }] }]
+    // Unknown role fallback (stable UI)
+    return [{ title: "Main", items: [{ label: "Dashboard", href: "/dashboard", icon: LayoutDashboard }] }]
 }
 
 export function DashboardNav() {
