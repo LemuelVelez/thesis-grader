@@ -1,3 +1,4 @@
+// components/nav-user.tsx
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
@@ -29,10 +30,11 @@ type NavUserProps = {
         email?: string | null
         avatar?: string | null
         avatar_key?: string | null
+        role?: string | null
     }
     /**
      * Optional handler if you want the "Log out" item to do something custom.
-     * If not provided, NavUser will attempt POST /api/auth/logout and then redirect to "/".
+     * If not provided, NavUser will attempt POST /api/auth/logout and then redirect to "/login".
      */
     onLogout?: () => Promise<void> | void
 }
@@ -63,46 +65,55 @@ function inferAvatarUrl(u: any): string {
     return ""
 }
 
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    return "/dashboard"
+}
+
+function settingsPathForRole(role: string | null | undefined) {
+    return `${roleBasePath(role)}/settings`
+}
+
 export function NavUser({ user: userProp, onLogout }: NavUserProps) {
     const router = useRouter()
     const { isMobile } = useSidebar()
 
-    // Current user from auth hook (works with your existing NavMain pattern)
     const { loading, user: authUser } = useAuth()
-
-    // Use prop override if passed; otherwise use the authenticated user.
     const u: any = userProp ?? authUser ?? null
 
-    // Single active indicator like other sidebar items:
-    // drive `isActive` based on dropdown open state (not data-state classes),
-    // to avoid duplicate active visuals.
     const [open, setOpen] = React.useState(false)
 
     const name = String(u?.name ?? "Account")
     const email = String(u?.email ?? "")
-    const avatarUrl = React.useMemo(() => inferAvatarUrl(u), [u])
+    const role = String(u?.role ?? "").toLowerCase() || null
 
+    const avatarUrl = React.useMemo(() => inferAvatarUrl(u), [u])
     const initials = React.useMemo(() => getInitials(name), [name])
+
+    const showLoading = !userProp && loading
+
+    const goToAccountSettings = React.useCallback(() => {
+        if (showLoading || !u) return
+        setOpen(false)
+        router.push(settingsPathForRole(role))
+    }, [router, role, showLoading, u])
 
     const handleLogout = React.useCallback(async () => {
         try {
             if (onLogout) {
                 await onLogout()
             } else {
-                // Best-effort default logout.
-                // If you already have an /api/auth/logout route, this will work.
-                // If not, it fails silently and we still redirect away.
                 await fetch("/api/auth/logout", { method: "POST" }).catch(() => null)
             }
         } finally {
             setOpen(false)
-            router.push("/")
+            router.push("/login")
             router.refresh()
         }
     }, [onLogout, router])
-
-    // While auth is loading and no userProp override is provided, show a stable UI
-    const showLoading = !userProp && loading
 
     return (
         <SidebarMenu>
@@ -116,9 +127,7 @@ export function NavUser({ user: userProp, onLogout }: NavUserProps) {
                             </Avatar>
 
                             <div className="grid flex-1 text-left text-sm leading-tight">
-                                <span className="truncate font-medium">
-                                    {showLoading ? "Loading..." : name}
-                                </span>
+                                <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
                                 <span className="truncate text-xs text-muted-foreground">
                                     {showLoading ? " " : email || "Signed in"}
                                 </span>
@@ -142,9 +151,7 @@ export function NavUser({ user: userProp, onLogout }: NavUserProps) {
                                 </Avatar>
 
                                 <div className="grid flex-1 text-left text-sm leading-tight">
-                                    <span className="truncate font-medium">
-                                        {showLoading ? "Loading..." : name}
-                                    </span>
+                                    <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
                                     {email ? (
                                         <span className="truncate text-xs text-muted-foreground">{email}</span>
                                     ) : null}
@@ -155,7 +162,13 @@ export function NavUser({ user: userProp, onLogout }: NavUserProps) {
                         <DropdownMenuSeparator />
 
                         <DropdownMenuGroup>
-                            <DropdownMenuItem disabled>
+                            <DropdownMenuItem
+                                disabled={showLoading || !u}
+                                onSelect={(e) => {
+                                    e.preventDefault()
+                                    goToAccountSettings()
+                                }}
+                            >
                                 <IconUserCircle />
                                 Account
                             </DropdownMenuItem>
