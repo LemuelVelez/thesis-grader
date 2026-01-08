@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate": "node database/migration/run.cjs",
+    "seed:admin": "node database/seeder/seed-superadmin.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.965.0",
