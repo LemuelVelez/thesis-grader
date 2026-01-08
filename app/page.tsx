@@ -11,7 +11,7 @@ export default function Page() {
       <Header />
 
       {/* overflow-x-hidden prevents the blurred background blob from creating horizontal scroll */}
-      <main className="relative overflow-x-hidden">
+      <main className="relative overflow-x-hidden mx-2">
         {/* subtle background decoration */}
         <div
           aria-hidden="true"

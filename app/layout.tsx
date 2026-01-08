@@ -5,6 +5,9 @@ import "./globals.css"
 
 import Loading from "@/components/loading"
 import { Toaster } from "@/components/ui/sonner"
+import NotFoundPage from "./404/page"
+
+export { NotFoundPage }
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

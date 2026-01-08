@@ -77,7 +77,7 @@ function ListItem({ text, type }: { text: string; type: "can" | "cannot" }) {
 export default function Roles() {
     return (
         <section id="roles" className="border-t">
-            <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
+            <div className="mx-auto px-4 py-12 sm:px-6 sm:py-16">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                         <Badge variant="secondary">Roles & permissions</Badge>
