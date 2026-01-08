@@ -17,6 +17,16 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 function formatDate(iso: string | null | undefined) {
     if (!iso) return "—"
@@ -56,6 +66,10 @@ export default function ThesisAdminClient(props: {
     const [program, setProgram] = React.useState("")
     const [term, setTerm] = React.useState("")
     const [adviserEmail, setAdviserEmail] = React.useState("")
+
+    // ✅ AlertDialog state for delete confirmation
+    const [deleteOpen, setDeleteOpen] = React.useState(false)
+    const [deleteTarget, setDeleteTarget] = React.useState<{ id: string; title: string } | null>(null)
 
     async function onCreate(e: React.FormEvent) {
         e.preventDefault()
@@ -105,10 +119,9 @@ export default function ThesisAdminClient(props: {
         }
     }
 
-    async function onDelete(groupId: string) {
+    // ✅ Actual delete handler (no window.confirm here)
+    async function doDelete(groupId: string) {
         if (busy) return
-        const ok = window.confirm("Delete this thesis group? This cannot be undone.")
-        if (!ok) return
 
         setBusy(true)
         const tId = toast.loading("Deleting thesis group...")
@@ -132,6 +145,21 @@ export default function ThesisAdminClient(props: {
         }
     }
 
+    function requestDelete(g: ThesisGroupRow) {
+        if (busy) return
+        setDeleteTarget({ id: g.id, title: g.title })
+        setDeleteOpen(true)
+    }
+
+    async function confirmDelete() {
+        if (!deleteTarget) return
+        // Keep dialog open while busy? We'll close immediately and proceed.
+        setDeleteOpen(false)
+        const id = deleteTarget.id
+        setDeleteTarget(null)
+        await doDelete(id)
+    }
+
     const prevHref =
         props.page > 1
             ? buildHref(baseHref, { q: props.q || undefined, page: String(props.page - 1), limit: String(props.limit) })
@@ -144,6 +172,40 @@ export default function ThesisAdminClient(props: {
 
     return (
         <div className="mx-auto w-full max-w-6xl space-y-6">
+            {/* ✅ Global AlertDialog (controlled) */}
+            <AlertDialog
+                open={deleteOpen}
+                onOpenChange={(open) => {
+                    if (busy) return
+                    setDeleteOpen(open)
+                    if (!open) setDeleteTarget(null)
+                }}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete thesis group?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This action cannot be undone. This will permanently delete{" "}
+                            <span className="font-medium">{deleteTarget?.title ?? "this thesis group"}</span> and its related data.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={busy} className="cursor-pointer">Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={busy || !deleteTarget}
+                            onClick={(e) => {
+                                e.preventDefault()
+                                confirmDelete()
+                            }}
+                            className="bg-destructive cursor-pointer text-white hover:bg-destructive/90"
+                        >
+                            {busy ? "Deleting..." : "Delete"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
             <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                 <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">
@@ -354,7 +416,7 @@ export default function ThesisAdminClient(props: {
                                                     variant="destructive"
                                                     size="sm"
                                                     disabled={busy}
-                                                    onClick={() => onDelete(g.id)}
+                                                    onClick={() => requestDelete(g)}
                                                 >
                                                     <Trash2 className="mr-2 h-4 w-4" />
                                                     Delete
