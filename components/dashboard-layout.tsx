@@ -14,13 +14,15 @@ import DashboardHeader from "@/components/dashboard-header"
 import AppSidebarHeader from "@/components/sidebar-header"
 import NavMain from "@/components/nav-main"
 import NavUser from "@/components/nav-user"
+import { cn } from "@/lib/utils"
 
 type DashboardLayoutProps = {
     title?: string
+    mainClassName?: string
     children: React.ReactNode
 }
 
-export default function DashboardLayout({ title, children }: DashboardLayoutProps) {
+export default function DashboardLayout({ title, mainClassName, children }: DashboardLayoutProps) {
     return (
         <SidebarProvider defaultOpen>
             <Sidebar variant="inset" collapsible="icon">
@@ -41,7 +43,7 @@ export default function DashboardLayout({ title, children }: DashboardLayoutProp
                 <DashboardHeader title={title} />
 
                 {/* ✅ prevent page-level horizontal scroll; tables should scroll inside their own wrappers */}
-                <main className="flex-1 min-w-0 overflow-x-hidden p-4 md:p-6">
+                <main className={cn("flex-1 min-w-0 overflow-x-hidden p-4 md:p-6", mainClassName)}>
                     {children}
                 </main>
             </SidebarInset>

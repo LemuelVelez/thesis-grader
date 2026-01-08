@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { env } from "@/lib/env"
 
@@ -33,6 +33,20 @@ export async function createPresignedPutUrl(opts: {
         Bucket: env.S3_BUCKET_NAME,
         Key: opts.key,
         ContentType: opts.contentType,
+    })
+
+    const url = await getSignedUrl(s3, cmd, { expiresIn: opts.expiresInSeconds ?? 60 })
+    return url
+}
+
+export async function createPresignedGetUrl(opts: {
+    key: string
+    expiresInSeconds?: number
+}) {
+    const s3 = getS3Client()
+    const cmd = new GetObjectCommand({
+        Bucket: env.S3_BUCKET_NAME,
+        Key: opts.key,
     })
 
     const url = await getSignedUrl(s3, cmd, { expiresIn: opts.expiresInSeconds ?? 60 })
