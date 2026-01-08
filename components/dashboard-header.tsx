@@ -22,9 +22,10 @@ export default function DashboardHeader({ title, rightSlot }: DashboardHeaderPro
                 )}
             </div>
 
-            {/* Right side actions + user dropdown */}
             <div className="flex items-center gap-2">
                 {rightSlot}
+
+                {/* ✅ user dropdown in the header */}
                 <NavUser variant="header" />
             </div>
         </header>

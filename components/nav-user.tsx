@@ -41,11 +41,7 @@ type NavUserProps = {
     }
     onLogout?: () => Promise<void> | void
 
-    /**
-     * Where this component is rendered.
-     * - "sidebar": original layout (shows name/email in trigger)
-     * - "header": compact trigger (avatar only) + dropdown opens BELOW header
-     */
+    /** ✅ NEW: render style */
     variant?: "sidebar" | "header"
 }
 
@@ -146,13 +142,58 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
         }
     }, [loggingOut, onLogout, router])
 
-    // ✅ dropdown placement:
-    // - header: always open BELOW trigger
-    // - sidebar: original behavior (mobile bottom, desktop right)
-    const dropdownSide: "bottom" | "right" = variant === "header" ? "bottom" : isMobile ? "bottom" : "right"
+    const dropdownContent = (
+        <DropdownMenuContent
+            className="min-w-56 max-w-[calc(100vw-1rem)] rounded-lg"
+            side={variant === "header" ? "bottom" : isMobile ? "bottom" : "right"}
+            align="end"
+            sideOffset={8}
+        >
+            <DropdownMenuLabel className="p-0 font-normal">
+                <div className="flex items-center gap-2 px-2 py-2 text-left text-sm min-w-0">
+                    <Avatar className="h-8 w-8 rounded-lg">
+                        <AvatarImage src={avatarUrl || undefined} alt={name} />
+                        <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
+                    </Avatar>
 
-    const contentClass =
-        "min-w-56 rounded-lg max-w-[calc(100vw-16px)]"
+                    <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
+                        <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
+                        {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
+                    </div>
+                </div>
+            </DropdownMenuLabel>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuGroup>
+                <DropdownMenuItem
+                    disabled={showLoading || !u}
+                    onSelect={(e) => {
+                        e.preventDefault()
+                        goToAccountSettings()
+                    }}
+                >
+                    <IconUserCircle />
+                    Account
+                </DropdownMenuItem>
+            </DropdownMenuGroup>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+                disabled={showLoading || !u}
+                onSelect={(e) => {
+                    e.preventDefault()
+                    if (showLoading || !u) return
+                    setMenuOpen(false)
+                    setLogoutOpen(true)
+                }}
+            >
+                <IconLogout />
+                Log out
+            </DropdownMenuItem>
+        </DropdownMenuContent>
+    )
 
     return (
         <>
@@ -160,11 +201,10 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                 <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
                     <DropdownMenuTrigger asChild>
                         <Button
-                            type="button"
                             variant="ghost"
                             size="icon"
                             className="h-9 w-9 rounded-full"
-                            aria-label="Account menu"
+                            aria-label="User menu"
                         >
                             <Avatar className="h-8 w-8 rounded-full">
                                 <AvatarImage src={avatarUrl || undefined} alt={name} />
@@ -172,57 +212,7 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                             </Avatar>
                         </Button>
                     </DropdownMenuTrigger>
-
-                    <DropdownMenuContent
-                        className={contentClass}
-                        side={dropdownSide}
-                        align="end"
-                        sideOffset={8}
-                    >
-                        <DropdownMenuLabel className="p-0 font-normal">
-                            <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                                <Avatar className="h-8 w-8 rounded-lg">
-                                    <AvatarImage src={avatarUrl || undefined} alt={name} />
-                                    <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
-                                </Avatar>
-
-                                <div className="grid flex-1 text-left text-sm leading-tight min-w-0">
-                                    <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
-                                    {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
-                                </div>
-                            </div>
-                        </DropdownMenuLabel>
-
-                        <DropdownMenuSeparator />
-
-                        <DropdownMenuGroup>
-                            <DropdownMenuItem
-                                disabled={showLoading || !u}
-                                onSelect={(e) => {
-                                    e.preventDefault()
-                                    goToAccountSettings()
-                                }}
-                            >
-                                <IconUserCircle />
-                                Account
-                            </DropdownMenuItem>
-                        </DropdownMenuGroup>
-
-                        <DropdownMenuSeparator />
-
-                        <DropdownMenuItem
-                            disabled={showLoading || !u}
-                            onSelect={(e) => {
-                                e.preventDefault()
-                                if (showLoading || !u) return
-                                setMenuOpen(false)
-                                setLogoutOpen(true)
-                            }}
-                        >
-                            <IconLogout />
-                            Log out
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
+                    {dropdownContent}
                 </DropdownMenu>
             ) : (
                 <SidebarMenu>
@@ -235,7 +225,7 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                                         <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                     </Avatar>
 
-                                    <div className="grid flex-1 text-left text-sm leading-tight">
+                                    <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
                                         <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
                                         <span className="truncate text-xs text-muted-foreground">
                                             {showLoading ? " " : email || "Signed in"}
@@ -246,20 +236,22 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                                 </SidebarMenuButton>
                             </DropdownMenuTrigger>
 
+                            {/* original sidebar dropdown behavior */}
                             <DropdownMenuContent
-                                className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg max-w-[calc(100vw-16px)]"
-                                side={dropdownSide}
+                                className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg"
+                                side={isMobile ? "bottom" : "right"}
                                 align="end"
                                 sideOffset={4}
                             >
+                                {/* reuse same content, but match sidebar width behavior */}
                                 <DropdownMenuLabel className="p-0 font-normal">
-                                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm min-w-0">
                                         <Avatar className="h-8 w-8 rounded-lg">
                                             <AvatarImage src={avatarUrl || undefined} alt={name} />
                                             <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                         </Avatar>
 
-                                        <div className="grid flex-1 text-left text-sm leading-tight">
+                                        <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
                                             <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
                                             {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
                                         </div>

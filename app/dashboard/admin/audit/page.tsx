@@ -195,7 +195,6 @@ export default async function AdminAuditPage({
     if (actor) {
         params.push(`%${actor.toLowerCase()}%`)
         const p = `$${params.length}`
-        // ✅ fixed missing closing paren
         whereParts.push(`(lower(coalesce(u.name,'')) like ${p} or lower(coalesce(u.email,'')) like ${p})`)
     }
 
@@ -283,8 +282,8 @@ export default async function AdminAuditPage({
 
     return (
         <DashboardLayout title="Audit Logs">
-            {/* ✅ prevent page-level horizontal overflow */}
-            <div className="space-y-4 max-w-full overflow-x-hidden">
+            {/* Prevent page-level overflow; table itself will scroll horizontally */}
+            <div className="space-y-4 w-full min-w-0 overflow-x-hidden">
                 <Card>
                     <CardHeader className="pb-3">
                         <CardTitle>Audit Logs</CardTitle>
@@ -297,40 +296,16 @@ export default async function AdminAuditPage({
                         </CardDescription>
                     </CardHeader>
 
-                    <CardContent className="pt-0">
-                        {/* ✅ Vertical / responsive filter layout */}
-                        <form method="GET" className="flex flex-col gap-3">
-                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <Input
-                                    name="q"
-                                    defaultValue={q}
-                                    placeholder="Search action/entity/actor/details..."
-                                    className="w-full min-w-0"
-                                />
-
-                                <Input
-                                    name="action"
-                                    defaultValue={action}
-                                    placeholder="Action (exact)"
-                                    className="w-full min-w-0"
-                                />
-
-                                <Input
-                                    name="entity"
-                                    defaultValue={entity}
-                                    placeholder="Entity (exact)"
-                                    className="w-full min-w-0"
-                                />
-
-                                <Input
-                                    name="actor"
-                                    defaultValue={actor}
-                                    placeholder="Actor name/email"
-                                    className="w-full min-w-0"
-                                />
+                    <CardContent className="pt-0 min-w-0">
+                        <form method="GET" className="flex flex-col gap-3 min-w-0">
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 min-w-0">
+                                <Input name="q" defaultValue={q} placeholder="Search action/entity/actor/details..." className="w-full min-w-0" />
+                                <Input name="action" defaultValue={action} placeholder="Action (exact)" className="w-full min-w-0" />
+                                <Input name="entity" defaultValue={entity} placeholder="Entity (exact)" className="w-full min-w-0" />
+                                <Input name="actor" defaultValue={actor} placeholder="Actor name/email" className="w-full min-w-0" />
                             </div>
 
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 min-w-0">
                                 <Input name="from" defaultValue={from} type="date" className="w-full min-w-0" />
                                 <Input name="to" defaultValue={to} type="date" className="w-full min-w-0" />
                                 <Input
@@ -346,8 +321,7 @@ export default async function AdminAuditPage({
 
                             <input type="hidden" name="page" value="1" />
 
-                            {/* ✅ Buttons stack on mobile */}
-                            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center min-w-0">
                                 <Button type="submit" className="w-full sm:w-auto">
                                     Apply filters
                                 </Button>
@@ -367,7 +341,7 @@ export default async function AdminAuditPage({
                 {viewed ? (
                     <Card>
                         <CardHeader className="pb-3">
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between min-w-0">
                                 <div className="min-w-0">
                                     <CardTitle className="text-base">Log Details</CardTitle>
                                     <CardDescription className="break-all">{viewed.id}</CardDescription>
@@ -379,7 +353,7 @@ export default async function AdminAuditPage({
                             </div>
                         </CardHeader>
 
-                        <CardContent className="space-y-3">
+                        <CardContent className="space-y-3 min-w-0">
                             <div className="flex flex-wrap gap-2">
                                 <Badge variant="secondary">{fmtTs(viewed.created_at)}</Badge>
                                 <Badge>{viewed.action}</Badge>
@@ -389,16 +363,16 @@ export default async function AdminAuditPage({
 
                             <Separator />
 
-                            <div className="text-sm">
+                            <div className="text-sm min-w-0">
                                 <div className="text-muted-foreground">Actor</div>
-                                <div className="font-medium wrap-break-word">
+                                <div className="font-medium break-all">
                                     {viewed.actor_email
                                         ? `${viewed.actor_name ?? "Unknown"} (${viewed.actor_email})`
                                         : viewed.actor_name ?? "System/Unknown"}
                                 </div>
                             </div>
 
-                            <div className="space-y-2">
+                            <div className="space-y-2 min-w-0">
                                 <div className="text-sm text-muted-foreground">Details (JSON)</div>
                                 <Textarea readOnly value={safeJson(viewed.details)} className="min-h-55 font-mono text-xs" />
                             </div>
@@ -406,8 +380,8 @@ export default async function AdminAuditPage({
                     </Card>
                 ) : null}
 
-                {/* ✅ MOBILE: vertical cards (no horizontal overflow) */}
-                <div className="space-y-3 md:hidden">
+                {/* Mobile: cards only (no table) */}
+                <div className="space-y-3 md:hidden min-w-0">
                     {rows.length ? (
                         rows.map((r) => {
                             const detailsStr = safeJson(r.details)
@@ -418,20 +392,20 @@ export default async function AdminAuditPage({
 
                             return (
                                 <Card key={r.id}>
-                                    <CardContent className="p-4 space-y-3">
+                                    <CardContent className="p-4 space-y-3 min-w-0">
                                         <div className="flex flex-wrap gap-2">
                                             <Badge variant="secondary">{fmtTs(r.created_at)}</Badge>
                                             <Badge>{r.action}</Badge>
                                             <Badge variant="outline">{r.entity}</Badge>
                                         </div>
 
-                                        <div className="text-sm">
+                                        <div className="text-sm min-w-0">
                                             <div className="text-muted-foreground">Actor</div>
-                                            <div className="font-medium wrap-break-word">{actorLabel}</div>
+                                            <div className="font-medium break-all">{actorLabel}</div>
                                             {r.actor_id ? <div className="text-xs text-muted-foreground break-all">{r.actor_id}</div> : null}
                                         </div>
 
-                                        <div className="text-sm">
+                                        <div className="text-sm min-w-0">
                                             <div className="text-muted-foreground">Entity ID</div>
                                             {r.entity_id ? (
                                                 <div className="font-mono text-xs break-all">{r.entity_id}</div>
@@ -440,9 +414,9 @@ export default async function AdminAuditPage({
                                             )}
                                         </div>
 
-                                        <div className="text-sm">
+                                        <div className="text-sm min-w-0">
                                             <div className="text-muted-foreground">Details</div>
-                                            <div className="font-mono text-xs whitespace-pre-wrap wrap-break-word text-muted-foreground">
+                                            <div className="font-mono text-xs whitespace-pre-wrap break-all text-muted-foreground">
                                                 {detailsStr ? truncate(detailsStr, 220) : "—"}
                                             </div>
                                         </div>
@@ -465,20 +439,21 @@ export default async function AdminAuditPage({
                     )}
                 </div>
 
-                {/* ✅ DESKTOP: table inside overflow container (won't overflow page) */}
+                {/* Desktop: table WITH horizontal scrollbar */}
                 <Card className="hidden md:block">
-                    <CardContent className="p-0">
-                        <div className="w-full max-w-full overflow-x-auto">
-                            <Table className="min-w-245">
+                    <CardContent className="p-0 min-w-0">
+                        {/* ✅ THIS is the horizontal scroll container */}
+                        <div className="w-full min-w-0 overflow-x-auto">
+                            <Table className="w-max min-w-full">
                                 <TableHeader>
                                     <TableRow>
-                                        <TableHead>Time (UTC)</TableHead>
-                                        <TableHead>Actor</TableHead>
-                                        <TableHead>Action</TableHead>
-                                        <TableHead>Entity</TableHead>
-                                        <TableHead>Entity ID</TableHead>
-                                        <TableHead>Details</TableHead>
-                                        <TableHead className="text-right">View</TableHead>
+                                        <TableHead className="whitespace-nowrap">Time (UTC)</TableHead>
+                                        <TableHead className="whitespace-nowrap">Actor</TableHead>
+                                        <TableHead className="whitespace-nowrap">Action</TableHead>
+                                        <TableHead className="whitespace-nowrap">Entity</TableHead>
+                                        <TableHead className="whitespace-nowrap">Entity ID</TableHead>
+                                        <TableHead className="whitespace-nowrap">Details</TableHead>
+                                        <TableHead className="whitespace-nowrap text-right">View</TableHead>
                                     </TableRow>
                                 </TableHeader>
 
@@ -499,7 +474,7 @@ export default async function AdminAuditPage({
                                                     </TableCell>
 
                                                     <TableCell className="align-top">
-                                                        <div className="text-sm wrap-break-word">{actorLabel}</div>
+                                                        <div className="text-sm break-all">{actorLabel}</div>
                                                         {r.actor_id ? <div className="text-xs text-muted-foreground break-all">{r.actor_id}</div> : null}
                                                     </TableCell>
 
@@ -522,7 +497,7 @@ export default async function AdminAuditPage({
                                                     </TableCell>
 
                                                     <TableCell className="align-top">
-                                                        <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap wrap-break-word max-w-130">
+                                                        <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap break-all max-w-130">
                                                             {detailsStr ? truncate(detailsStr, 220) : "—"}
                                                         </div>
                                                     </TableCell>

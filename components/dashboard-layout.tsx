@@ -30,14 +30,20 @@ export default function DashboardLayout({ title, children }: DashboardLayoutProp
                     <NavMain />
                 </SidebarContent>
 
+                {/* ✅ keep NavUser in the sidebar footer */}
                 <SidebarFooter>
-                    <NavUser />
+                    <NavUser variant="sidebar" />
                 </SidebarFooter>
             </Sidebar>
 
-            <SidebarInset>
+            {/* ✅ min-w-0 prevents the content area from forcing horizontal overflow */}
+            <SidebarInset className="min-w-0">
                 <DashboardHeader title={title} />
-                <main className="flex-1 p-4 md:p-6">{children}</main>
+
+                {/* ✅ prevent page-level horizontal scroll; tables should scroll inside their own wrappers */}
+                <main className="flex-1 min-w-0 overflow-x-hidden p-4 md:p-6">
+                    {children}
+                </main>
             </SidebarInset>
         </SidebarProvider>
     )
