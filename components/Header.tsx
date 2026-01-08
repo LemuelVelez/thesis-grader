@@ -16,6 +16,7 @@ import {
     NavigationMenuList,
     navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu"
+import { useAuth } from "@/hooks/use-auth"
 
 const nav = [
     { label: "Features", href: "#features" },
@@ -23,9 +24,21 @@ const nav = [
     { label: "Roles", href: "#roles" },
 ] as const
 
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    return "/dashboard"
+}
+
 export default function Header() {
     const [activeHref, setActiveHref] = useState<string>("")
     const [sheetOpen, setSheetOpen] = useState(false)
+
+    const { user } = useAuth()
+    const appHref = user ? roleBasePath(user.role) : "/login"
+    const appLabel = user ? "Go to dashboard" : "Open app"
 
     const sectionIds = useMemo(() => nav.map((n) => n.href.replace("#", "")), [])
 
@@ -68,7 +81,9 @@ export default function Header() {
                         <Image src="/logo.svg" alt="THESISGRADER logo" width={32} height={32} priority />
                         <div className="leading-tight">
                             <div className="text-sm font-semibold tracking-tight sm:text-base">THESISGRADER</div>
-                            <div className="hidden text-xs text-muted-foreground sm:block">Web-Based Evaluation & Grading</div>
+                            <div className="hidden text-xs text-muted-foreground sm:block">
+                                Web-Based Evaluation & Grading
+                            </div>
                         </div>
                     </Link>
 
@@ -99,8 +114,8 @@ export default function Header() {
 
                     <Separator orientation="vertical" className="h-7" />
                     <Button asChild>
-                        <Link href="/login" className="inline-flex items-center gap-2">
-                            Open app <ArrowRight className="h-4 w-4" />
+                        <Link href={appHref} className="inline-flex items-center gap-2">
+                            {appLabel} <ArrowRight className="h-4 w-4" />
                         </Link>
                     </Button>
                 </div>
@@ -108,7 +123,7 @@ export default function Header() {
                 {/* Mobile nav */}
                 <div className="sticky flex items-center gap-2 top-0 z-40 md:hidden">
                     <Button asChild variant="secondary" className="hidden xs:inline-flex">
-                        <Link href="/login">Open app</Link>
+                        <Link href={appHref}>{appLabel}</Link>
                     </Button>
 
                     <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
@@ -150,8 +165,8 @@ export default function Header() {
                                         setSheetOpen(false) // ✅ close sheet after click
                                     }}
                                 >
-                                    <Link href="/login" className="inline-flex items-center justify-between">
-                                        Open app <ArrowRight className="h-4 w-4" />
+                                    <Link href={appHref} className="inline-flex items-center justify-between">
+                                        {appLabel} <ArrowRight className="h-4 w-4" />
                                     </Link>
                                 </Button>
 

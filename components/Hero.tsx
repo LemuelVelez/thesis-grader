@@ -1,3 +1,5 @@
+"use client"
+
 import Image from "next/image"
 import Link from "next/link"
 import { Sparkles, ShieldCheck, ClipboardList, BarChart3 } from "lucide-react"
@@ -6,8 +8,21 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { useAuth } from "@/hooks/use-auth"
+
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    return "/dashboard"
+}
 
 export default function Hero() {
+    const { user } = useAuth()
+    const appHref = user ? roleBasePath(user.role) : "/login"
+    const startLabel = user ? "Go to dashboard" : "Get started"
+
     return (
         <section className="relative">
             <div className="mx-auto  px-4 pb-10 pt-10 sm:px-6 sm:pb-14 sm:pt-14 lg:pb-18">
@@ -30,7 +45,7 @@ export default function Hero() {
 
                         <div className="mt-7 flex flex-wrap items-center gap-3">
                             <Button asChild size="lg">
-                                <Link href="/login">Get started</Link>
+                                <Link href={appHref}>{startLabel}</Link>
                             </Button>
                             <Button asChild size="lg" variant="outline">
                                 <Link href="#how-it-works">See how it works</Link>
@@ -167,7 +182,7 @@ export default function Hero() {
 
                     <div className="grid gap-3">
                         <Button asChild className="w-full">
-                            <Link href="/login">Get started</Link>
+                            <Link href={appHref}>{startLabel}</Link>
                         </Button>
                         <Button asChild variant="outline" className="w-full">
                             <Link href="#roles">View roles</Link>
