@@ -1,18 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { db } from "@/lib/db"
 
 /**
- * Reports summary types + helpers.
+ * Reports summary types + helpers backed by real DB queries.
  *
- * Fixes TS errors by ensuring:
- * - ReportsSummary includes `filters`
- * - defenses includes `byRoom` and `byMonth`
- * - audit includes `topActors`
- * - getReportsSummary(...) accepts `program` and `term`
- * - exports `buildAuditExportCsv` used by /api/admin/reports/audit-export
- *
- * NOTE:
- * The implementation below returns safe defaults (zeros/empty arrays).
- * You can later wire real DB queries while keeping the same return shapes.
+ * Supports:
+ * - filters: program, term
+ * - defenses: byStatus, byRoom, byMonth
+ * - audit: topActions, topActors, daily
+ * - audit-export: builds CSV from audit_logs table
  */
 
 export type DateRange = {
@@ -65,10 +61,6 @@ export type ReportsEvaluationsSummary = {
 export type ReportsAuditSummary = {
     total_in_range: number
     topActions: { action: string; count: number }[]
-    /**
-     * Top active staff/admin users in the audit logs.
-     * (UI expects this.)
-     */
     topActors: {
         actor_id: string
         actor_name?: string | null
@@ -81,10 +73,6 @@ export type ReportsAuditSummary = {
 
 export type ReportsSummary = {
     range: DateRange
-    /**
-     * Echo of currently-applied filters.
-     * (UI expects this.)
-     */
     filters: ReportsFilters
 
     users: ReportsUsersSummary
@@ -110,28 +98,17 @@ export function resolveDateRange(args: ResolveDateRangeArgs): DateRange {
     const fromIn = (args.from ?? "").trim()
     const toIn = (args.to ?? "").trim()
 
-    // If both provided, trust caller.
-    if (fromIn && toIn) {
-        return { from: fromIn, to: toIn }
-    }
+    if (fromIn && toIn) return { from: fromIn, to: toIn }
 
     const today = new Date()
     const toDate = toIn ? parseISODate(toIn) : startOfDay(today)
-    const fromDate = fromIn ? parseISODate(fromIn) : addDays(startOfDay(toDate), -(days - 1)) // inclusive
+    const fromDate = fromIn ? parseISODate(fromIn) : addDays(startOfDay(toDate), -(days - 1))
 
     return { from: toISODate(fromDate), to: toISODate(toDate) }
 }
 
 export type GetReportsSummaryArgs = ResolveDateRangeArgs & ReportsFilters
 
-/**
- * Main entry used by:
- * - /api/admin/reports/summary
- * - /api/admin/reports/print
- *
- * This accepts `program` and `term` and returns a summary object
- * containing the fields the UI is using (filters, defenses.byRoom/byMonth, audit.topActors).
- */
 export async function getReportsSummary(args: GetReportsSummaryArgs): Promise<ReportsSummary> {
     const range = resolveDateRange(args)
 
@@ -140,41 +117,275 @@ export async function getReportsSummary(args: GetReportsSummaryArgs): Promise<Re
         term: args.term?.trim() ? args.term.trim() : undefined,
     }
 
-    // ✅ Safe defaults so UI never crashes while you wire real queries.
+    // USERS (global)
+    const usersQ = `
+      select
+        count(*)::int as total,
+        count(*) filter (where status = 'active')::int as active,
+        count(*) filter (where status = 'disabled')::int as disabled,
+        count(*) filter (where role = 'student')::int as student,
+        count(*) filter (where role = 'staff')::int as staff,
+        count(*) filter (where role = 'admin')::int as admin
+      from users
+    `
+    const usersRes = await db.query(usersQ)
+    const u0 = usersRes.rows[0] ?? {}
+
+    // THESIS FILTERS (program/term) applied to thesis_groups + downstream joins
+    const thesisFilter = buildThesisGroupFilters(filters, "g")
+
+    // Thesis totals
+    const thesisTotalsQ = `
+      select
+        count(*)::int as groups_total,
+        count(*) filter (where g.adviser_id is null)::int as unassigned_adviser
+      from thesis_groups g
+      ${thesisFilter.whereSql}
+    `
+    const thesisTotalsRes = await db.query(thesisTotalsQ, thesisFilter.params)
+    const t0 = thesisTotalsRes.rows[0] ?? {}
+
+    // Thesis memberships total
+    const thesisMembershipsQ = `
+      select count(*)::int as memberships_total
+      from group_members gm
+      join thesis_groups g on g.id = gm.group_id
+      ${thesisFilter.whereSql}
+    `
+    const thesisMembershipsRes = await db.query(thesisMembershipsQ, thesisFilter.params)
+    const t1 = thesisMembershipsRes.rows[0] ?? {}
+
+    // Thesis byProgram (top 20)
+    const thesisByProgramQ = `
+      select
+        coalesce(nullif(trim(g.program), ''), '(unspecified)') as program,
+        count(*)::int as count
+      from thesis_groups g
+      ${thesisFilter.whereSql}
+      group by 1
+      order by count desc, program asc
+      limit 20
+    `
+    const thesisByProgramRes = await db.query(thesisByProgramQ, thesisFilter.params)
+
+    // DEFENSES: range + filters
+    const defensesFilter = buildDefenseFilters(range, filters)
+
+    const defensesTotalQ = `
+      select count(*)::int as total_in_range
+      from defense_schedules s
+      join thesis_groups g on g.id = s.group_id
+      ${defensesFilter.whereSql}
+    `
+    const defensesTotalRes = await db.query(defensesTotalQ, defensesFilter.params)
+    const d0 = defensesTotalRes.rows[0] ?? {}
+
+    const defensesByStatusQ = `
+      select
+        coalesce(nullif(trim(s.status), ''), '(unspecified)') as status,
+        count(*)::int as count
+      from defense_schedules s
+      join thesis_groups g on g.id = s.group_id
+      ${defensesFilter.whereSql}
+      group by 1
+      order by count desc, status asc
+    `
+    const defensesByStatusRes = await db.query(defensesByStatusQ, defensesFilter.params)
+
+    const defensesByRoomQ = `
+      select
+        coalesce(nullif(trim(s.room), ''), '(unspecified)') as room,
+        count(*)::int as count
+      from defense_schedules s
+      join thesis_groups g on g.id = s.group_id
+      ${defensesFilter.whereSql}
+      group by 1
+      order by count desc, room asc
+      limit 20
+    `
+    const defensesByRoomRes = await db.query(defensesByRoomQ, defensesFilter.params)
+
+    const defensesByMonthQ = `
+      select
+        to_char(date_trunc('month', s.scheduled_at), 'YYYY-MM') as month,
+        count(*)::int as count
+      from defense_schedules s
+      join thesis_groups g on g.id = s.group_id
+      ${defensesFilter.whereSql}
+      group by 1
+      order by month asc
+    `
+    const defensesByMonthRes = await db.query(defensesByMonthQ, defensesFilter.params)
+
+    // EVALUATIONS (range = created_at)
+    const evalPanelFilter = buildEvaluationsFilters("e.created_at", range, filters, "g")
+
+    const evalPanelTotalQ = `
+      select count(*)::int as total_in_range
+      from evaluations e
+      join defense_schedules s on s.id = e.schedule_id
+      join thesis_groups g on g.id = s.group_id
+      ${evalPanelFilter.whereSql}
+    `
+    const evalPanelTotalRes = await db.query(evalPanelTotalQ, evalPanelFilter.params)
+    const ep0 = evalPanelTotalRes.rows[0] ?? {}
+
+    const evalPanelByStatusQ = `
+      select
+        coalesce(nullif(trim(e.status), ''), '(unspecified)') as status,
+        count(*)::int as count
+      from evaluations e
+      join defense_schedules s on s.id = e.schedule_id
+      join thesis_groups g on g.id = s.group_id
+      ${evalPanelFilter.whereSql}
+      group by 1
+      order by count desc, status asc
+    `
+    const evalPanelByStatusRes = await db.query(evalPanelByStatusQ, evalPanelFilter.params)
+
+    // STUDENT EVALUATIONS (range = created_at)
+    const evalStudentFilter = buildEvaluationsFilters("se.created_at", range, filters, "g")
+
+    const evalStudentTotalQ = `
+      select count(*)::int as total_in_range
+      from student_evaluations se
+      join defense_schedules s on s.id = se.schedule_id
+      join thesis_groups g on g.id = s.group_id
+      ${evalStudentFilter.whereSql}
+    `
+    const evalStudentTotalRes = await db.query(evalStudentTotalQ, evalStudentFilter.params)
+    const es0 = evalStudentTotalRes.rows[0] ?? {}
+
+    const evalStudentByStatusQ = `
+      select
+        se.status::text as status,
+        count(*)::int as count
+      from student_evaluations se
+      join defense_schedules s on s.id = se.schedule_id
+      join thesis_groups g on g.id = s.group_id
+      ${evalStudentFilter.whereSql}
+      group by 1
+      order by count desc, status asc
+    `
+    const evalStudentByStatusRes = await db.query(evalStudentByStatusQ, evalStudentFilter.params)
+
+    // AUDIT (global; range = created_at)
+    const auditFilter = buildDateRangeOnlyFilters("a.created_at", range)
+
+    const auditTotalQ = `
+      select count(*)::int as total_in_range
+      from audit_logs a
+      ${auditFilter.whereSql}
+    `
+    const auditTotalRes = await db.query(auditTotalQ, auditFilter.params)
+    const a0 = auditTotalRes.rows[0] ?? {}
+
+    const auditTopActionsQ = `
+      select a.action as action, count(*)::int as count
+      from audit_logs a
+      ${auditFilter.whereSql}
+      group by a.action
+      order by count desc, action asc
+      limit 20
+    `
+    const auditTopActionsRes = await db.query(auditTopActionsQ, auditFilter.params)
+
+    const auditDailyQ = `
+      select to_char(a.created_at::date, 'YYYY-MM-DD') as day, count(*)::int as count
+      from audit_logs a
+      ${auditFilter.whereSql}
+      group by 1
+      order by day asc
+    `
+    const auditDailyRes = await db.query(auditDailyQ, auditFilter.params)
+
+    const auditTopActorsQ = `
+      select
+        a.actor_id as actor_id,
+        u.name as actor_name,
+        u.email as actor_email,
+        u.role::text as role,
+        count(*)::int as count
+      from audit_logs a
+      join users u on u.id = a.actor_id
+      ${auditFilter.whereSql}
+        and u.role in ('staff','admin')
+      group by a.actor_id, u.name, u.email, u.role
+      order by count desc, u.name asc
+      limit 20
+    `
+    const auditTopActorsRes = await db.query(auditTopActorsQ, auditFilter.params)
+
     const summary: ReportsSummary = {
         range,
         filters,
 
         users: {
-            total: 0,
-            byStatus: { active: 0, disabled: 0 },
-            byRole: { student: 0, staff: 0, admin: 0 },
+            total: u0.total ?? 0,
+            byStatus: { active: u0.active ?? 0, disabled: u0.disabled ?? 0 },
+            byRole: { student: u0.student ?? 0, staff: u0.staff ?? 0, admin: u0.admin ?? 0 },
         },
 
         thesis: {
-            groups_total: 0,
-            memberships_total: 0,
-            unassigned_adviser: 0,
-            byProgram: [],
+            groups_total: t0.groups_total ?? 0,
+            memberships_total: t1.memberships_total ?? 0,
+            unassigned_adviser: t0.unassigned_adviser ?? 0,
+            byProgram: (thesisByProgramRes.rows ?? []).map((r: any) => ({
+                program: String(r.program),
+                count: Number(r.count ?? 0),
+            })),
         },
 
         defenses: {
-            total_in_range: 0,
-            byStatus: [],
-            byRoom: [],
-            byMonth: [],
+            total_in_range: d0.total_in_range ?? 0,
+            byStatus: (defensesByStatusRes.rows ?? []).map((r: any) => ({
+                status: String(r.status),
+                count: Number(r.count ?? 0),
+            })),
+            byRoom: (defensesByRoomRes.rows ?? []).map((r: any) => ({
+                room: String(r.room),
+                count: Number(r.count ?? 0),
+            })),
+            byMonth: (defensesByMonthRes.rows ?? []).map((r: any) => ({
+                month: String(r.month),
+                count: Number(r.count ?? 0),
+            })),
         },
 
         evaluations: {
-            panel: { total_in_range: 0, byStatus: [] },
-            student: { total_in_range: 0, byStatus: [] },
+            panel: {
+                total_in_range: ep0.total_in_range ?? 0,
+                byStatus: (evalPanelByStatusRes.rows ?? []).map((r: any) => ({
+                    status: String(r.status),
+                    count: Number(r.count ?? 0),
+                })),
+            },
+            student: {
+                total_in_range: es0.total_in_range ?? 0,
+                byStatus: (evalStudentByStatusRes.rows ?? []).map((r: any) => ({
+                    status: String(r.status),
+                    count: Number(r.count ?? 0),
+                })),
+            },
         },
 
         audit: {
-            total_in_range: 0,
-            topActions: [],
-            topActors: [],
-            daily: [],
+            total_in_range: a0.total_in_range ?? 0,
+            topActions: (auditTopActionsRes.rows ?? []).map((r: any) => ({
+                action: String(r.action),
+                count: Number(r.count ?? 0),
+            })),
+            topActors: (auditTopActorsRes.rows ?? []).map((r: any) => ({
+                actor_id: String(r.actor_id),
+                actor_name: r.actor_name ?? null,
+                actor_email: r.actor_email ?? null,
+                role: String(r.role ?? ""),
+                count: Number(r.count ?? 0),
+            })),
+            daily: (auditDailyRes.rows ?? []).map((r: any) => ({
+                day: String(r.day),
+                count: Number(r.count ?? 0),
+            })),
         },
     }
 
@@ -184,7 +395,7 @@ export async function getReportsSummary(args: GetReportsSummaryArgs): Promise<Re
 /* ------------------------- Audit CSV Export ------------------------- */
 
 export type AuditExportRow = {
-    created_at: string // ISO string or YYYY-MM-DD HH:mm:ss
+    created_at: string
     actor_id?: string | null
     actor_name?: string | null
     actor_email?: string | null
@@ -196,22 +407,33 @@ export type AuditExportRow = {
 }
 
 export type BuildAuditExportCsvArgs = ResolveDateRangeArgs & {
-    /**
-     * Optional: allow callers/tests to provide rows.
-     * If omitted, this returns a CSV with just headers (safe default).
-     */
-    rows?: AuditExportRow[]
+    // optional future filters; audit export currently is global
 }
 
-/**
- * Used by /api/admin/reports/audit-export
- * Returns a { range, csv } payload.
- */
 export async function buildAuditExportCsv(
     args: BuildAuditExportCsvArgs
 ): Promise<{ range: DateRange; csv: string }> {
     const range = resolveDateRange(args)
-    const rows = Array.isArray(args.rows) ? args.rows : []
+
+    const filter = buildDateRangeOnlyFilters("a.created_at", range)
+
+    const q = `
+      select
+        a.created_at,
+        a.actor_id,
+        u.name as actor_name,
+        u.email as actor_email,
+        u.role::text as role,
+        a.action,
+        a.entity as entity_type,
+        a.entity_id,
+        a.details as metadata
+      from audit_logs a
+      left join users u on u.id = a.actor_id
+      ${filter.whereSql}
+      order by a.created_at desc
+    `
+    const { rows } = await db.query(q, filter.params)
 
     const headers = [
         "created_at",
@@ -228,9 +450,12 @@ export async function buildAuditExportCsv(
     const lines: string[] = []
     lines.push(headers.join(","))
 
-    for (const r of rows) {
+    for (const r of rows ?? []) {
+        const createdAt =
+            r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at ?? "")
+
         const line = [
-            r.created_at ?? "",
+            createdAt,
             r.actor_id ?? "",
             r.actor_name ?? "",
             r.actor_email ?? "",
@@ -244,12 +469,89 @@ export async function buildAuditExportCsv(
         lines.push(line.join(","))
     }
 
-    // Add newline at end to be friendly with Excel/etc.
-    const csv = lines.join("\n") + "\n"
-    return { range, csv }
+    return { range, csv: lines.join("\n") + "\n" }
 }
 
-/* ------------------------- small utils ------------------------- */
+/* ------------------------- SQL filter builders ------------------------- */
+
+function buildThesisGroupFilters(filters: ReportsFilters, alias: string) {
+    const where: string[] = []
+    const params: any[] = []
+
+    if (filters.program) {
+        params.push(filters.program)
+        where.push(`${alias}.program = $${params.length}`)
+    }
+    if (filters.term) {
+        params.push(filters.term)
+        where.push(`${alias}.term = $${params.length}`)
+    }
+
+    return {
+        whereSql: where.length ? `where ${where.join(" and ")}` : "",
+        params,
+    }
+}
+
+function buildDefenseFilters(range: DateRange, filters: ReportsFilters) {
+    const where: string[] = []
+    const params: any[] = []
+
+    // range on scheduled_at
+    params.push(range.from)
+    where.push(`s.scheduled_at >= $${params.length}::date`)
+    params.push(range.to)
+    where.push(`s.scheduled_at < ($${params.length}::date + interval '1 day')`)
+
+    if (filters.program) {
+        params.push(filters.program)
+        where.push(`g.program = $${params.length}`)
+    }
+    if (filters.term) {
+        params.push(filters.term)
+        where.push(`g.term = $${params.length}`)
+    }
+
+    return {
+        whereSql: `where ${where.join(" and ")}`,
+        params,
+    }
+}
+
+function buildEvaluationsFilters(dateColumn: string, range: DateRange, filters: ReportsFilters, groupAlias: string) {
+    const where: string[] = []
+    const params: any[] = []
+
+    params.push(range.from)
+    where.push(`${dateColumn} >= $${params.length}::date`)
+    params.push(range.to)
+    where.push(`${dateColumn} < ($${params.length}::date + interval '1 day')`)
+
+    if (filters.program) {
+        params.push(filters.program)
+        where.push(`${groupAlias}.program = $${params.length}`)
+    }
+    if (filters.term) {
+        params.push(filters.term)
+        where.push(`${groupAlias}.term = $${params.length}`)
+    }
+
+    return { whereSql: `where ${where.join(" and ")}`, params }
+}
+
+function buildDateRangeOnlyFilters(dateColumn: string, range: DateRange) {
+    const where: string[] = []
+    const params: any[] = []
+
+    params.push(range.from)
+    where.push(`${dateColumn} >= $${params.length}::date`)
+    params.push(range.to)
+    where.push(`${dateColumn} < ($${params.length}::date + interval '1 day')`)
+
+    return { whereSql: `where ${where.join(" and ")}`, params }
+}
+
+/* ------------------------- misc utils ------------------------- */
 
 function clampInt(n: number, min: number, max: number) {
     return Math.min(Math.max(n, min), max)
@@ -268,7 +570,6 @@ function addDays(d: Date, days: number) {
 }
 
 function toISODate(d: Date) {
-    // YYYY-MM-DD in local time
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, "0")
     const day = String(d.getDate()).padStart(2, "0")
@@ -276,7 +577,6 @@ function toISODate(d: Date) {
 }
 
 function parseISODate(s: string) {
-    // Accept YYYY-MM-DD; if invalid, fallback to today
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim())
     if (!m) return startOfDay(new Date())
     const y = Number(m[1])
@@ -295,15 +595,8 @@ function safeJson(v: any) {
     }
 }
 
-/**
- * CSV cell escaping:
- * - Wrap in quotes if it contains comma, quote, or newline
- * - Double any quotes inside the cell
- */
 function csvCell(v: any) {
     const s = v === null || v === undefined ? "" : String(v)
-    if (/[",\n\r]/.test(s)) {
-        return `"${s.replace(/"/g, '""')}"`
-    }
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
     return s
 }

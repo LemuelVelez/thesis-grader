@@ -17,7 +17,10 @@ function safeInt(v: unknown, fallback: number, min: number, max: number) {
 export async function GET(req: Request) {
     try {
         if (!env.DATABASE_URL) {
-            return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
+            return NextResponse.json(
+                { ok: false, message: "Database is not configured (DATABASE_URL missing)." },
+                { status: 500 }
+            )
         }
 
         const auth = await requireAdminFromCookies()
@@ -39,7 +42,10 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
     try {
         if (!env.DATABASE_URL) {
-            return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
+            return NextResponse.json(
+                { ok: false, message: "Database is not configured (DATABASE_URL missing)." },
+                { status: 500 }
+            )
         }
 
         const auth = await requireAdminFromCookies()
