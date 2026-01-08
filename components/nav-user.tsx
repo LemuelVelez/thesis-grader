@@ -40,6 +40,13 @@ type NavUserProps = {
         role?: string | null
     }
     onLogout?: () => Promise<void> | void
+
+    /**
+     * Where this component is rendered.
+     * - "sidebar": original layout (shows name/email in trigger)
+     * - "header": compact trigger (avatar only) + dropdown opens BELOW header
+     */
+    variant?: "sidebar" | "header"
 }
 
 function getInitials(name: string) {
@@ -76,7 +83,7 @@ function settingsPathForRole(role: string | null | undefined) {
     return `${roleBasePath(role)}/settings`
 }
 
-export function NavUser({ user: userProp, onLogout }: NavUserProps) {
+export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUserProps) {
     const router = useRouter()
     const { isMobile } = useSidebar()
 
@@ -134,88 +141,165 @@ export function NavUser({ user: userProp, onLogout }: NavUserProps) {
             router.refresh()
         } catch (e: any) {
             toast.error(String(e?.message ?? "Failed to log out."), { id: toastId })
-            // keep user on the current page if logout fails
         } finally {
             setLoggingOut(false)
         }
     }, [loggingOut, onLogout, router])
 
+    // ✅ dropdown placement:
+    // - header: always open BELOW trigger
+    // - sidebar: original behavior (mobile bottom, desktop right)
+    const dropdownSide: "bottom" | "right" = variant === "header" ? "bottom" : isMobile ? "bottom" : "right"
+
+    const contentClass =
+        "min-w-56 rounded-lg max-w-[calc(100vw-16px)]"
+
     return (
         <>
-            <SidebarMenu>
-                <SidebarMenuItem>
-                    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-                        <DropdownMenuTrigger asChild>
-                            <SidebarMenuButton size="lg" isActive={menuOpen}>
-                                <Avatar className="h-8 w-8 rounded-lg grayscale">
+            {variant === "header" ? (
+                <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+                    <DropdownMenuTrigger asChild>
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 rounded-full"
+                            aria-label="Account menu"
+                        >
+                            <Avatar className="h-8 w-8 rounded-full">
+                                <AvatarImage src={avatarUrl || undefined} alt={name} />
+                                <AvatarFallback>{initials}</AvatarFallback>
+                            </Avatar>
+                        </Button>
+                    </DropdownMenuTrigger>
+
+                    <DropdownMenuContent
+                        className={contentClass}
+                        side={dropdownSide}
+                        align="end"
+                        sideOffset={8}
+                    >
+                        <DropdownMenuLabel className="p-0 font-normal">
+                            <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                                <Avatar className="h-8 w-8 rounded-lg">
                                     <AvatarImage src={avatarUrl || undefined} alt={name} />
                                     <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                 </Avatar>
 
-                                <div className="grid flex-1 text-left text-sm leading-tight">
+                                <div className="grid flex-1 text-left text-sm leading-tight min-w-0">
                                     <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
-                                    <span className="truncate text-xs text-muted-foreground">
-                                        {showLoading ? " " : email || "Signed in"}
-                                    </span>
+                                    {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
                                 </div>
+                            </div>
+                        </DropdownMenuLabel>
 
-                                <IconDotsVertical className="ml-auto size-4" />
-                            </SidebarMenuButton>
-                        </DropdownMenuTrigger>
+                        <DropdownMenuSeparator />
 
-                        <DropdownMenuContent
-                            className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg"
-                            side={isMobile ? "bottom" : "right"}
-                            align="end"
-                            sideOffset={4}
+                        <DropdownMenuGroup>
+                            <DropdownMenuItem
+                                disabled={showLoading || !u}
+                                onSelect={(e) => {
+                                    e.preventDefault()
+                                    goToAccountSettings()
+                                }}
+                            >
+                                <IconUserCircle />
+                                Account
+                            </DropdownMenuItem>
+                        </DropdownMenuGroup>
+
+                        <DropdownMenuSeparator />
+
+                        <DropdownMenuItem
+                            disabled={showLoading || !u}
+                            onSelect={(e) => {
+                                e.preventDefault()
+                                if (showLoading || !u) return
+                                setMenuOpen(false)
+                                setLogoutOpen(true)
+                            }}
                         >
-                            <DropdownMenuLabel className="p-0 font-normal">
-                                <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                                    <Avatar className="h-8 w-8 rounded-lg">
+                            <IconLogout />
+                            Log out
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            ) : (
+                <SidebarMenu>
+                    <SidebarMenuItem>
+                        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+                            <DropdownMenuTrigger asChild>
+                                <SidebarMenuButton size="lg" isActive={menuOpen}>
+                                    <Avatar className="h-8 w-8 rounded-lg grayscale">
                                         <AvatarImage src={avatarUrl || undefined} alt={name} />
                                         <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                     </Avatar>
 
                                     <div className="grid flex-1 text-left text-sm leading-tight">
                                         <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
-                                        {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
+                                        <span className="truncate text-xs text-muted-foreground">
+                                            {showLoading ? " " : email || "Signed in"}
+                                        </span>
                                     </div>
-                                </div>
-                            </DropdownMenuLabel>
 
-                            <DropdownMenuSeparator />
+                                    <IconDotsVertical className="ml-auto size-4" />
+                                </SidebarMenuButton>
+                            </DropdownMenuTrigger>
 
-                            <DropdownMenuGroup>
+                            <DropdownMenuContent
+                                className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg max-w-[calc(100vw-16px)]"
+                                side={dropdownSide}
+                                align="end"
+                                sideOffset={4}
+                            >
+                                <DropdownMenuLabel className="p-0 font-normal">
+                                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                                        <Avatar className="h-8 w-8 rounded-lg">
+                                            <AvatarImage src={avatarUrl || undefined} alt={name} />
+                                            <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
+                                        </Avatar>
+
+                                        <div className="grid flex-1 text-left text-sm leading-tight">
+                                            <span className="truncate font-medium">{showLoading ? "Loading..." : name}</span>
+                                            {email ? <span className="truncate text-xs text-muted-foreground">{email}</span> : null}
+                                        </div>
+                                    </div>
+                                </DropdownMenuLabel>
+
+                                <DropdownMenuSeparator />
+
+                                <DropdownMenuGroup>
+                                    <DropdownMenuItem
+                                        disabled={showLoading || !u}
+                                        onSelect={(e) => {
+                                            e.preventDefault()
+                                            goToAccountSettings()
+                                        }}
+                                    >
+                                        <IconUserCircle />
+                                        Account
+                                    </DropdownMenuItem>
+                                </DropdownMenuGroup>
+
+                                <DropdownMenuSeparator />
+
                                 <DropdownMenuItem
                                     disabled={showLoading || !u}
                                     onSelect={(e) => {
                                         e.preventDefault()
-                                        goToAccountSettings()
+                                        if (showLoading || !u) return
+                                        setMenuOpen(false)
+                                        setLogoutOpen(true)
                                     }}
                                 >
-                                    <IconUserCircle />
-                                    Account
+                                    <IconLogout />
+                                    Log out
                                 </DropdownMenuItem>
-                            </DropdownMenuGroup>
-
-                            <DropdownMenuSeparator />
-
-                            <DropdownMenuItem
-                                disabled={showLoading || !u}
-                                onSelect={(e) => {
-                                    e.preventDefault()
-                                    if (showLoading || !u) return
-                                    setMenuOpen(false)
-                                    setLogoutOpen(true)
-                                }}
-                            >
-                                <IconLogout />
-                                Log out
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                </SidebarMenuItem>
-            </SidebarMenu>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </SidebarMenuItem>
+                </SidebarMenu>
+            )}
 
             <AlertDialog open={logoutOpen} onOpenChange={setLogoutOpen}>
                 <AlertDialogContent>

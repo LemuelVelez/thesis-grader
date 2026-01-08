@@ -14,14 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
     Pagination,
     PaginationContent,
@@ -55,7 +48,8 @@ function roleBasePath(role: string) {
 }
 
 function clampInt(v: unknown, def: number, min: number, max: number) {
-    const n = Number(v)
+    const raw = Array.isArray(v) ? v[0] : v
+    const n = typeof raw === "string" ? Number(raw) : Number(raw)
     if (!Number.isFinite(n)) return def
     return Math.max(min, Math.min(max, Math.trunc(n)))
 }
@@ -83,11 +77,9 @@ function truncate(s: string, n = 140) {
 }
 
 function fmtTs(ts: string) {
-    // Keep it stable/portable: ISO-like string (UTC)
     try {
         const d = new Date(ts)
         if (Number.isNaN(d.getTime())) return String(ts)
-        // "2026-01-09 12:34:56Z"
         return d.toISOString().replace("T", " ").slice(0, 19) + "Z"
     } catch {
         return String(ts)
@@ -132,7 +124,6 @@ export default async function AdminAuditPage({
     }
 
     if (String(currentUser.role).toLowerCase() !== "admin") {
-        // Server-side guard for non-admins
         return (
             <DashboardLayout title="Audit Logs">
                 <Alert>
@@ -153,8 +144,8 @@ export default async function AdminAuditPage({
     const action = toStr(sp.action).trim()
     const entity = toStr(sp.entity).trim()
     const actor = toStr(sp.actor).trim()
-    const from = toStr(sp.from).trim() // YYYY-MM-DD
-    const to = toStr(sp.to).trim() // YYYY-MM-DD (inclusive)
+    const from = toStr(sp.from).trim()
+    const to = toStr(sp.to).trim()
 
     const page = clampInt(sp.page, 1, 1, 999999)
     const pageSize = clampInt(sp.pageSize, 50, 10, 200)
@@ -176,7 +167,6 @@ export default async function AdminAuditPage({
     const whereParts: string[] = []
     const params: any[] = []
 
-    // Join users so we can search actor name/email
     if (q) {
         params.push(`%${q.toLowerCase()}%`)
         const p = `$${params.length}`
@@ -205,6 +195,7 @@ export default async function AdminAuditPage({
     if (actor) {
         params.push(`%${actor.toLowerCase()}%`)
         const p = `$${params.length}`
+        // ✅ fixed missing closing paren
         whereParts.push(`(lower(coalesce(u.name,'')) like ${p} or lower(coalesce(u.email,'')) like ${p})`)
     }
 
@@ -215,7 +206,6 @@ export default async function AdminAuditPage({
 
     if (to) {
         params.push(to)
-        // inclusive end date
         whereParts.push(`a.created_at < (($${params.length})::date + interval '1 day')`)
     }
 
@@ -289,14 +279,12 @@ export default async function AdminAuditPage({
     const startIndex = total ? offset + 1 : 0
     const endIndex = Math.min(total, offset + rows.length)
 
-    const baseWithoutView = buildSearchParams(
-        { ...currentParams, view: "" },
-        { view: undefined }
-    )
+    const baseWithoutView = buildSearchParams({ ...currentParams, view: "" }, { view: undefined })
 
     return (
         <DashboardLayout title="Audit Logs">
-            <div className="space-y-4">
+            {/* ✅ prevent page-level horizontal overflow */}
+            <div className="space-y-4 max-w-full overflow-x-hidden">
                 <Card>
                     <CardHeader className="pb-3">
                         <CardTitle>Audit Logs</CardTitle>
@@ -310,48 +298,41 @@ export default async function AdminAuditPage({
                     </CardHeader>
 
                     <CardContent className="pt-0">
-                        <form method="GET" className="grid gap-3 md:grid-cols-12">
-                            <div className="md:col-span-4">
+                        {/* ✅ Vertical / responsive filter layout */}
+                        <form method="GET" className="flex flex-col gap-3">
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                                 <Input
                                     name="q"
                                     defaultValue={q}
                                     placeholder="Search action/entity/actor/details..."
+                                    className="w-full min-w-0"
                                 />
-                            </div>
 
-                            <div className="md:col-span-2">
                                 <Input
                                     name="action"
                                     defaultValue={action}
                                     placeholder="Action (exact)"
+                                    className="w-full min-w-0"
                                 />
-                            </div>
 
-                            <div className="md:col-span-2">
                                 <Input
                                     name="entity"
                                     defaultValue={entity}
                                     placeholder="Entity (exact)"
+                                    className="w-full min-w-0"
                                 />
-                            </div>
 
-                            <div className="md:col-span-2">
                                 <Input
                                     name="actor"
                                     defaultValue={actor}
                                     placeholder="Actor name/email"
+                                    className="w-full min-w-0"
                                 />
                             </div>
 
-                            <div className="md:col-span-1">
-                                <Input name="from" defaultValue={from} type="date" />
-                            </div>
-
-                            <div className="md:col-span-1">
-                                <Input name="to" defaultValue={to} type="date" />
-                            </div>
-
-                            <div className="md:col-span-2">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                <Input name="from" defaultValue={from} type="date" className="w-full min-w-0" />
+                                <Input name="to" defaultValue={to} type="date" className="w-full min-w-0" />
                                 <Input
                                     name="pageSize"
                                     defaultValue={String(pageSize)}
@@ -359,18 +340,23 @@ export default async function AdminAuditPage({
                                     min={10}
                                     max={200}
                                     placeholder="Page size"
+                                    className="w-full min-w-0"
                                 />
                             </div>
 
                             <input type="hidden" name="page" value="1" />
-                            <div className="md:col-span-10 flex flex-wrap items-center gap-2">
-                                <Button type="submit">Apply filters</Button>
 
-                                <Button variant="outline" asChild>
+                            {/* ✅ Buttons stack on mobile */}
+                            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                                <Button type="submit" className="w-full sm:w-auto">
+                                    Apply filters
+                                </Button>
+
+                                <Button variant="outline" asChild className="w-full sm:w-auto">
                                     <Link href={`/dashboard/admin/audit`}>Clear</Link>
                                 </Button>
 
-                                <Button variant="ghost" asChild>
+                                <Button variant="ghost" asChild className="w-full sm:w-auto">
                                     <Link href={`/dashboard/admin/audit?${buildSearchParams(currentParams, {})}`}>Refresh</Link>
                                 </Button>
                             </div>
@@ -381,15 +367,13 @@ export default async function AdminAuditPage({
                 {viewed ? (
                     <Card>
                         <CardHeader className="pb-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="min-w-0">
                                     <CardTitle className="text-base">Log Details</CardTitle>
-                                    <CardDescription className="break-all">
-                                        {viewed.id}
-                                    </CardDescription>
+                                    <CardDescription className="break-all">{viewed.id}</CardDescription>
                                 </div>
 
-                                <Button variant="outline" asChild>
+                                <Button variant="outline" asChild className="w-full sm:w-auto">
                                     <Link href={`/dashboard/admin/audit?${baseWithoutView}`}>Close</Link>
                                 </Button>
                             </div>
@@ -400,16 +384,14 @@ export default async function AdminAuditPage({
                                 <Badge variant="secondary">{fmtTs(viewed.created_at)}</Badge>
                                 <Badge>{viewed.action}</Badge>
                                 <Badge variant="outline">{viewed.entity}</Badge>
-                                {viewed.entity_id ? (
-                                    <Badge variant="secondary">entity_id: {viewed.entity_id}</Badge>
-                                ) : null}
+                                {viewed.entity_id ? <Badge variant="secondary">entity_id: {viewed.entity_id}</Badge> : null}
                             </div>
 
                             <Separator />
 
                             <div className="text-sm">
                                 <div className="text-muted-foreground">Actor</div>
-                                <div className="font-medium">
+                                <div className="font-medium wrap-break-word">
                                     {viewed.actor_email
                                         ? `${viewed.actor_name ?? "Unknown"} (${viewed.actor_email})`
                                         : viewed.actor_name ?? "System/Unknown"}
@@ -418,98 +400,153 @@ export default async function AdminAuditPage({
 
                             <div className="space-y-2">
                                 <div className="text-sm text-muted-foreground">Details (JSON)</div>
-                                <Textarea
-                                    readOnly
-                                    value={safeJson(viewed.details)}
-                                    className="min-h-55 font-mono text-xs"
-                                />
+                                <Textarea readOnly value={safeJson(viewed.details)} className="min-h-55 font-mono text-xs" />
                             </div>
                         </CardContent>
                     </Card>
                 ) : null}
 
-                <Card>
-                    <CardContent className="p-0">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="w-45">Time (UTC)</TableHead>
-                                    <TableHead className="w-60">Actor</TableHead>
-                                    <TableHead className="w-55">Action</TableHead>
-                                    <TableHead className="w-45">Entity</TableHead>
-                                    <TableHead className="w-55">Entity ID</TableHead>
-                                    <TableHead>Details</TableHead>
-                                    <TableHead className="w-22.5 text-right">View</TableHead>
-                                </TableRow>
-                            </TableHeader>
+                {/* ✅ MOBILE: vertical cards (no horizontal overflow) */}
+                <div className="space-y-3 md:hidden">
+                    {rows.length ? (
+                        rows.map((r) => {
+                            const detailsStr = safeJson(r.details)
+                            const actorLabel = r.actor_email
+                                ? `${r.actor_name ?? "Unknown"} (${r.actor_email})`
+                                : r.actor_name ?? "System/Unknown"
+                            const qs = buildSearchParams(currentParams, { view: r.id })
 
-                            <TableBody>
-                                {rows.length ? (
-                                    rows.map((r) => {
-                                        const detailsStr = safeJson(r.details)
-                                        const actorLabel = r.actor_email
-                                            ? `${r.actor_name ?? "Unknown"} (${r.actor_email})`
-                                            : r.actor_name ?? "System/Unknown"
+                            return (
+                                <Card key={r.id}>
+                                    <CardContent className="p-4 space-y-3">
+                                        <div className="flex flex-wrap gap-2">
+                                            <Badge variant="secondary">{fmtTs(r.created_at)}</Badge>
+                                            <Badge>{r.action}</Badge>
+                                            <Badge variant="outline">{r.entity}</Badge>
+                                        </div>
 
-                                        const qs = buildSearchParams(currentParams, { view: r.id })
-                                        return (
-                                            <TableRow key={r.id}>
-                                                <TableCell className="align-top">
-                                                    <span className="text-sm">{fmtTs(r.created_at)}</span>
-                                                </TableCell>
+                                        <div className="text-sm">
+                                            <div className="text-muted-foreground">Actor</div>
+                                            <div className="font-medium wrap-break-word">{actorLabel}</div>
+                                            {r.actor_id ? <div className="text-xs text-muted-foreground break-all">{r.actor_id}</div> : null}
+                                        </div>
 
-                                                <TableCell className="align-top">
-                                                    <div className="text-sm">{actorLabel}</div>
-                                                    {r.actor_id ? (
-                                                        <div className="text-xs text-muted-foreground break-all">
-                                                            {r.actor_id}
-                                                        </div>
-                                                    ) : null}
-                                                </TableCell>
+                                        <div className="text-sm">
+                                            <div className="text-muted-foreground">Entity ID</div>
+                                            {r.entity_id ? (
+                                                <div className="font-mono text-xs break-all">{r.entity_id}</div>
+                                            ) : (
+                                                <div className="text-xs text-muted-foreground">—</div>
+                                            )}
+                                        </div>
 
-                                                <TableCell className="align-top">
-                                                    <Badge className="whitespace-nowrap">{r.action}</Badge>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    <Badge variant="outline" className="whitespace-nowrap">
-                                                        {r.entity}
-                                                    </Badge>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    {r.entity_id ? (
-                                                        <code className="text-xs break-all">{r.entity_id}</code>
-                                                    ) : (
-                                                        <span className="text-xs text-muted-foreground">—</span>
-                                                    )}
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap wrap-break-word">
-                                                        {detailsStr ? truncate(detailsStr, 180) : "—"}
-                                                    </div>
-                                                </TableCell>
-
-                                                <TableCell className="align-top text-right">
-                                                    <Button variant="outline" size="sm" asChild>
-                                                        <Link href={`/dashboard/admin/audit?${qs}`}>View</Link>
-                                                    </Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        )
-                                    })
-                                ) : (
-                                    <TableRow>
-                                        <TableCell colSpan={7}>
-                                            <div className="p-6 text-sm text-muted-foreground">
-                                                No audit logs found for the current filters.
+                                        <div className="text-sm">
+                                            <div className="text-muted-foreground">Details</div>
+                                            <div className="font-mono text-xs whitespace-pre-wrap wrap-break-word text-muted-foreground">
+                                                {detailsStr ? truncate(detailsStr, 220) : "—"}
                                             </div>
-                                        </TableCell>
+                                        </div>
+
+                                        <div className="pt-1">
+                                            <Button variant="outline" size="sm" asChild className="w-full">
+                                                <Link href={`/dashboard/admin/audit?${qs}`}>View</Link>
+                                            </Button>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            )
+                        })
+                    ) : (
+                        <Card>
+                            <CardContent className="p-6 text-sm text-muted-foreground">
+                                No audit logs found for the current filters.
+                            </CardContent>
+                        </Card>
+                    )}
+                </div>
+
+                {/* ✅ DESKTOP: table inside overflow container (won't overflow page) */}
+                <Card className="hidden md:block">
+                    <CardContent className="p-0">
+                        <div className="w-full max-w-full overflow-x-auto">
+                            <Table className="min-w-245">
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Time (UTC)</TableHead>
+                                        <TableHead>Actor</TableHead>
+                                        <TableHead>Action</TableHead>
+                                        <TableHead>Entity</TableHead>
+                                        <TableHead>Entity ID</TableHead>
+                                        <TableHead>Details</TableHead>
+                                        <TableHead className="text-right">View</TableHead>
                                     </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
+                                </TableHeader>
+
+                                <TableBody>
+                                    {rows.length ? (
+                                        rows.map((r) => {
+                                            const detailsStr = safeJson(r.details)
+                                            const actorLabel = r.actor_email
+                                                ? `${r.actor_name ?? "Unknown"} (${r.actor_email})`
+                                                : r.actor_name ?? "System/Unknown"
+
+                                            const qs = buildSearchParams(currentParams, { view: r.id })
+
+                                            return (
+                                                <TableRow key={r.id}>
+                                                    <TableCell className="align-top whitespace-nowrap">
+                                                        <span className="text-sm">{fmtTs(r.created_at)}</span>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        <div className="text-sm wrap-break-word">{actorLabel}</div>
+                                                        {r.actor_id ? <div className="text-xs text-muted-foreground break-all">{r.actor_id}</div> : null}
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top whitespace-nowrap">
+                                                        <Badge className="whitespace-nowrap">{r.action}</Badge>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top whitespace-nowrap">
+                                                        <Badge variant="outline" className="whitespace-nowrap">
+                                                            {r.entity}
+                                                        </Badge>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        {r.entity_id ? (
+                                                            <code className="text-xs break-all">{r.entity_id}</code>
+                                                        ) : (
+                                                            <span className="text-xs text-muted-foreground">—</span>
+                                                        )}
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap wrap-break-word max-w-130">
+                                                            {detailsStr ? truncate(detailsStr, 220) : "—"}
+                                                        </div>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top text-right whitespace-nowrap">
+                                                        <Button variant="outline" size="sm" asChild>
+                                                            <Link href={`/dashboard/admin/audit?${qs}`}>View</Link>
+                                                        </Button>
+                                                    </TableCell>
+                                                </TableRow>
+                                            )
+                                        })
+                                    ) : (
+                                        <TableRow>
+                                            <TableCell colSpan={7}>
+                                                <div className="p-6 text-sm text-muted-foreground">
+                                                    No audit logs found for the current filters.
+                                                </div>
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </div>
                     </CardContent>
                 </Card>
 
