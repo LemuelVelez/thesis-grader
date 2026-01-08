@@ -25,7 +25,7 @@ export default function AppSidebarHeader() {
                         src="/logo.svg"
                         alt="THESISGRADER"
                         fill
-                        className="object-cover"
+                        className="object-contain"
                         priority
                     />
                 </div>
