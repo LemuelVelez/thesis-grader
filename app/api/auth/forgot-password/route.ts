@@ -28,7 +28,8 @@ export async function POST(req: Request) {
     const reset = await createPasswordReset(user.id, 60)
 
     const base = String(env.APP_URL || "http://localhost:3000").replace(/\/$/, "")
-    const resetUrl = `${base}/reset-password?token=${encodeURIComponent(reset.token)}`
+    // ✅ Updated to your pages:
+    const resetUrl = `${base}/auth/password/reset?token=${encodeURIComponent(reset.token)}`
 
     try {
         await sendPasswordResetEmail({
@@ -39,9 +40,9 @@ export async function POST(req: Request) {
 
         await db.query(
             `
-      insert into audit_logs (actor_id, action, entity, entity_id, details)
-      values ($1, 'password_reset_requested', 'users', $1, $2::jsonb)
-    `,
+        insert into audit_logs (actor_id, action, entity, entity_id, details)
+        values ($1, 'password_reset_requested', 'users', $1, $2::jsonb)
+      `,
             [user.id, JSON.stringify({ via: "forgot-password" })]
         )
     } catch {

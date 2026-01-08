@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
+import { Eye, EyeOff } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -38,6 +39,8 @@ export default function LoginPage() {
 
     const [email, setEmail] = useState("")
     const [password, setPassword] = useState("")
+    const [showPassword, setShowPassword] = useState(false)
+
     const [submitting, setSubmitting] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
@@ -138,15 +141,30 @@ export default function LoginPage() {
                                 <label htmlFor="password" className="text-sm font-medium">
                                     Password
                                 </label>
-                                <Input
-                                    id="password"
-                                    type="password"
-                                    placeholder="••••••••"
-                                    autoComplete="current-password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    disabled={submitting}
-                                />
+
+                                <div className="relative">
+                                    <Input
+                                        id="password"
+                                        type={showPassword ? "text" : "password"}
+                                        placeholder="••••••••"
+                                        autoComplete="current-password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        disabled={submitting}
+                                        className="pr-10"
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="absolute right-1 top-1/2 -translate-y-1/2"
+                                        onClick={() => setShowPassword((v) => !v)}
+                                        aria-label={showPassword ? "Hide password" : "Show password"}
+                                        disabled={submitting}
+                                    >
+                                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                    </Button>
+                                </div>
                             </div>
 
                             {error ? (
@@ -164,7 +182,7 @@ export default function LoginPage() {
                                     Back to home
                                 </Link>
 
-                                <Link href="/auth/forgot-password" className="text-muted-foreground hover:underline">
+                                <Link href="/auth/password/forgot" className="text-muted-foreground hover:underline">
                                     Forgot password?
                                 </Link>
                             </div>
