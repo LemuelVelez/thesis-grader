@@ -34,8 +34,6 @@ async function requireAdminFromCookies() {
     return { ok: true as const, actor }
 }
 
-// This route acts as a backwards-compatible alias for user-by-id operations.
-// Prefer using /api/admin/users/[id].
 export async function GET(_req: Request, ctx: { params: { id: string } }) {
     try {
         if (!env.DATABASE_URL) {
@@ -60,7 +58,7 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
 
         return NextResponse.json({ ok: true, user })
     } catch (err: any) {
-        console.error("GET /api/admin/[id] failed:", err)
+        console.error("GET /api/admin/users/[id] failed:", err)
         return NextResponse.json({ ok: false, message: "Internal Server Error" }, { status: 500 })
     }
 }
@@ -139,6 +137,7 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
         const user = rows[0]
         if (!user) return NextResponse.json({ ok: false, message: "User not found." }, { status: 404 })
 
+        // revoke sessions if password changed or user disabled
         const shouldRevoke = patchPassword !== undefined || patchStatus === "disabled"
         if (shouldRevoke) {
             await deleteAllSessionsForUser(id).catch(() => null)
@@ -149,12 +148,12 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
         insert into audit_logs (actor_id, action, entity, entity_id, details)
         values ($1, 'user_updated', 'users', $2, $3::jsonb)
       `,
-            [actor.id, id, JSON.stringify({ ...details, sessionsRevoked: shouldRevoke, via: "api/admin/[id]" })]
+            [actor.id, id, JSON.stringify({ ...details, sessionsRevoked: shouldRevoke })]
         )
 
         return NextResponse.json({ ok: true, user })
     } catch (err: any) {
-        console.error("PATCH /api/admin/[id] failed:", err)
+        console.error("PATCH /api/admin/users/[id] failed:", err)
         return NextResponse.json(
             {
                 ok: false,
@@ -194,16 +193,12 @@ export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
         insert into audit_logs (actor_id, action, entity, entity_id, details)
         values ($1, 'user_deleted', 'users', $2, $3::jsonb)
       `,
-            [actor.id, id, JSON.stringify({ via: "api/admin/[id]" })]
+            [actor.id, id, JSON.stringify({})]
         )
 
         return NextResponse.json({ ok: true })
     } catch (err: any) {
-        console.error("DELETE /api/admin/[id] failed:", err)
+        console.error("DELETE /api/admin/users/[id] failed:", err)
         return NextResponse.json({ ok: false, message: "Internal Server Error" }, { status: 500 })
     }
-}
-
-export async function POST() {
-    return NextResponse.json({ ok: false, message: "Method not allowed. Use /api/admin/users." }, { status: 405 })
 }

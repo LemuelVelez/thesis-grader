@@ -862,6 +862,7 @@ export default function AdminUsersPage() {
                                         setDeleteOpen(false)
                                         await doDeleteUser(deleteUserRow.id)
                                     }}
+                                    className="text-white"
                                 >
                                     Delete
                                 </Button>

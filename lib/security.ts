@@ -43,26 +43,52 @@ function looksLikeHexSha256(s: string) {
     return /^[a-f0-9]{64}$/i.test(s)
 }
 
+function isPowerOfTwo(n: number) {
+    return Number.isInteger(n) && n > 1 && (n & (n - 1)) === 0
+}
+
 /**
  * Password hashing (recommended): scrypt.
  * Stored format:
  *   scrypt$N$r$p$salt_b64url$dk_b64url
+ *
+ * Fix for: "Invalid scrypt params ... memory limit exceeded"
+ * - Node/OpenSSL enforces a default maxmem that can be slightly below the
+ *   memory required by common params like N=32768,r=8 (≈33.5MB).
+ * - We set a higher maxmem and also use a slightly lower default N.
  */
 export async function hashPassword(
     password: string,
-    opts?: { N?: number; r?: number; p?: number; keylen?: number; saltBytes?: number }
+    opts?: {
+        N?: number
+        r?: number
+        p?: number
+        keylen?: number
+        saltBytes?: number
+        maxmem?: number
+    }
 ) {
     const pwd = String(password ?? "")
     if (!pwd) throw new Error("Password required")
 
-    const N = opts?.N ?? 32768
+    // Safer default that stays under many environments' limits
+    const N = opts?.N ?? 16384
     const r = opts?.r ?? 8
     const p = opts?.p ?? 1
     const keylen = opts?.keylen ?? 64
     const saltBytes = opts?.saltBytes ?? 16
 
+    if (!isPowerOfTwo(N)) throw new Error("Invalid scrypt N (must be power of two)")
+    if (!Number.isInteger(r) || r <= 0) throw new Error("Invalid scrypt r")
+    if (!Number.isInteger(p) || p <= 0) throw new Error("Invalid scrypt p")
+
     const salt = crypto.randomBytes(saltBytes)
-    const dk = (await scryptAsync(pwd, salt, keylen, { N, r, p })) as Buffer
+
+    // Estimated memory usage: 128 * r * N bytes (approx)
+    const mem = 128 * r * N
+    const maxmem = opts?.maxmem ?? Math.max(64 * 1024 * 1024, mem + 1024 * 1024)
+
+    const dk = (await scryptAsync(pwd, salt, keylen, { N, r, p, maxmem })) as Buffer
 
     return `scrypt$${N}$${r}$${p}$${salt.toString("base64url")}$${dk.toString("base64url")}`
 }
@@ -71,8 +97,8 @@ export async function hashPassword(
  * Verify a plaintext password against a stored hash.
  * Supports:
  *  - scrypt$... (recommended format)
- *  - bcryptjs ($2a/$2b/$2y) since you have bcryptjs installed
- *  - legacy sha256 (64-hex or "sha256:<hex>" or "sha256$<hex>") as a fallback
+ *  - bcryptjs ($2a/$2b/$2y)
+ *  - legacy sha256 (64-hex or "sha256:<hex>" or "sha256$<hex>")
  */
 export async function verifyPassword(password: string, storedHash: string) {
     const pwd = String(password ?? "")
@@ -90,7 +116,12 @@ export async function verifyPassword(password: string, storedHash: string) {
         const saltB64 = parts[4]
         const dkB64 = parts[5]
 
+        // Guardrails to avoid pathological params
         if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) return false
+        if (!isPowerOfTwo(N)) return false
+        if (!Number.isInteger(r) || r <= 0 || r > 32) return false
+        if (!Number.isInteger(p) || p <= 0 || p > 16) return false
+        if (N > (1 << 20)) return false // cap at ~1,048,576
 
         let salt: Buffer
         let dkStored: Buffer
@@ -102,7 +133,10 @@ export async function verifyPassword(password: string, storedHash: string) {
         }
         if (salt.length < 8 || dkStored.length < 16) return false
 
-        const dk = (await scryptAsync(pwd, salt, dkStored.length, { N, r, p })) as Buffer
+        const mem = 128 * r * N
+        const maxmem = Math.max(64 * 1024 * 1024, mem + 1024 * 1024)
+
+        const dk = (await scryptAsync(pwd, salt, dkStored.length, { N, r, p, maxmem })) as Buffer
         return timingSafeEqual(dk, dkStored)
     }
 
