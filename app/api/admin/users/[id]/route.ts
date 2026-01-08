@@ -34,7 +34,12 @@ async function requireAdminFromCookies() {
     return { ok: true as const, actor }
 }
 
-export async function GET(_req: Request, ctx: { params: { id: string } }) {
+async function getIdFromCtx(ctx: { params: Promise<{ id: string }> }) {
+    const p = await ctx.params
+    return String(p?.id ?? "").trim()
+}
+
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
             return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
@@ -43,7 +48,7 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
         const auth = await requireAdminFromCookies()
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
 
-        const id = String(ctx.params.id ?? "").trim()
+        const id = await getIdFromCtx(ctx)
         if (!id) return NextResponse.json({ ok: false, message: "Missing user id." }, { status: 400 })
 
         const q = `
@@ -63,7 +68,7 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
     }
 }
 
-export async function PATCH(req: Request, ctx: { params: { id: string } }) {
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
             return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
@@ -73,7 +78,7 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
         const actor = auth.actor
 
-        const id = String(ctx.params.id ?? "").trim()
+        const id = await getIdFromCtx(ctx)
         if (!id) return NextResponse.json({ ok: false, message: "Missing user id." }, { status: 400 })
 
         const body = await req.json().catch(() => ({} as any))
@@ -137,7 +142,6 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
         const user = rows[0]
         if (!user) return NextResponse.json({ ok: false, message: "User not found." }, { status: 404 })
 
-        // revoke sessions if password changed or user disabled
         const shouldRevoke = patchPassword !== undefined || patchStatus === "disabled"
         if (shouldRevoke) {
             await deleteAllSessionsForUser(id).catch(() => null)
@@ -167,7 +171,7 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
     }
 }
 
-export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
+export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
             return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
@@ -177,7 +181,7 @@ export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
         const actor = auth.actor
 
-        const id = String(ctx.params.id ?? "").trim()
+        const id = await getIdFromCtx(ctx)
         if (!id) return NextResponse.json({ ok: false, message: "Missing user id." }, { status: 400 })
 
         if (id === actor.id) {
