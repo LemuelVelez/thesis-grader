@@ -1,0 +1,40 @@
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
+import { env } from "@/lib/env"
+
+let client: S3Client | null = null
+
+export function getS3Client() {
+    if (client) return client
+
+    // If running on IAM role in prod, credentials can be omitted.
+    const hasStaticCreds = !!env.AWS_ACCESS_KEY_ID && !!env.AWS_SECRET_ACCESS_KEY
+
+    client = new S3Client({
+        region: env.AWS_REGION,
+        credentials: hasStaticCreds
+            ? {
+                accessKeyId: env.AWS_ACCESS_KEY_ID,
+                secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+            }
+            : undefined,
+    })
+
+    return client
+}
+
+export async function createPresignedPutUrl(opts: {
+    key: string
+    contentType: string
+    expiresInSeconds?: number
+}) {
+    const s3 = getS3Client()
+    const cmd = new PutObjectCommand({
+        Bucket: env.S3_BUCKET_NAME,
+        Key: opts.key,
+        ContentType: opts.contentType,
+    })
+
+    const url = await getSignedUrl(s3, cmd, { expiresIn: opts.expiresInSeconds ?? 60 })
+    return url
+}
