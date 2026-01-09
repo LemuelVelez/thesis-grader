@@ -4,6 +4,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { IconDotsVertical, IconLogout, IconUserCircle } from "@tabler/icons-react"
+import { toast } from "sonner"
 
 import { useAuth } from "@/hooks/use-auth"
 
@@ -29,7 +30,6 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar"
-import { toast } from "sonner"
 
 type NavUserProps = {
     user?: {
@@ -46,7 +46,7 @@ type NavUserProps = {
 }
 
 function getInitials(name: string) {
-    const n = name.trim()
+    const n = String(name ?? "").trim()
     if (!n) return "?"
     const parts = n.split(/\s+/).filter(Boolean)
     const first = parts[0]?.[0] ?? ""
@@ -55,7 +55,13 @@ function getInitials(name: string) {
     return init || n.slice(0, 2).toUpperCase()
 }
 
-function inferAvatarUrl(u: any): string {
+/**
+ * If a user has a direct avatar URL in `avatar`, use it.
+ * If the avatar_key is already a URL/path, allow it too (rare).
+ * Otherwise, the app should resolve avatar via /api/users/me/avatar -> returned signed URL
+ * (handled by useAuth().avatarUrl + refreshAvatarUrl()).
+ */
+function inferDirectAvatarUrl(u: any): string {
     const direct = String(u?.avatar ?? "").trim()
     if (direct) return direct
 
@@ -83,7 +89,9 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
     const router = useRouter()
     const { isMobile } = useSidebar()
 
-    const { loading, user: authUser } = useAuth()
+    // ✅ get resolved avatar url from auth (signed URL via API)
+    const { loading, user: authUser, avatarUrl: authAvatarUrl, refreshAvatarUrl } = useAuth()
+
     const u: any = userProp ?? authUser ?? null
 
     const [menuOpen, setMenuOpen] = React.useState(false)
@@ -94,10 +102,35 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
     const email = String(u?.email ?? "")
     const role = String(u?.role ?? "").toLowerCase() || null
 
-    const avatarUrl = React.useMemo(() => inferAvatarUrl(u), [u])
     const initials = React.useMemo(() => getInitials(name), [name])
-
     const showLoading = !userProp && loading
+
+    // 1) prefer direct url (if provided), else 2) useAuth resolved url, else empty (fallback initials)
+    const directAvatarUrl = React.useMemo(() => inferDirectAvatarUrl(u), [u])
+    const avatarUrl = directAvatarUrl || String(authAvatarUrl ?? "").trim() || ""
+
+    // ✅ If user has an avatar_key but we don't yet have a resolved url, refresh it
+    const lastKeyRef = React.useRef<string>("")
+    React.useEffect(() => {
+        if (showLoading) return
+        if (!u) return
+        const key = String(u?.avatar_key ?? "").trim()
+        if (!key) return
+
+        // If user already provided a direct URL, no need to refresh
+        if (directAvatarUrl) return
+
+        // If we already have an auth avatarUrl, no need
+        if (String(authAvatarUrl ?? "").trim()) return
+
+        // Avoid refetching for same key
+        if (lastKeyRef.current === key) return
+        lastKeyRef.current = key
+
+        Promise.resolve(refreshAvatarUrl?.()).catch(() => {
+            // ignore; fallback to initials
+        })
+    }, [u, showLoading, directAvatarUrl, authAvatarUrl, refreshAvatarUrl])
 
     const goToAccountSettings = React.useCallback(() => {
         if (showLoading || !u) return
@@ -151,8 +184,8 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
         >
             <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-2 px-2 py-2 text-left text-sm min-w-0">
-                    <Avatar className="h-8 w-8 rounded-lg">
-                        <AvatarImage src={avatarUrl || undefined} alt={name} />
+                    <Avatar className="h-8 w-8 rounded-lg overflow-hidden">
+                        <AvatarImage src={avatarUrl || undefined} alt={name} className="h-full w-full object-cover" />
                         <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                     </Avatar>
 
@@ -200,14 +233,9 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
             {variant === "header" ? (
                 <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
                     <DropdownMenuTrigger asChild>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-9 w-9 rounded-full"
-                            aria-label="User menu"
-                        >
-                            <Avatar className="h-8 w-8 rounded-full">
-                                <AvatarImage src={avatarUrl || undefined} alt={name} />
+                        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full" aria-label="User menu">
+                            <Avatar className="h-8 w-8 rounded-full overflow-hidden">
+                                <AvatarImage src={avatarUrl || undefined} alt={name} className="h-full w-full object-cover" />
                                 <AvatarFallback>{initials}</AvatarFallback>
                             </Avatar>
                         </Button>
@@ -220,8 +248,8 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
                             <DropdownMenuTrigger asChild>
                                 <SidebarMenuButton size="lg" isActive={menuOpen}>
-                                    <Avatar className="h-8 w-8 rounded-lg grayscale">
-                                        <AvatarImage src={avatarUrl || undefined} alt={name} />
+                                    <Avatar className="h-8 w-8 rounded-lg overflow-hidden">
+                                        <AvatarImage src={avatarUrl || undefined} alt={name} className="h-full w-full object-cover" />
                                         <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                     </Avatar>
 
@@ -243,11 +271,10 @@ export function NavUser({ user: userProp, onLogout, variant = "sidebar" }: NavUs
                                 align="end"
                                 sideOffset={4}
                             >
-                                {/* reuse same content, but match sidebar width behavior */}
                                 <DropdownMenuLabel className="p-0 font-normal">
                                     <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm min-w-0">
-                                        <Avatar className="h-8 w-8 rounded-lg">
-                                            <AvatarImage src={avatarUrl || undefined} alt={name} />
+                                        <Avatar className="h-8 w-8 rounded-lg overflow-hidden">
+                                            <AvatarImage src={avatarUrl || undefined} alt={name} className="h-full w-full object-cover" />
                                             <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
                                         </Avatar>
 
