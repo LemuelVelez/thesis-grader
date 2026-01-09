@@ -22,6 +22,18 @@ export async function listRubricTemplates(args?: { activeOnly?: boolean }) {
     return (rows as RubricTemplateRow[]) ?? []
 }
 
+// ✅ NEW: used to return full row after create/update
+export async function getRubricTemplate(id: string) {
+    const q = `
+    select id, name, version, active, created_at, updated_at
+    from rubric_templates
+    where id = $1
+    limit 1
+  `
+    const { rows } = await db.query(q, [id])
+    return (rows?.[0] as RubricTemplateRow | undefined) ?? undefined
+}
+
 export async function createRubricTemplate(args: { name: string; version?: number; active?: boolean }) {
     const q = `
     insert into rubric_templates (name, version, active)

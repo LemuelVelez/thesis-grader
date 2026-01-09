@@ -111,6 +111,10 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
         const adminItems: NavItem[] = [
             { label: "Users", href: `${base}/users`, icon: Users },
             { label: "Thesis Records", href: `${base}/thesis`, icon: BookOpen },
+
+            // ✅ Added Rubrics
+            { label: "Rubrics", href: `${base}/rubrics`, icon: ClipboardList },
+
             { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
             { label: "Audit Logs", href: `${base}/audit`, icon: ShieldCheck },
         ]

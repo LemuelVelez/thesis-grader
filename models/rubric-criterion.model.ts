@@ -23,6 +23,29 @@ export async function listRubricCriteria(template_id: string) {
     return (rows as RubricCriterionRow[]) ?? []
 }
 
+// ✅ NEW: used by /api/admin/rubric-criteria when templateId is not provided
+export async function listAllRubricCriteria() {
+    const q = `
+    select id, template_id, criterion, description, weight, min_score, max_score, created_at
+    from rubric_criteria
+    order by created_at asc
+  `
+    const { rows } = await db.query(q, [])
+    return (rows as RubricCriterionRow[]) ?? []
+}
+
+// ✅ NEW: used to return full row after create/update
+export async function getRubricCriterion(id: string) {
+    const q = `
+    select id, template_id, criterion, description, weight, min_score, max_score, created_at
+    from rubric_criteria
+    where id = $1
+    limit 1
+  `
+    const { rows } = await db.query(q, [id])
+    return (rows?.[0] as RubricCriterionRow | undefined) ?? undefined
+}
+
 export async function createRubricCriterion(args: {
     template_id: string
     criterion: string
