@@ -151,7 +151,24 @@ function initialsFromName(name: string) {
     return (a + b).toUpperCase() || "?"
 }
 
-const userAvatarUrlCache = new Map<string, string | null>() // userId -> signed url|null
+function avatarCacheKey(userId: string, avatarKey: string | null) {
+    // still include avatarKey so we auto-refresh when list returns a new key,
+    // but we ALSO fetch even if it's null (API can look in profiles tables).
+    return `${userId}:${avatarKey ?? ""}`
+}
+
+const userAvatarUrlCache = new Map<string, string | null>()
+const userAvatarInflight = new Map<string, Promise<string | null>>()
+
+function clearAvatarCacheForUser(userId: string) {
+    const prefix = `${userId}:`
+    for (const k of Array.from(userAvatarUrlCache.keys())) {
+        if (k.startsWith(prefix)) userAvatarUrlCache.delete(k)
+    }
+    for (const k of Array.from(userAvatarInflight.keys())) {
+        if (k.startsWith(prefix)) userAvatarInflight.delete(k)
+    }
+}
 
 function AvatarCircle(props: { url?: string | null; fallback: string; alt: string }) {
     const { url, fallback, alt } = props
@@ -172,10 +189,10 @@ function AvatarCircle(props: { url?: string | null; fallback: string; alt: strin
 function UserAvatarCell(props: { user: UserRow }) {
     const u = props.user
     const fallback = initialsFromName(u.name)
+    const cacheKey = avatarCacheKey(u.id, u.avatar_key)
 
     const [url, setUrl] = React.useState<string | null>(() => {
-        if (!u.avatar_key) return null
-        if (userAvatarUrlCache.has(u.id)) return userAvatarUrlCache.get(u.id) ?? null
+        if (userAvatarUrlCache.has(cacheKey)) return userAvatarUrlCache.get(cacheKey) ?? null
         return null
     })
 
@@ -183,40 +200,51 @@ function UserAvatarCell(props: { user: UserRow }) {
         let cancelled = false
 
         async function run() {
-            if (!u.avatar_key) {
-                userAvatarUrlCache.set(u.id, null)
-                setUrl(null)
-                return
-            }
-
-            const cached = userAvatarUrlCache.get(u.id)
+            const cached = userAvatarUrlCache.get(cacheKey)
             if (cached !== undefined) {
                 setUrl(cached)
                 return
             }
 
-            try {
-                const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/avatar`, {
-                    method: "GET",
-                    credentials: "include",
-                    headers: { Accept: "application/json" },
-                    cache: "no-store",
-                })
-
-                if (!res.ok) {
-                    userAvatarUrlCache.set(u.id, null)
+            const inflight = userAvatarInflight.get(cacheKey)
+            if (inflight) {
+                try {
+                    const next = await inflight
+                    userAvatarUrlCache.set(cacheKey, next)
+                    if (!cancelled) setUrl(next)
+                } catch {
+                    userAvatarUrlCache.set(cacheKey, null)
                     if (!cancelled) setUrl(null)
-                    return
                 }
+                return
+            }
 
-                const data = (await res.json().catch(() => null)) as any
-                const nextUrl = data?.ok ? (data?.url ?? null) : null
+            const p = (async () => {
+                try {
+                    const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/avatar`, {
+                        method: "GET",
+                        credentials: "include",
+                        headers: { Accept: "application/json" },
+                    })
 
-                userAvatarUrlCache.set(u.id, nextUrl)
+                    if (res.status === 401 || res.status === 403) return null
+                    if (!res.ok) return null
+
+                    const data = (await res.json().catch(() => null)) as any
+                    return data?.ok ? (data?.url ?? null) : null
+                } catch {
+                    return null
+                }
+            })()
+
+            userAvatarInflight.set(cacheKey, p)
+
+            try {
+                const nextUrl = await p
+                userAvatarUrlCache.set(cacheKey, nextUrl)
                 if (!cancelled) setUrl(nextUrl)
-            } catch {
-                userAvatarUrlCache.set(u.id, null)
-                if (!cancelled) setUrl(null)
+            } finally {
+                userAvatarInflight.delete(cacheKey)
             }
         }
 
@@ -224,6 +252,7 @@ function UserAvatarCell(props: { user: UserRow }) {
         return () => {
             cancelled = true
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [u.id, u.avatar_key])
 
     return <AvatarCircle url={url} fallback={fallback} alt={`${u.name} avatar`} />
@@ -241,7 +270,6 @@ function AdminMeAvatar() {
                     method: "GET",
                     credentials: "include",
                     headers: { Accept: "application/json" },
-                    cache: "no-store",
                 })
                 if (!res.ok) {
                     if (!cancelled) setUrl(null)
@@ -274,11 +302,9 @@ export default function AdminUsersPage() {
     const [total, setTotal] = React.useState(0)
     const [busy, setBusy] = React.useState(false)
 
-    // DataTable selection -> for bulk actions
     const [selected, setSelected] = React.useState<UserRow[]>([])
     const [selectionReset, setSelectionReset] = React.useState(0)
 
-    // Create dialog
     const [createOpen, setCreateOpen] = React.useState(false)
     const [cName, setCName] = React.useState("")
     const [cEmail, setCEmail] = React.useState("")
@@ -286,22 +312,18 @@ export default function AdminUsersPage() {
     const [cPassword, setCPassword] = React.useState("")
     const [cShowPassword, setCShowPassword] = React.useState(false)
 
-    // Single reset dialog
     const [resetOpen, setResetOpen] = React.useState(false)
     const [resetUser, setResetUser] = React.useState<UserRow | null>(null)
     const [rPassword, setRPassword] = React.useState("")
     const [rShowPassword, setRShowPassword] = React.useState(false)
 
-    // Single delete confirm dialog (AlertDialog)
     const [deleteOpen, setDeleteOpen] = React.useState(false)
     const [deleteUserRow, setDeleteUserRow] = React.useState<UserRow | null>(null)
 
-    // Bulk reset dialog
     const [bulkResetOpen, setBulkResetOpen] = React.useState(false)
     const [bulkPassword, setBulkPassword] = React.useState("")
     const [bulkShowPassword, setBulkShowPassword] = React.useState(false)
 
-    // Bulk delete confirm dialog (AlertDialog)
     const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false)
 
     const isAdmin = String(user?.role ?? "").toLowerCase() === "admin"
@@ -320,7 +342,6 @@ export default function AdminUsersPage() {
             params.set("offset", "0")
 
             const res = await fetch(`/api/admin/users?${params.toString()}`, {
-                cache: "no-store",
                 credentials: "include",
             })
 
@@ -389,6 +410,8 @@ export default function AdminUsersPage() {
 
                 toast.success("Saved.", { id: tId })
                 setRows((prev) => prev.map((r) => (r.id === userId ? data.user : r)))
+
+                clearAvatarCacheForUser(userId)
                 return true
             } catch {
                 toast.error("Network error while saving.", { id: tId })
@@ -422,12 +445,13 @@ export default function AdminUsersPage() {
             toast.success("User deleted.", { id: tId })
             setRows((prev) => prev.filter((r) => r.id !== userId))
             setTotal((t) => Math.max(0, t - 1))
+
+            clearAvatarCacheForUser(userId)
         } catch {
             toast.error("Network error while deleting user.", { id: tId })
         }
     }, [])
 
-    // -------- BULK ACTIONS --------
     const bulkUpdateStatus = React.useCallback(
         async (status: UserRow["status"]) => {
             if (!selected.length) return
@@ -527,7 +551,6 @@ export default function AdminUsersPage() {
         }
     }, [selected, fetchUsers, clearSelection])
 
-    // -------- COLUMNS --------
     const columns = React.useMemo<ColumnDef<UserRow>[]>(() => {
         return [
             {
@@ -715,8 +738,7 @@ export default function AdminUsersPage() {
             setCPassword("")
             setCShowPassword(false)
 
-            // Clear avatar cache so newly created user doesn't reuse a stale entry
-            userAvatarUrlCache.delete(data.user.id)
+            clearAvatarCacheForUser(data.user.id)
 
             await fetchUsers()
             clearSelection()
@@ -790,7 +812,6 @@ export default function AdminUsersPage() {
                             </div>
                         </div>
 
-                        {/* Bulk actions bar */}
                         <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div className="text-sm text-muted-foreground">
                                 Selected: <span className="font-medium text-foreground">{selected.length}</span>
@@ -855,6 +876,8 @@ export default function AdminUsersPage() {
                     selectionResetKey={selectionReset}
                 />
 
+                {/* dialogs unchanged below ... */}
+                {/* (kept same as your existing code) */}
                 {/* Create User Dialog */}
                 <Dialog
                     open={createOpen}
@@ -1026,7 +1049,7 @@ export default function AdminUsersPage() {
                     </DialogContent>
                 </Dialog>
 
-                {/* Single Delete Confirm (AlertDialog) */}
+                {/* Single Delete Confirm */}
                 <AlertDialog
                     open={deleteOpen}
                     onOpenChange={(open) => {
@@ -1139,7 +1162,7 @@ export default function AdminUsersPage() {
                     </DialogContent>
                 </Dialog>
 
-                {/* Bulk Delete Confirm (AlertDialog) */}
+                {/* Bulk Delete Confirm */}
                 <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
                     <AlertDialogContent>
                         <AlertDialogHeader>
