@@ -60,6 +60,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 type RubricTemplate = Record<string, any>
 type RubricCriterion = Record<string, any>
 
+type GetTemplateResponse =
+    | { ok: true; template: RubricTemplate }
+    | { ok: false; message?: string; error?: string }
+
+type ListCriteriaResponse =
+    | { ok: true; criteria: RubricCriterion[] }
+    | { ok: false; message?: string; error?: string }
+
+type OkResponse = { ok: true;[k: string]: any } | { ok: false; message?: string; error?: string }
+
 function getId(obj: any): string {
     return String(obj?.id ?? obj?._id ?? obj?.uuid ?? "")
 }
@@ -82,10 +92,6 @@ function getTemplateActive(t: RubricTemplate): boolean {
     return Boolean(t?.active ?? true)
 }
 
-function getCriterionTemplateId(c: RubricCriterion): string {
-    return String(c?.template_id ?? c?.templateId ?? c?.rubricTemplateId ?? c?.rubric_template_id ?? c?.rubricId ?? "")
-}
-
 function getCriterionTitle(c: RubricCriterion): string {
     return String(c?.criterion ?? c?.title ?? c?.name ?? c?.label ?? "Untitled criterion")
 }
@@ -100,12 +106,12 @@ function getCriterionWeight(c: RubricCriterion): string {
 }
 
 function getCriterionMinScore(c: RubricCriterion): string {
-    const v = c?.min_score ?? c?.minScore ?? ""
+    const v = c?.minScore ?? c?.min_score ?? ""
     return v === null || v === undefined ? "" : String(v)
 }
 
 function getCriterionMaxScore(c: RubricCriterion): string {
-    const v = c?.max_score ?? c?.maxScore ?? ""
+    const v = c?.maxScore ?? c?.max_score ?? ""
     return v === null || v === undefined ? "" : String(v)
 }
 
@@ -124,7 +130,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
         let message = `Request failed (${res.status})`
         try {
             const data = await res.json()
-            message = data?.error ?? message
+            message = data?.message ?? data?.error ?? message
         } catch {
             // ignore
         }
@@ -150,11 +156,82 @@ function prettyJson(value: any) {
     }
 }
 
-function normalizeList(value: any): any[] {
-    if (Array.isArray(value)) return value
-    const list = value?.items ?? value?.data ?? value?.rows
-    if (Array.isArray(list)) return list
-    return []
+function toNumberOrUndefined(v: any) {
+    if (v === null || v === undefined || v === "") return undefined
+    const n = Number(v)
+    return Number.isFinite(n) ? n : undefined
+}
+
+function toNumberOrString(v: any) {
+    if (v === null || v === undefined || v === "") return undefined
+    if (typeof v === "number") return v
+    const s = String(v).trim()
+    if (!s) return undefined
+    const n = Number(s)
+    return Number.isFinite(n) ? n : s
+}
+
+function pickTemplatePatch(obj: any) {
+    const patch: Record<string, any> = {}
+
+    if (obj && typeof obj === "object") {
+        if (obj.name !== undefined) patch.name = String(obj.name)
+        if (obj.description !== undefined) {
+            const d = String(obj.description ?? "").trim()
+            patch.description = d ? d : null
+        }
+        if (obj.version !== undefined) {
+            const v = toNumberOrUndefined(obj.version)
+            patch.version = v && v > 0 ? v : 1
+        }
+        if (obj.active !== undefined) patch.active = Boolean(obj.active)
+    }
+
+    return patch
+}
+
+function normalizeCriterionCreatePayload(raw: any, templateId: string) {
+    const obj = raw && typeof raw === "object" ? raw : {}
+
+    const title = obj.criterion ?? obj.title ?? obj.name ?? obj.label
+    const desc = obj.description ?? obj.desc
+
+    const payload: Record<string, any> = {
+        templateId:
+            obj.templateId ??
+            obj.template_id ??
+            obj.rubricTemplateId ??
+            obj.rubric_template_id ??
+            obj.rubricId ??
+            templateId,
+        criterion: title !== undefined ? String(title) : "",
+        description: desc !== undefined && String(desc).trim() ? String(desc).trim() : null,
+        weight: toNumberOrString(obj.weight ?? obj.points ?? obj.score) ?? 1,
+        minScore: toNumberOrUndefined(obj.minScore ?? obj.min_score) ?? 1,
+        maxScore: toNumberOrUndefined(obj.maxScore ?? obj.max_score) ?? 5,
+    }
+
+    return payload
+}
+
+function normalizeCriterionPatchPayload(raw: any) {
+    const obj = raw && typeof raw === "object" ? raw : {}
+
+    const title = obj.criterion ?? obj.title ?? obj.name ?? obj.label
+    const desc = obj.description ?? obj.desc
+
+    const payload: Record<string, any> = {}
+
+    if (title !== undefined) payload.criterion = String(title)
+    if (desc !== undefined) {
+        const d = String(desc ?? "").trim()
+        payload.description = d ? d : null
+    }
+    if (obj.weight !== undefined) payload.weight = toNumberOrString(obj.weight)
+    if (obj.minScore !== undefined || obj.min_score !== undefined) payload.minScore = toNumberOrUndefined(obj.minScore ?? obj.min_score)
+    if (obj.maxScore !== undefined || obj.max_score !== undefined) payload.maxScore = toNumberOrUndefined(obj.maxScore ?? obj.max_score)
+
+    return payload
 }
 
 export default function AdminRubricDetailPage() {
@@ -197,38 +274,14 @@ export default function AdminRubricDetailPage() {
         setLoading(true)
 
         try {
-            let foundTemplate: RubricTemplate | null = null
+            if (!templateId) throw new Error("Missing rubric id")
 
-            // 1) GET /api/admin/rubric-templates/:id
-            try {
-                const one = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`)
-                foundTemplate = one?.data ?? one?.item ?? one
-            } catch {
-                // 2) fallback GET /api/admin/rubric-templates?id=:id
-                try {
-                    const one = await apiFetch<any>(`/api/admin/rubric-templates?id=${encodeURIComponent(templateId)}`)
-                    if (one && typeof one === "object" && !Array.isArray(one)) {
-                        const maybe = one?.data ?? one?.item ?? one
-                        if (maybe && typeof maybe === "object" && getId(maybe) === templateId) {
-                            foundTemplate = maybe
-                        } else {
-                            const list = normalizeList(one)
-                            foundTemplate = list.find((x) => getId(x) === templateId) ?? null
-                        }
-                    } else {
-                        const list = normalizeList(one)
-                        foundTemplate = list.find((x) => getId(x) === templateId) ?? null
-                    }
-                } catch {
-                    // 3) fallback list all then find
-                    const all = await apiFetch<any>("/api/admin/rubric-templates")
-                    const list = normalizeList(all)
-                    foundTemplate = list.find((x) => getId(x) === templateId) ?? null
-                }
-            }
+            // Template
+            const tQs = new URLSearchParams({ resource: "rubricTemplates", id: templateId })
+            const tRes = await apiFetch<GetTemplateResponse>(`/api/evaluation?${tQs.toString()}`)
+            if (!(tRes as any)?.ok) throw new Error((tRes as any)?.message ?? (tRes as any)?.error ?? "Rubric not found")
 
-            if (!foundTemplate) throw new Error("Rubric not found")
-
+            const foundTemplate = (tRes as any).template as RubricTemplate
             setTemplate(foundTemplate)
             setName(getTemplateName(foundTemplate))
             setDescription(getTemplateDescription(foundTemplate))
@@ -237,19 +290,16 @@ export default function AdminRubricDetailPage() {
             setTemplateJson(prettyJson(foundTemplate))
             setTemplateJsonError(null)
 
-            // Criteria: fetch by templateId (preferred)
-            try {
-                const crit = await apiFetch<any>(`/api/admin/rubric-criteria?templateId=${encodeURIComponent(templateId)}`)
-                setCriteria(normalizeList(crit))
-            } catch {
-                // fallback: fetch all and filter
-                const all = await apiFetch<any>("/api/admin/rubric-criteria")
-                const list = normalizeList(all)
-                const filtered = list.filter((c) => getCriterionTemplateId(c) === templateId)
-                setCriteria(filtered)
-            }
+            // Criteria
+            const cQs = new URLSearchParams({ resource: "rubricCriteria", templateId })
+            const cRes = await apiFetch<ListCriteriaResponse>(`/api/evaluation?${cQs.toString()}`)
+            if (!(cRes as any)?.ok) throw new Error((cRes as any)?.message ?? (cRes as any)?.error ?? "Failed to load criteria")
+
+            setCriteria(Array.isArray((cRes as any)?.criteria) ? ((cRes as any).criteria as RubricCriterion[]) : [])
         } catch (e: any) {
             setError(e?.message ?? "Failed to load rubric")
+            setTemplate(null)
+            setCriteria([])
         } finally {
             setLoading(false)
         }
@@ -277,28 +327,22 @@ export default function AdminRubricDetailPage() {
             const vNum = Number(version)
             const descTrim = description.trim()
 
-            const payload: Record<string, any> = {
-                ...(template ?? {}),
+            const patch: Record<string, any> = {
                 name: name.trim() || "Untitled Rubric",
-                // ✅ send null if empty to allow clearing
                 description: descTrim ? descTrim : null,
                 version: Number.isFinite(vNum) && vNum > 0 ? vNum : 1,
                 active: Boolean(active),
             }
 
-            const updated = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, {
-                method: "PUT",
-                body: JSON.stringify(payload),
+            const qs = new URLSearchParams({ resource: "rubricTemplates", id: templateId })
+            const updated = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, {
+                method: "PATCH",
+                body: JSON.stringify(patch),
             })
 
-            const next = updated?.data ?? updated?.item ?? updated
-            setTemplate(next)
-            setName(getTemplateName(next))
-            setDescription(getTemplateDescription(next))
-            setVersion(String(getTemplateVersion(next)))
-            setActive(getTemplateActive(next))
-            setTemplateJson(prettyJson(next))
-            setTemplateJsonError(null)
+            if (!(updated as any)?.ok) throw new Error((updated as any)?.message ?? (updated as any)?.error ?? "Failed to save rubric")
+
+            await load()
         } catch (e: any) {
             setError(e?.message ?? "Failed to save rubric")
         } finally {
@@ -320,17 +364,17 @@ export default function AdminRubricDetailPage() {
         setTemplateJsonError(null)
 
         try {
-            const updated = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, {
-                method: "PUT",
-                body: JSON.stringify(parsed.value),
+            const patch = pickTemplatePatch(parsed.value)
+
+            const qs = new URLSearchParams({ resource: "rubricTemplates", id: templateId })
+            const updated = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, {
+                method: "PATCH",
+                body: JSON.stringify(patch),
             })
-            const next = updated?.data ?? updated?.item ?? updated
-            setTemplate(next)
-            setName(getTemplateName(next))
-            setDescription(getTemplateDescription(next))
-            setVersion(String(getTemplateVersion(next)))
-            setActive(getTemplateActive(next))
-            setTemplateJson(prettyJson(next))
+
+            if (!(updated as any)?.ok) throw new Error((updated as any)?.message ?? (updated as any)?.error ?? "Failed to save rubric")
+
+            await load()
         } catch (e: any) {
             setError(e?.message ?? "Failed to save rubric")
         } finally {
@@ -341,7 +385,9 @@ export default function AdminRubricDetailPage() {
     async function onDeleteTemplate() {
         setError(null)
         try {
-            await apiFetch(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, { method: "DELETE" })
+            const qs = new URLSearchParams({ resource: "rubricTemplates", id: templateId })
+            const res = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, { method: "DELETE" })
+            if (!(res as any)?.ok) throw new Error((res as any)?.message ?? (res as any)?.error ?? "Failed to delete rubric")
             router.push("/dashboard/admin/rubrics")
         } catch (e: any) {
             setError(e?.message ?? "Failed to delete rubric")
@@ -352,18 +398,18 @@ export default function AdminRubricDetailPage() {
         setCriterionEditing(null)
         setCriterionTitle("")
         setCriterionDesc("")
-        setCriterionWeight("")
+        setCriterionWeight("1")
         setCriterionMinScore("1")
         setCriterionMaxScore("5")
 
         setCriterionJson(
             prettyJson({
-                template_id: templateId,
+                templateId,
                 criterion: "",
                 description: "",
                 weight: 1,
-                min_score: 1,
-                max_score: 5,
+                minScore: 1,
+                maxScore: 5,
             })
         )
         setCriterionJsonError(null)
@@ -374,7 +420,7 @@ export default function AdminRubricDetailPage() {
         setCriterionEditing(c)
         setCriterionTitle(getCriterionTitle(c))
         setCriterionDesc(getCriterionDescription(c))
-        setCriterionWeight(getCriterionWeight(c))
+        setCriterionWeight(getCriterionWeight(c) || "1")
         setCriterionMinScore(getCriterionMinScore(c) || "1")
         setCriterionMaxScore(getCriterionMaxScore(c) || "5")
         setCriterionJson(prettyJson(c))
@@ -398,46 +444,45 @@ export default function AdminRubricDetailPage() {
             const isEdit = Boolean(criterionEditing && getId(criterionEditing))
             const cid = isEdit ? getId(criterionEditing) : ""
 
-            const payload: Record<string, any> = { ...(parsed.value ?? {}) }
+            if (!isEdit) {
+                const payload = normalizeCriterionCreatePayload(parsed.value, templateId)
 
-            if (
-                !payload.template_id &&
-                !payload.templateId &&
-                !payload.rubricTemplateId &&
-                !payload.rubric_template_id &&
-                !payload.rubricId
-            ) {
-                payload.template_id = templateId
-            }
+                // overlay form values (form wins)
+                const formTitle = criterionTitle.trim()
+                if (formTitle) payload.criterion = formTitle
 
-            // ✅ Ensure title saves from the form if JSON is missing/empty
-            const formTitle = criterionTitle.trim()
-            if (!payload.criterion && !payload.title && !payload.name && !payload.label) {
-                payload.criterion = formTitle
-            } else if (payload.criterion !== undefined && String(payload.criterion).trim() === "" && formTitle) {
-                payload.criterion = formTitle
-            }
-
-            // ✅ FIX: ensure description saves from the form if JSON has "" / missing
-            const formDescTrim = criterionDesc.trim()
-            if (payload.description === undefined || payload.description === "") {
+                const formDescTrim = criterionDesc.trim()
                 payload.description = formDescTrim ? formDescTrim : null
-            }
 
-            if (criterionWeight !== "" && payload.weight === undefined) payload.weight = criterionWeight
-            if (criterionMinScore !== "" && payload.min_score === undefined) payload.min_score = criterionMinScore
-            if (criterionMaxScore !== "" && payload.max_score === undefined) payload.max_score = criterionMaxScore
+                if (criterionWeight.trim()) payload.weight = toNumberOrString(criterionWeight.trim()) ?? payload.weight
+                if (criterionMinScore.trim()) payload.minScore = toNumberOrUndefined(criterionMinScore.trim()) ?? payload.minScore
+                if (criterionMaxScore.trim()) payload.maxScore = toNumberOrUndefined(criterionMaxScore.trim()) ?? payload.maxScore
 
-            if (isEdit) {
-                await apiFetch(`/api/admin/rubric-criteria/${encodeURIComponent(cid)}`, {
-                    method: "PUT",
-                    body: JSON.stringify(payload),
-                })
-            } else {
-                await apiFetch(`/api/admin/rubric-criteria`, {
+                const qs = new URLSearchParams({ resource: "rubricCriteria" })
+                const res = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, {
                     method: "POST",
                     body: JSON.stringify(payload),
                 })
+                if (!(res as any)?.ok) throw new Error((res as any)?.message ?? (res as any)?.error ?? "Failed to save criterion")
+            } else {
+                const patch = normalizeCriterionPatchPayload(parsed.value)
+
+                const formTitle = criterionTitle.trim()
+                if (formTitle) patch.criterion = formTitle
+
+                const formDescTrim = criterionDesc.trim()
+                patch.description = formDescTrim ? formDescTrim : null
+
+                if (criterionWeight.trim()) patch.weight = toNumberOrString(criterionWeight.trim())
+                if (criterionMinScore.trim()) patch.minScore = toNumberOrUndefined(criterionMinScore.trim())
+                if (criterionMaxScore.trim()) patch.maxScore = toNumberOrUndefined(criterionMaxScore.trim())
+
+                const qs = new URLSearchParams({ resource: "rubricCriteria", id: cid })
+                const res = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, {
+                    method: "PATCH",
+                    body: JSON.stringify(patch),
+                })
+                if (!(res as any)?.ok) throw new Error((res as any)?.message ?? (res as any)?.error ?? "Failed to save criterion")
             }
 
             setCriterionDialogOpen(false)
@@ -452,7 +497,9 @@ export default function AdminRubricDetailPage() {
     async function onDeleteCriterion(cid: string) {
         setError(null)
         try {
-            await apiFetch(`/api/admin/rubric-criteria/${encodeURIComponent(cid)}`, { method: "DELETE" })
+            const qs = new URLSearchParams({ resource: "rubricCriteria", id: cid })
+            const res = await apiFetch<OkResponse>(`/api/evaluation?${qs.toString()}`, { method: "DELETE" })
+            if (!(res as any)?.ok) throw new Error((res as any)?.message ?? (res as any)?.error ?? "Failed to delete criterion")
             await load()
         } catch (e: any) {
             setError(e?.message ?? "Failed to delete criterion")
@@ -523,8 +570,7 @@ export default function AdminRubricDetailPage() {
                                     <AlertDialogHeader>
                                         <AlertDialogTitle>Delete this rubric?</AlertDialogTitle>
                                         <AlertDialogDescription>
-                                            This action cannot be undone. Any criteria attached to this rubric template
-                                            will be deleted as well (via DB cascade).
+                                            This action cannot be undone. Any criteria attached to this rubric template will be deleted as well (via DB cascade).
                                         </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
@@ -593,7 +639,6 @@ export default function AdminRubricDetailPage() {
                                             />
                                         </div>
 
-                                        {/* ✅ NEW: Template Description field */}
                                         <div className="grid gap-2">
                                             <Label htmlFor="t-desc">Description</Label>
                                             <Textarea
@@ -745,7 +790,7 @@ export default function AdminRubricDetailPage() {
                                                     <p className="text-sm text-destructive">{criterionJsonError}</p>
                                                 ) : null}
                                                 <p className="text-xs text-muted-foreground">
-                                                    Tip: ensure the payload includes <code>template_id</code> (or your equivalent alias).
+                                                    Tip: create expects <code>templateId</code>, <code>criterion</code>, and optional fields.
                                                 </p>
                                             </div>
                                         </div>
@@ -913,7 +958,7 @@ export default function AdminRubricDetailPage() {
                             <CardHeader>
                                 <CardTitle>Advanced (JSON)</CardTitle>
                                 <CardDescription>
-                                    Edit the full rubric template payload. Your backend persists{" "}
+                                    Edit the rubric template fields persisted by the backend:{" "}
                                     <code>name</code>, <code>description</code>, <code>version</code>, and <code>active</code>.
                                 </CardDescription>
                             </CardHeader>
@@ -934,7 +979,7 @@ export default function AdminRubricDetailPage() {
 
                                         <div className="flex items-center justify-between gap-2">
                                             <p className="text-xs text-muted-foreground">
-                                                Make sure the object includes valid values for fields your backend persists.
+                                                We only PATCH persisted fields to match your API contracts.
                                             </p>
                                             <Button onClick={onSaveTemplateJson} disabled={savingTemplate}>
                                                 <Save className="mr-2 h-4 w-4" />

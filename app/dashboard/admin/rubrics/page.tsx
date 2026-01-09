@@ -4,15 +4,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import {
-    MoreHorizontal,
-    Plus,
-    RefreshCw,
-    Search,
-    Trash2,
-    Pencil,
-    ExternalLink,
-} from "lucide-react"
+import { MoreHorizontal, Plus, RefreshCw, Search, Trash2, Pencil, ExternalLink } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
@@ -64,7 +56,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 type RubricTemplate = Record<string, any>
-type RubricCriterion = Record<string, any>
+
+type RubricTemplatesResponse =
+    | { ok: true; total?: number; templates?: RubricTemplate[] }
+    | { ok: false; message?: string; error?: string }
+
+type RubricCriteriaResponse =
+    | { ok: true; criteria?: any[] }
+    | { ok: false; message?: string; error?: string }
 
 function getId(obj: any): string {
     return String(obj?.id ?? obj?._id ?? obj?.uuid ?? "")
@@ -95,17 +94,29 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
         },
         cache: "no-store",
     })
+
     if (!res.ok) {
         let message = `Request failed (${res.status})`
         try {
             const data = await res.json()
-            message = data?.error ?? message
+            message = data?.message ?? data?.error ?? message
         } catch {
             // ignore
         }
         throw new Error(message)
     }
+
     return (await res.json()) as T
+}
+
+async function fetchCriteriaCount(templateId: string): Promise<number> {
+    const qs = new URLSearchParams({
+        resource: "rubricCriteria",
+        templateId,
+    })
+    const res = await apiFetch<RubricCriteriaResponse>(`/api/evaluation?${qs.toString()}`)
+    if ((res as any)?.ok && Array.isArray((res as any)?.criteria)) return (res as any).criteria.length
+    return 0
 }
 
 export default function AdminRubricsPage() {
@@ -116,7 +127,10 @@ export default function AdminRubricsPage() {
     const [error, setError] = React.useState<string | null>(null)
 
     const [templates, setTemplates] = React.useState<RubricTemplate[]>([])
-    const [criteria, setCriteria] = React.useState<RubricCriterion[]>([])
+
+    const [countsLoading, setCountsLoading] = React.useState(false)
+    const [countsByTemplateId, setCountsByTemplateId] = React.useState<Record<string, number>>({})
+    const [criteriaTotal, setCriteriaTotal] = React.useState(0)
 
     const [search, setSearch] = React.useState("")
 
@@ -125,24 +139,6 @@ export default function AdminRubricsPage() {
     const [createName, setCreateName] = React.useState("")
     const [createDescription, setCreateDescription] = React.useState("")
     const [creating, setCreating] = React.useState(false)
-
-    const countsByTemplateId = React.useMemo(() => {
-        const map = new Map<string, number>()
-        for (const c of criteria) {
-            // ✅ FIX: DB uses template_id, so count correctly
-            const templateId = String(
-                c?.template_id ??
-                c?.templateId ??
-                c?.rubricTemplateId ??
-                c?.rubric_template_id ??
-                c?.rubricId ??
-                ""
-            )
-            if (!templateId) continue
-            map.set(templateId, (map.get(templateId) ?? 0) + 1)
-        }
-        return map
-    }, [criteria])
 
     const filtered = React.useMemo(() => {
         const q = search.trim().toLowerCase()
@@ -153,40 +149,69 @@ export default function AdminRubricsPage() {
         })
     }, [templates, search])
 
+    const loadCounts = React.useCallback(async (list: RubricTemplate[]) => {
+        const ids = list.map(getId).filter(Boolean)
+        setCountsLoading(true)
+        try {
+            const out: Record<string, number> = {}
+            let total = 0
+
+            // simple concurrency limiter
+            const chunkSize = 8
+            for (let i = 0; i < ids.length; i += chunkSize) {
+                const chunk = ids.slice(i, i + chunkSize)
+                const settled = await Promise.allSettled(chunk.map((id) => fetchCriteriaCount(id)))
+                for (let j = 0; j < chunk.length; j++) {
+                    const id = chunk[j]
+                    const r = settled[j]
+                    const n = r.status === "fulfilled" ? r.value : 0
+                    out[id] = n
+                    total += n
+                }
+            }
+
+            setCountsByTemplateId(out)
+            setCriteriaTotal(total)
+        } catch {
+            setCountsByTemplateId({})
+            setCriteriaTotal(0)
+        } finally {
+            setCountsLoading(false)
+        }
+    }, [])
+
     const load = React.useCallback(async () => {
         setError(null)
         setLoading(true)
+        setCountsByTemplateId({})
+        setCriteriaTotal(0)
+
         try {
-            const [t, c] = await Promise.allSettled([
-                apiFetch<any>("/api/admin/rubric-templates"),
-                apiFetch<any>("/api/admin/rubric-criteria"),
-            ])
+            const qs = new URLSearchParams({
+                resource: "rubricTemplates",
+                limit: "200",
+                offset: "0",
+                q: "",
+            })
 
-            if (t.status === "fulfilled") {
-                const value = t.value
-                const list = Array.isArray(value) ? value : value?.items ?? value?.data ?? []
-                setTemplates(Array.isArray(list) ? list : [])
-            } else {
-                setTemplates([])
+            const res = await apiFetch<RubricTemplatesResponse>(`/api/evaluation?${qs.toString()}`)
+
+            if (!(res as any)?.ok) {
+                throw new Error((res as any)?.message ?? (res as any)?.error ?? "Failed to load rubrics")
             }
 
-            if (c.status === "fulfilled") {
-                const value = c.value
-                const list = Array.isArray(value) ? value : value?.items ?? value?.data ?? []
-                setCriteria(Array.isArray(list) ? list : [])
-            } else {
-                setCriteria([])
-            }
+            const list = Array.isArray((res as any)?.templates) ? ((res as any).templates as RubricTemplate[]) : []
+            setTemplates(list)
 
-            if (t.status === "rejected" && c.status === "rejected") {
-                throw t.reason
-            }
+            // criteria counts (API returns criteria per templateId)
+            void loadCounts(list)
         } catch (e: any) {
+            setTemplates([])
             setError(e?.message ?? "Failed to load rubrics")
         } finally {
             setLoading(false)
         }
-    }, [])
+    }, [loadCounts])
 
     React.useEffect(() => {
         void load()
@@ -208,21 +233,23 @@ export default function AdminRubricsPage() {
             const payload: Record<string, any> = {
                 name: createName.trim() || "Untitled Rubric",
             }
-            // ✅ Send description when present (API supports it)
             if (createDescription.trim()) payload.description = createDescription.trim()
 
-            const created = await apiFetch<any>("/api/admin/rubric-templates", {
+            const qs = new URLSearchParams({ resource: "rubricTemplates" })
+            const created = await apiFetch<any>(`/api/evaluation?${qs.toString()}`, {
                 method: "POST",
                 body: JSON.stringify(payload),
             })
 
-            // Best-effort: resolve ID, then navigate to it; else just reload
-            const id = getId(created) || getId(created?.data) || getId(created?.item)
+            if (!created?.ok) throw new Error(created?.message ?? created?.error ?? "Failed to create rubric")
+
+            const tpl = created?.template ?? null
+            const id = getId(tpl) || getId(created?.data) || getId(created?.item)
             setCreateOpen(false)
             setCreateName("")
             setCreateDescription("")
             await load()
-            if (id) router.push(`/dashboard/admin/rubrics/${id}`)
+            if (id) router.push(`/dashboard/admin/rubrics/${encodeURIComponent(id)}`)
         } catch (e: any) {
             setError(e?.message ?? "Failed to create rubric")
         } finally {
@@ -233,9 +260,11 @@ export default function AdminRubricsPage() {
     async function onDelete(templateId: string) {
         setError(null)
         try {
-            await apiFetch(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, {
+            const qs = new URLSearchParams({ resource: "rubricTemplates", id: templateId })
+            const res = await apiFetch<any>(`/api/evaluation?${qs.toString()}`, {
                 method: "DELETE",
             })
+            if (!res?.ok) throw new Error(res?.message ?? res?.error ?? "Failed to delete rubric")
             await load()
         } catch (e: any) {
             setError(e?.message ?? "Failed to delete rubric")
@@ -338,11 +367,7 @@ export default function AdminRubricsPage() {
                             <CardDescription>Templates available in the system</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            {loading ? (
-                                <Skeleton className="h-8 w-20" />
-                            ) : (
-                                <div className="text-3xl font-semibold">{templates.length}</div>
-                            )}
+                            {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-3xl font-semibold">{templates.length}</div>}
                         </CardContent>
                     </Card>
 
@@ -352,10 +377,10 @@ export default function AdminRubricsPage() {
                             <CardDescription>Across all templates</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            {loading ? (
+                            {loading || countsLoading ? (
                                 <Skeleton className="h-8 w-20" />
                             ) : (
-                                <div className="text-3xl font-semibold">{criteria.length}</div>
+                                <div className="text-3xl font-semibold">{criteriaTotal}</div>
                             )}
                         </CardContent>
                     </Card>
@@ -438,7 +463,7 @@ export default function AdminRubricsPage() {
                                                     const name = getName(t)
                                                     const desc = getDescription(t)
                                                     const updated = t?.updatedAt ?? t?.updated_at ?? t?.modifiedAt ?? t?.createdAt
-                                                    const criteriaCount = countsByTemplateId.get(id) ?? 0
+                                                    const criteriaCount = countsByTemplateId[id] ?? 0
 
                                                     return (
                                                         <TableRow key={id || name}>
@@ -463,9 +488,13 @@ export default function AdminRubricsPage() {
                                                             </TableCell>
 
                                                             <TableCell className="text-right">
-                                                                <Badge variant={criteriaCount > 0 ? "secondary" : "outline"}>
-                                                                    {criteriaCount}
-                                                                </Badge>
+                                                                {countsLoading ? (
+                                                                    <Skeleton className="ml-auto h-6 w-10" />
+                                                                ) : (
+                                                                    <Badge variant={criteriaCount > 0 ? "secondary" : "outline"}>
+                                                                        {criteriaCount}
+                                                                    </Badge>
+                                                                )}
                                                             </TableCell>
 
                                                             <TableCell className="text-sm text-muted-foreground">
@@ -512,9 +541,7 @@ export default function AdminRubricsPage() {
                                                                                     <AlertDialogHeader>
                                                                                         <AlertDialogTitle>Delete rubric?</AlertDialogTitle>
                                                                                         <AlertDialogDescription>
-                                                                                            This will permanently delete the rubric template.
-                                                                                            If your data model links criteria to templates, ensure
-                                                                                            you have handled cascading deletes appropriately.
+                                                                                            This will permanently delete the rubric template and its criteria.
                                                                                         </AlertDialogDescription>
                                                                                     </AlertDialogHeader>
                                                                                     <AlertDialogFooter>
