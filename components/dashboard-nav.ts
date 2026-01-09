@@ -13,6 +13,7 @@ import {
     FileBarChart2,
     ShieldCheck,
     Settings,
+    ListChecks,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -100,6 +101,7 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
                 items: [
                     ...main,
                     { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
+                    { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
                     { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
                     { label: "Thesis Groups", href: `${base}/thesis`, icon: BookOpen },
                 ],
@@ -112,8 +114,8 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
             { label: "Users", href: `${base}/users`, icon: Users },
             { label: "Thesis Records", href: `${base}/thesis`, icon: BookOpen },
 
-            // ✅ Added Rubrics
-            { label: "Rubrics", href: `${base}/rubrics`, icon: ClipboardList },
+            // ✅ Rubrics
+            { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
 
             { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
             { label: "Audit Logs", href: `${base}/audit`, icon: ShieldCheck },
