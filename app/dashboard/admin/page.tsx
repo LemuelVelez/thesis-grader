@@ -405,7 +405,7 @@ export default function AdminDashboardPage() {
                         <div className="md:col-span-2">
                             <Label>From</Label>
                             <Input
-                                className="mt-2"
+                                className="mt-2 native-date"
                                 type="date"
                                 value={from}
                                 onChange={(e) => {
@@ -419,7 +419,7 @@ export default function AdminDashboardPage() {
                         <div className="md:col-span-2">
                             <Label>To</Label>
                             <Input
-                                className="mt-2"
+                                className="mt-2 native-date"
                                 type="date"
                                 value={to}
                                 onChange={(e) => {

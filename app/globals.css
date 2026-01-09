@@ -128,4 +128,74 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* ----------------------------- */
+  /* Native calendar (input[type=date]) styling */
+  /* Keeps the browser-native picker, but makes it match the theme */
+  /* Apply by adding className="native-date" */
+  /* ----------------------------- */
+  .native-date {
+    accent-color: var(--primary);
+    color-scheme: light;
+  }
+
+  /* If you have dark mode via `.dark`, this helps the popup/picker match */
+  .dark .native-date {
+    color-scheme: dark;
+  }
+
+  /* Chrome/Edge/Safari */
+  .native-date::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    border-radius: 9999px;
+    padding: 6px;
+    margin-right: 2px;
+    background: rgba(0, 255, 127, 0.12);
+    opacity: 0.9;
+    transition: background-color 150ms ease, opacity 150ms ease, transform 150ms ease;
+
+    /* Tint the calendar icon towards spring green */
+    filter: invert(38%) sepia(92%) saturate(650%) hue-rotate(92deg) brightness(108%) contrast(106%);
+  }
+
+  .native-date::-webkit-calendar-picker-indicator:hover {
+    background: rgba(0, 255, 127, 0.22);
+    transform: translateY(-1px);
+  }
+
+  .native-date:focus-visible::-webkit-calendar-picker-indicator {
+    background: rgba(0, 255, 127, 0.28);
+  }
+
+  .native-date:disabled::-webkit-calendar-picker-indicator {
+    opacity: 0.35;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* Better-looking editable date parts (Chrome/Edge/Safari) */
+  .native-date::-webkit-datetime-edit,
+  .native-date::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+
+  .native-date::-webkit-datetime-edit-text {
+    opacity: 0.75;
+    padding: 0 2px;
+  }
+
+  .native-date::-webkit-datetime-edit-year-field,
+  .native-date::-webkit-datetime-edit-month-field,
+  .native-date::-webkit-datetime-edit-day-field {
+    padding: 0 2px;
+    border-radius: 6px;
+  }
+
+  .native-date::-webkit-datetime-edit-year-field:focus,
+  .native-date::-webkit-datetime-edit-month-field:focus,
+  .native-date::-webkit-datetime-edit-day-field:focus {
+    background: rgba(0, 255, 127, 0.18);
+    color: var(--foreground);
+    outline: none;
+  }
 }
