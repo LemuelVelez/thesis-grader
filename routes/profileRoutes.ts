@@ -1,66 +1,20 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
 import { ProfileController } from "@/controllers/profileController"
 import { errorJson, readJson } from "@/lib/http"
 import { requireActor, assertRoles, assertSelfOrRoles } from "@/lib/apiAuth"
-import { parseQuery, parseBody, zUuid, zLimit, zOffset } from "@/lib/validate"
-
-const ProfileResource = z.enum(["users", "students", "staffProfiles"])
-
-const ProfileBaseQuerySchema = z.object({
-    resource: ProfileResource.default("users"),
-})
-
-const UsersGetQuerySchema = z.object({
-    resource: z.literal("users"),
-    id: zUuid.optional(),
-    q: z.string().optional().default(""),
-    role: z.string().optional(),
-    status: z.string().optional(),
-    limit: zLimit,
-    offset: zOffset,
-})
-
-const StudentProfileQuerySchema = z.object({
-    resource: z.literal("students"),
-    userId: zUuid,
-})
-
-const StaffProfileQuerySchema = z.object({
-    resource: z.literal("staffProfiles"),
-    userId: zUuid,
-})
-
-const UpsertStudentProfileBodySchema = z.object({
-    userId: zUuid,
-    program: z.string().nullable().optional(),
-    section: z.string().nullable().optional(),
-})
-
-const UpsertStaffProfileBodySchema = z.object({
-    userId: zUuid,
-    department: z.string().nullable().optional(),
-})
-
-const PatchUserBodySchema = z.object({
-    id: zUuid.optional(),
-    name: z.string().trim().min(1).optional(),
-    email: z.string().email().optional(),
-    role: z.enum(["student", "staff", "admin"]).optional(),
-    status: z.enum(["active", "disabled"]).optional(),
-    avatarKey: z.string().nullable().optional(),
-})
+import { parseQuery, parseBody } from "@/lib/validate"
+import { profileContracts } from "@/lib/apiContracts"
 
 export async function GET(req: NextRequest) {
     try {
         const actor = await requireActor(req)
-        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(profileContracts.baseQuerySchema, req.nextUrl.searchParams)
 
         if (base.resource === "users") {
             assertRoles(actor, ["staff", "admin"])
-            const q = parseQuery(UsersGetQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(profileContracts.usersGetQuerySchema, req.nextUrl.searchParams)
 
             if (q.id) {
                 const user = await ProfileController.getUserById(q.id)
@@ -79,16 +33,15 @@ export async function GET(req: NextRequest) {
         }
 
         if (base.resource === "students") {
-            const q = parseQuery(StudentProfileQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(profileContracts.studentProfileGetQuerySchema, req.nextUrl.searchParams)
             assertSelfOrRoles(actor, q.userId, ["staff", "admin"])
             const profile = await ProfileController.getStudentProfile(q.userId)
             return NextResponse.json({ ok: true, profile })
         }
 
         if (base.resource === "staffProfiles") {
-            const q = parseQuery(StaffProfileQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(profileContracts.staffProfileGetQuerySchema, req.nextUrl.searchParams)
 
-            // only staff/admin can access, student blocked explicitly
             const actorRole = String((actor as any)?.role ?? "").toLowerCase()
             if (actorRole === "student") return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
 
@@ -108,11 +61,11 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     try {
         const actor = await requireActor(req)
-        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(profileContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "students") {
-            const body = parseBody(UpsertStudentProfileBodySchema, raw)
+            const body = parseBody(profileContracts.upsertStudentProfileBodySchema, raw)
             assertSelfOrRoles(actor, body.userId, ["staff", "admin"])
 
             const profile = await ProfileController.upsertStudentProfile({
@@ -124,7 +77,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (base.resource === "staffProfiles") {
-            const body = parseBody(UpsertStaffProfileBodySchema, raw)
+            const body = parseBody(profileContracts.upsertStaffProfileBodySchema, raw)
             const actorRole = String((actor as any)?.role ?? "").toLowerCase()
 
             if (actorRole === "staff") {
@@ -149,13 +102,13 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     try {
         const actor = await requireActor(req)
-        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(profileContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "users") {
             assertRoles(actor, ["admin"])
 
-            const body = parseBody(PatchUserBodySchema, raw)
+            const body = parseBody(profileContracts.patchUserBodySchema, raw)
             const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 

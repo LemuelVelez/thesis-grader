@@ -1,81 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
 import { ThesisController } from "@/controllers/thesisController"
 import { errorJson, readJson } from "@/lib/http"
 import { requireActor, assertRoles } from "@/lib/apiAuth"
-import {
-    parseQuery,
-    parseBody,
-    zUuid,
-    zLimit,
-    zOffset,
-    zNonEmptyString,
-} from "@/lib/validate"
-
-const ThesisResource = z.enum(["groups", "members"])
-
-const ThesisBaseQuerySchema = z.object({
-    resource: ThesisResource.default("groups"),
-})
-
-const ThesisGroupsGetQuerySchema = z.object({
-    resource: z.literal("groups"),
-    id: zUuid.optional(),
-    q: z.string().optional().default(""),
-    limit: zLimit,
-    offset: zOffset,
-})
-
-const ThesisMembersGetQuerySchema = z.object({
-    resource: z.literal("members"),
-    groupId: zUuid,
-})
-
-const ThesisCreateGroupBodySchema = z.object({
-    title: zNonEmptyString("title"),
-    adviserId: zUuid.nullable().optional(),
-    program: z.string().nullable().optional(),
-    term: z.string().nullable().optional(),
-})
-
-const ThesisAddMemberBodySchema = z.object({
-    groupId: zUuid,
-    studentId: zUuid,
-})
-
-const ThesisUpdateGroupBodySchema = z.object({
-    id: zUuid.optional(),
-    title: z.string().trim().min(1).optional(),
-    adviserId: zUuid.nullable().optional(),
-    program: z.string().nullable().optional(),
-    term: z.string().nullable().optional(),
-})
-
-const ThesisSetMembersBodySchema = z.object({
-    groupId: zUuid,
-    studentIds: z.array(zUuid).default([]),
-})
-
-const ThesisDeleteGroupQuerySchema = z.object({
-    resource: z.literal("groups").default("groups"),
-    id: zUuid,
-})
-
-const ThesisDeleteMemberQuerySchema = z.object({
-    resource: z.literal("members"),
-    groupId: zUuid,
-    studentId: zUuid,
-})
+import { parseQuery, parseBody } from "@/lib/validate"
+import { thesisContracts } from "@/lib/apiContracts"
 
 export async function GET(req: NextRequest) {
     try {
         await requireActor(req)
 
-        const base = parseQuery(ThesisBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(thesisContracts.baseQuerySchema, req.nextUrl.searchParams)
 
         if (base.resource === "groups") {
-            const q = parseQuery(ThesisGroupsGetQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(thesisContracts.groupsGetQuerySchema, req.nextUrl.searchParams)
 
             if (q.id) {
                 const group = await ThesisController.getGroupById(q.id)
@@ -88,7 +26,7 @@ export async function GET(req: NextRequest) {
         }
 
         if (base.resource === "members") {
-            const q = parseQuery(ThesisMembersGetQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(thesisContracts.membersGetQuerySchema, req.nextUrl.searchParams)
             const members = await ThesisController.listMembers(q.groupId)
             return NextResponse.json({ ok: true, members })
         }
@@ -104,11 +42,11 @@ export async function POST(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ThesisBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(thesisContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "groups") {
-            const body = parseBody(ThesisCreateGroupBodySchema, raw)
+            const body = parseBody(thesisContracts.createGroupBodySchema, raw)
             const group = await ThesisController.createGroup({
                 title: body.title,
                 adviserId: body.adviserId ?? null,
@@ -119,7 +57,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (base.resource === "members") {
-            const body = parseBody(ThesisAddMemberBodySchema, raw)
+            const body = parseBody(thesisContracts.addMemberBodySchema, raw)
             const member = await ThesisController.addMember(body.groupId, body.studentId)
             return NextResponse.json({ ok: true, member }, { status: 201 })
         }
@@ -135,17 +73,14 @@ export async function PATCH(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ThesisBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(thesisContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "groups") {
-            const body = parseBody(ThesisUpdateGroupBodySchema, raw)
+            const body = parseBody(thesisContracts.updateGroupBodySchema, raw)
             const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) {
-                return NextResponse.json(
-                    { ok: false, message: "id is required (query param or body)" },
-                    { status: 400 }
-                )
+                return NextResponse.json({ ok: false, message: "id is required (query param or body)" }, { status: 400 })
             }
 
             const group = await ThesisController.updateGroup(id, {
@@ -159,7 +94,7 @@ export async function PATCH(req: NextRequest) {
         }
 
         if (base.resource === "members") {
-            const body = parseBody(ThesisSetMembersBodySchema, raw)
+            const body = parseBody(thesisContracts.setMembersBodySchema, raw)
             const members = await ThesisController.setMembers(body.groupId, body.studentIds)
             return NextResponse.json({ ok: true, members })
         }
@@ -175,17 +110,17 @@ export async function DELETE(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ThesisBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(thesisContracts.baseQuerySchema, req.nextUrl.searchParams)
 
         if (base.resource === "groups") {
-            const q = parseQuery(ThesisDeleteGroupQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(thesisContracts.deleteGroupQuerySchema, req.nextUrl.searchParams)
             const deletedId = await ThesisController.deleteGroup(q.id)
             if (!deletedId) return NextResponse.json({ ok: false, message: "Group not found" }, { status: 404 })
             return NextResponse.json({ ok: true, id: deletedId })
         }
 
         if (base.resource === "members") {
-            const q = parseQuery(ThesisDeleteMemberQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(thesisContracts.deleteMemberQuerySchema, req.nextUrl.searchParams)
             const deleted = await ThesisController.removeMember(q.groupId, q.studentId)
             if (!deleted) return NextResponse.json({ ok: false, message: "Member not found" }, { status: 404 })
             return NextResponse.json({ ok: true, member: deleted })

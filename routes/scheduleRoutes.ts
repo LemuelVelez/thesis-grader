@@ -1,87 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
 import { ScheduleController } from "@/controllers/scheduleController"
 import { errorJson, readJson } from "@/lib/http"
 import { requireActor, assertRoles } from "@/lib/apiAuth"
-import {
-    parseQuery,
-    parseBody,
-    zUuid,
-    zLimit,
-    zOffset,
-    zDateTimeString,
-} from "@/lib/validate"
-
-const ScheduleResource = z.enum(["schedules", "panelists"])
-
-const ScheduleBaseQuerySchema = z.object({
-    resource: ScheduleResource.default("schedules"),
-})
-
-const ScheduleSchedulesGetQuerySchema = z.object({
-    resource: z.literal("schedules"),
-    id: zUuid.optional(),
-    q: z.string().optional().default(""),
-    groupId: zUuid.optional(),
-    status: z.string().optional(),
-    from: zDateTimeString.optional(),
-    to: zDateTimeString.optional(),
-    limit: zLimit,
-    offset: zOffset,
-})
-
-const SchedulePanelistsGetQuerySchema = z.object({
-    resource: z.literal("panelists"),
-    scheduleId: zUuid,
-})
-
-const ScheduleCreateBodySchema = z.object({
-    groupId: zUuid,
-    scheduledAt: zDateTimeString,
-    room: z.string().nullable().optional(),
-    status: z.string().optional(),
-    createdBy: zUuid.nullable().optional(),
-})
-
-const ScheduleUpdateBodySchema = z.object({
-    id: zUuid.optional(),
-    groupId: zUuid.optional(),
-    scheduledAt: zDateTimeString.optional(),
-    room: z.string().nullable().optional(),
-    status: z.string().optional(),
-    createdBy: zUuid.nullable().optional(),
-})
-
-const PanelistAddBodySchema = z.object({
-    scheduleId: zUuid,
-    staffId: zUuid,
-})
-
-const PanelistSetBodySchema = z.object({
-    scheduleId: zUuid,
-    staffIds: z.array(zUuid).default([]),
-})
-
-const ScheduleDeleteSchema = z.object({
-    resource: z.literal("schedules").default("schedules"),
-    id: zUuid,
-})
-
-const PanelistDeleteSchema = z.object({
-    resource: z.literal("panelists"),
-    scheduleId: zUuid,
-    staffId: zUuid,
-})
+import { parseQuery, parseBody } from "@/lib/validate"
+import { scheduleContracts } from "@/lib/apiContracts"
 
 export async function GET(req: NextRequest) {
     try {
         await requireActor(req)
 
-        const base = parseQuery(ScheduleBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(scheduleContracts.baseQuerySchema, req.nextUrl.searchParams)
 
         if (base.resource === "schedules") {
-            const q = parseQuery(ScheduleSchedulesGetQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(scheduleContracts.schedulesGetQuerySchema, req.nextUrl.searchParams)
 
             if (q.id) {
                 const schedule = await ScheduleController.getScheduleById(q.id)
@@ -102,7 +34,7 @@ export async function GET(req: NextRequest) {
         }
 
         if (base.resource === "panelists") {
-            const q = parseQuery(SchedulePanelistsGetQuerySchema, req.nextUrl.searchParams)
+            const q = parseQuery(scheduleContracts.panelistsGetQuerySchema, req.nextUrl.searchParams)
             const panelists = await ScheduleController.listPanelists(q.scheduleId)
             return NextResponse.json({ ok: true, panelists })
         }
@@ -118,11 +50,11 @@ export async function POST(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ScheduleBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(scheduleContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "schedules") {
-            const body = parseBody(ScheduleCreateBodySchema, raw)
+            const body = parseBody(scheduleContracts.createScheduleBodySchema, raw)
             const schedule = await ScheduleController.createSchedule({
                 groupId: body.groupId,
                 scheduledAt: body.scheduledAt,
@@ -134,7 +66,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (base.resource === "panelists") {
-            const body = parseBody(PanelistAddBodySchema, raw)
+            const body = parseBody(scheduleContracts.addPanelistBodySchema, raw)
             const panelist = await ScheduleController.addPanelist(body.scheduleId, body.staffId)
             return NextResponse.json({ ok: true, panelist }, { status: 201 })
         }
@@ -150,17 +82,14 @@ export async function PATCH(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ScheduleBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(scheduleContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
         if (base.resource === "schedules") {
-            const body = parseBody(ScheduleUpdateBodySchema, raw)
+            const body = parseBody(scheduleContracts.updateScheduleBodySchema, raw)
             const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) {
-                return NextResponse.json(
-                    { ok: false, message: "id is required (query param or body)" },
-                    { status: 400 }
-                )
+                return NextResponse.json({ ok: false, message: "id is required (query param or body)" }, { status: 400 })
             }
 
             const schedule = await ScheduleController.updateSchedule(id, {
@@ -175,7 +104,7 @@ export async function PATCH(req: NextRequest) {
         }
 
         if (base.resource === "panelists") {
-            const body = parseBody(PanelistSetBodySchema, raw)
+            const body = parseBody(scheduleContracts.setPanelistsBodySchema, raw)
             const panelists = await ScheduleController.setPanelists(body.scheduleId, body.staffIds)
             return NextResponse.json({ ok: true, panelists })
         }
@@ -191,17 +120,17 @@ export async function DELETE(req: NextRequest) {
         const actor = await requireActor(req)
         assertRoles(actor, ["staff", "admin"])
 
-        const base = parseQuery(ScheduleBaseQuerySchema, req.nextUrl.searchParams)
+        const base = parseQuery(scheduleContracts.baseQuerySchema, req.nextUrl.searchParams)
 
         if (base.resource === "schedules") {
-            const q = parseQuery(ScheduleDeleteSchema, req.nextUrl.searchParams)
+            const q = parseQuery(scheduleContracts.deleteScheduleQuerySchema, req.nextUrl.searchParams)
             const deletedId = await ScheduleController.deleteSchedule(q.id)
             if (!deletedId) return NextResponse.json({ ok: false, message: "Schedule not found" }, { status: 404 })
             return NextResponse.json({ ok: true, id: deletedId })
         }
 
         if (base.resource === "panelists") {
-            const q = parseQuery(PanelistDeleteSchema, req.nextUrl.searchParams)
+            const q = parseQuery(scheduleContracts.deletePanelistQuerySchema, req.nextUrl.searchParams)
             const deleted = await ScheduleController.removePanelist(q.scheduleId, q.staffId)
             if (!deleted) return NextResponse.json({ ok: false, message: "Panelist not found" }, { status: 404 })
             return NextResponse.json({ ok: true, panelist: deleted })
