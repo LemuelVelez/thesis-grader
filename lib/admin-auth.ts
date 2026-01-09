@@ -10,10 +10,10 @@ import { requireRole } from "@/lib/rbac"
 export async function requireAdminActor(): Promise<PublicUser> {
     const cookieStore = await cookies()
     const token = cookieStore.get(SESSION_COOKIE)?.value
-    if (!token) redirect("/login")
+    if (!token) redirect("/auth/login")
 
     const actor = await getUserFromSession(token)
-    if (!actor) redirect("/login")
+    if (!actor) redirect("/auth/login")
 
     try {
         requireRole(actor, ["admin"])

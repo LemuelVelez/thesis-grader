@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
@@ -9,6 +10,7 @@ import { toast } from "sonner"
 import {
     CalendarDays,
     CheckCircle2,
+    ChevronDown,
     ClipboardCopy,
     Filter,
     Loader2,
@@ -39,6 +41,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
@@ -69,6 +72,13 @@ type DefenseSchedule = {
 type ListResponse = {
     total: number
     schedules: DefenseSchedule[]
+}
+
+type ThesisGroupOption = {
+    id: string
+    title: string
+    program?: string | null
+    term?: string | null
 }
 
 function toISODate(d: Date) {
@@ -115,6 +125,73 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
     return (await res.json()) as T
 }
 
+function normalizeGroups(data: any): ThesisGroupOption[] {
+    const raw =
+        (Array.isArray(data) ? data : null) ??
+        (Array.isArray(data?.groups) ? data.groups : null) ??
+        (Array.isArray(data?.items) ? data.items : null) ??
+        (Array.isArray(data?.rows) ? data.rows : null) ??
+        (Array.isArray(data?.data) ? data.data : null) ??
+        []
+
+    const out: ThesisGroupOption[] = []
+    for (const g of raw) {
+        const id = String(g?.id ?? g?.group_id ?? g?.groupId ?? "").trim()
+        const title = String(g?.title ?? g?.group_title ?? g?.name ?? g?.groupName ?? "").trim()
+        if (!id) continue
+        out.push({
+            id,
+            title: title || `Group ${id.slice(0, 8)}…`,
+            program: g?.program ?? null,
+            term: g?.term ?? null,
+        })
+    }
+
+    // de-dupe by id
+    const map = new Map<string, ThesisGroupOption>()
+    for (const i of out) map.set(i.id, i)
+    return Array.from(map.values())
+}
+
+async function tryFetchGroups(query: string): Promise<{ groups: ThesisGroupOption[]; source?: string }> {
+    const q = String(query ?? "").trim()
+
+    const endpoints = [
+        // preferred staff endpoints (if you have them)
+        `/api/staff/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
+        `/api/staff/thesis-groups?search=${encodeURIComponent(q)}&limit=25`,
+        `/api/staff/groups?q=${encodeURIComponent(q)}&limit=25`,
+
+        // common admin endpoints (fallback)
+        `/api/admin/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
+        `/api/admin/groups?q=${encodeURIComponent(q)}&limit=25`,
+
+        // generic fallback (if your project uses it)
+        `/api/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
+        `/api/groups?q=${encodeURIComponent(q)}&limit=25`,
+    ]
+
+    let lastErr: any = null
+    for (const url of endpoints) {
+        try {
+            const res = await fetch(url, { cache: "no-store" })
+            if (!res.ok) {
+                // 404 etc -> try next
+                lastErr = new Error(`HTTP ${res.status} ${url}`)
+                continue
+            }
+            const data = await res.json().catch(() => null)
+            const groups = normalizeGroups(data)
+            return { groups, source: url }
+        } catch (e: any) {
+            lastErr = e
+        }
+    }
+
+    // If we got here, none worked
+    throw lastErr ?? new Error("No group list endpoint available")
+}
+
 export default function StaffSchedulesPage() {
     const router = useRouter()
     const { user, loading } = useAuth() as any
@@ -135,7 +212,16 @@ export default function StaffSchedulesPage() {
     // create dialog
     const [createOpen, setCreateOpen] = React.useState(false)
     const [creating, setCreating] = React.useState(false)
-    const [newGroupId, setNewGroupId] = React.useState("")
+
+    // group picker (user friendly)
+    const [groupOpen, setGroupOpen] = React.useState(false)
+    const [groupQuery, setGroupQuery] = React.useState("")
+    const [groupLoading, setGroupLoading] = React.useState(false)
+    const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
+    const [selectedGroup, setSelectedGroup] = React.useState<ThesisGroupOption | null>(null)
+    const [groupEndpointHint, setGroupEndpointHint] = React.useState<string>("")
+    const [groupEndpointError, setGroupEndpointError] = React.useState<string>("")
+
     const [newScheduledAt, setNewScheduledAt] = React.useState("")
     const [newRoom, setNewRoom] = React.useState("")
     const [newStatus, setNewStatus] = React.useState("scheduled")
@@ -205,10 +291,48 @@ export default function StaffSchedulesPage() {
         setPage(0)
     }
 
+    // Load groups when the create dialog opens (and when searching)
+    const loadGroups = React.useCallback(
+        async (query: string) => {
+            setGroupLoading(true)
+            setGroupEndpointError("")
+            try {
+                const res = await tryFetchGroups(query)
+                setGroups(res.groups)
+                setGroupEndpointHint(res.source ?? "")
+            } catch (e: any) {
+                setGroups([])
+                setGroupEndpointHint("")
+                setGroupEndpointError(
+                    "No group list endpoint found. Please add an API to list thesis groups so staff can pick a group."
+                )
+            } finally {
+                setGroupLoading(false)
+            }
+        },
+        []
+    )
+
+    React.useEffect(() => {
+        if (!createOpen) return
+        // initial fetch
+        loadGroups("")
+    }, [createOpen])
+
+    React.useEffect(() => {
+        if (!createOpen) return
+        // debounce search
+        const t = setTimeout(() => {
+            loadGroups(groupQuery)
+        }, 350)
+        return () => clearTimeout(t)
+    }, [groupQuery, createOpen])
+
     const onCreate = async () => {
-        const gid = newGroupId.trim()
+        const gid = selectedGroup?.id?.trim() ?? ""
         const scheduledAt = newScheduledAt.trim()
-        if (!gid) return toast.error("Group ID is required")
+
+        if (!gid) return toast.error("Please select a group")
         if (!scheduledAt) return toast.error("Scheduled date/time is required")
 
         setCreating(true)
@@ -224,11 +348,15 @@ export default function StaffSchedulesPage() {
             })
             toast.success("Schedule created")
             setCreateOpen(false)
-            setNewGroupId("")
+
+            // reset
+            setSelectedGroup(null)
+            setGroupQuery("")
             setNewScheduledAt("")
             setNewRoom("")
             setNewStatus("scheduled")
             setPage(0)
+
             await fetchList()
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to create schedule")
@@ -255,6 +383,14 @@ export default function StaffSchedulesPage() {
             toast.error("Copy failed")
         }
     }
+
+    const selectedGroupLabel = React.useMemo(() => {
+        if (!selectedGroup) return "Select a group..."
+        const meta = [selectedGroup.program?.trim() ? selectedGroup.program : null, selectedGroup.term?.trim() ? selectedGroup.term : null]
+            .filter(Boolean)
+            .join(" • ")
+        return meta ? `${selectedGroup.title} (${meta})` : selectedGroup.title
+    }, [selectedGroup])
 
     return (
         <DashboardLayout>
@@ -284,24 +420,108 @@ export default function StaffSchedulesPage() {
                                         Create
                                     </Button>
                                 </DialogTrigger>
+
                                 <DialogContent className="sm:max-w-lg">
                                     <DialogHeader>
                                         <DialogTitle>Create defense schedule</DialogTitle>
-                                        <DialogDescription>Fill in the schedule details. You can edit later.</DialogDescription>
+                                        <DialogDescription>
+                                            Select the group (no need to type UUID), then set date/time, room, and status.
+                                        </DialogDescription>
                                     </DialogHeader>
 
                                     <div className="grid gap-4">
                                         <div className="grid gap-2">
-                                            <Label htmlFor="group_id">Group ID</Label>
-                                            <Input
-                                                id="group_id"
-                                                value={newGroupId}
-                                                onChange={(e) => setNewGroupId(e.target.value)}
-                                                placeholder="UUID or group id"
-                                            />
-                                            <p className="text-xs text-muted-foreground">
-                                                Tip: paste the thesis group ID here.
-                                            </p>
+                                            <Label>Group</Label>
+
+                                            <Popover open={groupOpen} onOpenChange={setGroupOpen}>
+                                                <PopoverTrigger asChild>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        role="combobox"
+                                                        className={cn("w-full justify-between", !selectedGroup && "text-muted-foreground")}
+                                                    >
+                                                        <span className="truncate">{selectedGroupLabel}</span>
+                                                        <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                                                    </Button>
+                                                </PopoverTrigger>
+                                                <PopoverContent className="w-105 p-0" align="start">
+                                                    <Command>
+                                                        <div className="flex items-center gap-2 border-b px-3 py-2">
+                                                            <Search className="h-4 w-4 text-muted-foreground" />
+                                                            <CommandInput
+                                                                value={groupQuery}
+                                                                onValueChange={setGroupQuery}
+                                                                placeholder="Search group title / program / term..."
+                                                            />
+                                                            <Button
+                                                                type="button"
+                                                                size="icon"
+                                                                variant="ghost"
+                                                                onClick={() => loadGroups(groupQuery)}
+                                                                disabled={groupLoading}
+                                                                title="Refresh groups"
+                                                            >
+                                                                {groupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                                            </Button>
+                                                        </div>
+
+                                                        <CommandList>
+                                                            <CommandEmpty>
+                                                                {groupLoading ? "Loading groups..." : "No groups found."}
+                                                            </CommandEmpty>
+
+                                                            <CommandGroup heading="Groups">
+                                                                {groups.map((g) => {
+                                                                    const meta = [g.program?.trim() ? g.program : null, g.term?.trim() ? g.term : null]
+                                                                        .filter(Boolean)
+                                                                        .join(" • ")
+                                                                    return (
+                                                                        <CommandItem
+                                                                            key={g.id}
+                                                                            value={`${g.title} ${g.program ?? ""} ${g.term ?? ""}`}
+                                                                            onSelect={() => {
+                                                                                setSelectedGroup(g)
+                                                                                setGroupOpen(false)
+                                                                            }}
+                                                                        >
+                                                                            <div className="min-w-0">
+                                                                                <div className="truncate text-sm font-medium">{g.title}</div>
+                                                                                <div className="truncate text-xs text-muted-foreground">
+                                                                                    {meta || g.id}
+                                                                                </div>
+                                                                            </div>
+                                                                        </CommandItem>
+                                                                    )
+                                                                })}
+                                                            </CommandGroup>
+                                                        </CommandList>
+                                                    </Command>
+                                                </PopoverContent>
+                                            </Popover>
+
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs text-muted-foreground">
+                                                    {groupEndpointHint ? `Source: ${groupEndpointHint}` : "Pick from the group list."}
+                                                </p>
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-7 px-2"
+                                                    onClick={() => setSelectedGroup(null)}
+                                                    disabled={!selectedGroup}
+                                                >
+                                                    Clear
+                                                </Button>
+                                            </div>
+
+                                            {groupEndpointError ? (
+                                                <Alert variant="destructive">
+                                                    <AlertTitle>Group picker needs an API</AlertTitle>
+                                                    <AlertDescription>{groupEndpointError}</AlertDescription>
+                                                </Alert>
+                                            ) : null}
                                         </div>
 
                                         <div className="grid gap-2">
@@ -344,7 +564,10 @@ export default function StaffSchedulesPage() {
                                         <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
                                             Cancel
                                         </Button>
-                                        <Button onClick={onCreate} disabled={creating}>
+                                        <Button
+                                            onClick={onCreate}
+                                            disabled={creating || !selectedGroup || !newScheduledAt.trim()}
+                                        >
                                             {creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                             Create
                                         </Button>
@@ -455,7 +678,10 @@ export default function StaffSchedulesPage() {
                                                             <div className="flex gap-2">
                                                                 <Popover>
                                                                     <PopoverTrigger asChild>
-                                                                        <Button variant="outline" className={cn("w-full justify-start", !fromDate && "text-muted-foreground")}>
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            className={cn("w-full justify-start", !fromDate && "text-muted-foreground")}
+                                                                        >
                                                                             {fromDate ? toISODate(fromDate) : "Pick a date"}
                                                                         </Button>
                                                                     </PopoverTrigger>
@@ -488,7 +714,10 @@ export default function StaffSchedulesPage() {
                                                             <div className="flex gap-2">
                                                                 <Popover>
                                                                     <PopoverTrigger asChild>
-                                                                        <Button variant="outline" className={cn("w-full justify-start", !toDate && "text-muted-foreground")}>
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            className={cn("w-full justify-start", !toDate && "text-muted-foreground")}
+                                                                        >
                                                                             {toDate ? toISODate(toDate) : "Pick a date"}
                                                                         </Button>
                                                                     </PopoverTrigger>
@@ -548,16 +777,14 @@ export default function StaffSchedulesPage() {
                                             </TableHeader>
                                             <TableBody>
                                                 {busy && !data ? (
-                                                    <>
-                                                        <TableRow>
-                                                            <TableCell colSpan={5}>
-                                                                <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-                                                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                                                    Loading schedules...
-                                                                </div>
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    </>
+                                                    <TableRow>
+                                                        <TableCell colSpan={5}>
+                                                            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                                Loading schedules...
+                                                            </div>
+                                                        </TableCell>
+                                                    </TableRow>
                                                 ) : schedules.length === 0 ? (
                                                     <TableRow>
                                                         <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
@@ -660,7 +887,11 @@ export default function StaffSchedulesPage() {
                                         <div className="flex items-center gap-2">
                                             <Tooltip>
                                                 <TooltipTrigger asChild>
-                                                    <Button variant="outline" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={!canPrev || busy}>
+                                                    <Button
+                                                        variant="outline"
+                                                        onClick={() => setPage((p) => Math.max(0, p - 1))}
+                                                        disabled={!canPrev || busy}
+                                                    >
                                                         Prev
                                                     </Button>
                                                 </TooltipTrigger>
@@ -669,7 +900,11 @@ export default function StaffSchedulesPage() {
 
                                             <Tooltip>
                                                 <TooltipTrigger asChild>
-                                                    <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={!canNext || busy}>
+                                                    <Button
+                                                        variant="outline"
+                                                        onClick={() => setPage((p) => p + 1)}
+                                                        disabled={!canNext || busy}
+                                                    >
                                                         Next
                                                     </Button>
                                                 </TooltipTrigger>
@@ -705,9 +940,7 @@ export default function StaffSchedulesPage() {
                                     <Alert>
                                         <CheckCircle2 className="h-4 w-4" />
                                         <AlertTitle>Tip</AlertTitle>
-                                        <AlertDescription>
-                                            Open a schedule to manage its panelists (add/remove).
-                                        </AlertDescription>
+                                        <AlertDescription>Open a schedule to manage its panelists (add/remove).</AlertDescription>
                                     </Alert>
                                 </CardContent>
                             </Card>
