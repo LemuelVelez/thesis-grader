@@ -20,12 +20,27 @@ function badRequest(message: string) {
     return err
 }
 
+function notFound(message: string) {
+    const err: any = new Error(message)
+    err.status = 404
+    return err
+}
+
 function isUuid(s: string) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
 }
 
+// ✅ Prevent common “object-ish” values from causing errors
+function normalizeId(raw: any): string | null {
+    if (raw === null || raw === undefined) return null
+    const s = String(raw).trim()
+    if (!s) return null
+    if (s === "{}" || s === "[object Object]" || s === "undefined" || s === "null") return null
+    return s
+}
+
 export const RubricCriteriaController = {
-    // ✅ Accepts query object from route.ts
+    // ✅ Lenient list: invalid templateId => return all instead of 400
     async list(query?: any) {
         const templateIdRaw =
             query?.templateId ??
@@ -34,33 +49,42 @@ export const RubricCriteriaController = {
             query?.rubric_template_id ??
             query?.rubricId
 
-        if (!templateIdRaw) {
-            // ✅ Needed by /dashboard/admin/rubrics (counts)
+        const template_id = normalizeId(templateIdRaw)
+
+        // No filter => return all (used by admin rubrics page)
+        if (!template_id) {
             return await listAllRubricCriteria()
         }
 
-        const template_id = String(templateIdRaw)
+        // Invalid filter => also return all (prevents noisy 400s from accidental bad params)
         if (!isUuid(template_id)) {
-            throw badRequest(`Invalid templateId (expected UUID): "${template_id}"`)
+            return await listAllRubricCriteria()
         }
 
         return await listRubricCriteria(template_id)
     },
 
+    async getById(id: string) {
+        if (!id) throw badRequest("id is required")
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
+
+        const row = await getRubricCriterion(idStr)
+        if (!row) throw notFound("Rubric criterion not found")
+        return row
+    },
+
     async create(body: any) {
-        const template_id =
+        const template_id_raw =
             body?.template_id ??
             body?.templateId ??
             body?.rubricTemplateId ??
             body?.rubric_template_id ??
             body?.rubricId
 
-        if (!template_id) throw badRequest("template_id (or templateId) is required")
-
-        const templateIdStr = String(template_id)
-        if (!isUuid(templateIdStr)) {
-            throw badRequest(`Invalid template_id (expected UUID): "${templateIdStr}"`)
-        }
+        const templateIdStr = normalizeId(template_id_raw)
+        if (!templateIdStr) throw badRequest("template_id (or templateId) is required")
+        if (!isUuid(templateIdStr)) throw badRequest(`Invalid template_id (expected UUID): "${templateIdStr}"`)
 
         const criterion =
             body?.criterion ??
@@ -83,12 +107,13 @@ export const RubricCriteriaController = {
         return await getRubricCriterion(id)
     },
 
-    // ✅ Route calls update(id, body), so controller must match
     async update(id: string, body: any) {
         if (!id) throw badRequest("id is required")
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
 
         const updatedId = await updateRubricCriterion({
-            id: String(id),
+            id: idStr,
             criterion: body?.criterion ?? body?.title ?? body?.name ?? body?.label,
             description: body?.description ?? body?.desc,
             weight: toNumber(body?.weight ?? body?.points ?? body?.score),
@@ -102,7 +127,10 @@ export const RubricCriteriaController = {
 
     async delete(id: string) {
         if (!id) throw badRequest("id is required")
-        await deleteRubricCriterion(String(id))
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
+
+        await deleteRubricCriterion(idStr)
         return { ok: true }
     },
 }

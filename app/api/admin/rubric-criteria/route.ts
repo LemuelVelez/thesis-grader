@@ -26,6 +26,14 @@ function errorJson(err: any, fallback: string) {
 export async function GET(req: NextRequest) {
     try {
         const query = coerceQuery(req.nextUrl.searchParams)
+
+        // ✅ Support fetching a single criterion via query param
+        const id = (query as any)?.id
+        if (id) {
+            const data = await (RubricCriteriaController.getById as any)(String(id))
+            return NextResponse.json(data)
+        }
+
         const data = await (RubricCriteriaController.list as any)(query)
         return NextResponse.json(data)
     } catch (err: any) {

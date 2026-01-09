@@ -14,6 +14,21 @@ function errorJson(err: any, fallback: string) {
     return NextResponse.json({ error: err?.message ?? fallback }, { status })
 }
 
+// ✅ FIX: add GET so /api/admin/rubric-criteria/:id works (prevents unexpected client calls from failing)
+export async function GET(_req: NextRequest, ctx: RouteContext) {
+    try {
+        const { id } = ctx.params
+        if (!id) {
+            return NextResponse.json({ error: "Missing id" }, { status: 400 })
+        }
+
+        const data = await (RubricCriteriaController.getById as any)(id)
+        return NextResponse.json(data)
+    } catch (err: any) {
+        return errorJson(err, "Failed to get rubric criterion")
+    }
+}
+
 export async function PUT(req: NextRequest, ctx: RouteContext) {
     try {
         const { id } = ctx.params

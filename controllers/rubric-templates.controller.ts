@@ -28,10 +28,30 @@ function badRequest(message: string) {
     return err
 }
 
+function notFound(message: string) {
+    const err: any = new Error(message)
+    err.status = 404
+    return err
+}
+
+function isUuid(s: string) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
+}
+
 export const RubricTemplatesController = {
     async list(query?: any) {
         const activeOnly = toBool(query?.activeOnly ?? query?.active_only)
         return await listRubricTemplates({ activeOnly: !!activeOnly })
+    },
+
+    async getById(id: string) {
+        if (!id) throw badRequest("id is required")
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
+
+        const row = await getRubricTemplate(idStr)
+        if (!row) throw notFound("Rubric template not found")
+        return row
     },
 
     async create(body: any) {
@@ -48,12 +68,13 @@ export const RubricTemplatesController = {
         return await getRubricTemplate(id)
     },
 
-    // ✅ Route calls update(id, body), so controller must match
     async update(id: string, body: any) {
         if (!id) throw badRequest("id is required")
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
 
         const updatedId = await updateRubricTemplate({
-            id: String(id),
+            id: idStr,
             name: body?.name ?? body?.title ?? body?.label,
             version: toNumber(body?.version),
             active: toBool(body?.active),
@@ -65,7 +86,10 @@ export const RubricTemplatesController = {
 
     async delete(id: string) {
         if (!id) throw badRequest("id is required")
-        await deleteRubricTemplate(String(id))
+        const idStr = String(id).trim()
+        if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
+
+        await deleteRubricTemplate(idStr)
         return { ok: true }
     },
 }
