@@ -137,11 +137,56 @@ async function fetchReportsSummary(params: {
     return data.summary as ReportsSummary
 }
 
+type ChartColors = {
+    chart1: string
+    chart2: string
+    chart3: string
+    chart4: string
+    chart5: string
+    destructive: string
+    border: string
+    mutedForeground: string
+    foreground: string
+}
+
+function readCssVar(name: string, fallback: string) {
+    if (typeof window === "undefined") return fallback
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    return v || fallback
+}
+
 export default function AdminDashboardPage() {
     const router = useRouter()
     const { loading, user } = useAuth()
 
     const isAdmin = String(user?.role ?? "").toLowerCase() === "admin"
+
+    // ✅ FIX: resolve theme colors to real values (prevents Recharts/SVG falling back to black)
+    const [C, setC] = React.useState<ChartColors>({
+        chart1: "#00ff7f",
+        chart2: "#2ee6a8",
+        chart3: "#00c27a",
+        chart4: "#7cffc0",
+        chart5: "#0aa36a",
+        destructive: "#ef4444",
+        border: "#d2f5e2",
+        mutedForeground: "#2d5b44",
+        foreground: "#0b1f15",
+    })
+
+    React.useEffect(() => {
+        setC({
+            chart1: readCssVar("--chart-1", "#00ff7f"),
+            chart2: readCssVar("--chart-2", "#2ee6a8"),
+            chart3: readCssVar("--chart-3", "#00c27a"),
+            chart4: readCssVar("--chart-4", "#7cffc0"),
+            chart5: readCssVar("--chart-5", "#0aa36a"),
+            destructive: readCssVar("--destructive", "#ef4444"),
+            border: readCssVar("--border", "#d2f5e2"),
+            mutedForeground: readCssVar("--muted-foreground", "#2d5b44"),
+            foreground: readCssVar("--foreground", "#0b1f15"),
+        })
+    }, [])
 
     // Default range: last 30 days (inclusive)
     const today = React.useMemo(() => toYMD(new Date()), [])
@@ -534,18 +579,18 @@ export default function AdminDashboardPage() {
                                         <ResponsiveContainer width="100%" height="100%">
                                             <PieChart>
                                                 <RechartsTooltip />
-                                                <Legend />
-                                                <Pie data={usersRolePie} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80}>
+                                                <Legend wrapperStyle={{ color: C.foreground }} />
+                                                <Pie
+                                                    data={usersRolePie}
+                                                    dataKey="value"
+                                                    nameKey="name"
+                                                    innerRadius={45}
+                                                    outerRadius={80}
+                                                >
                                                     {usersRolePie.map((_, idx) => (
                                                         <Cell
                                                             key={idx}
-                                                            fill={
-                                                                idx === 0
-                                                                    ? "hsl(var(--primary))"
-                                                                    : idx === 1
-                                                                        ? "hsl(var(--secondary-foreground))"
-                                                                        : "hsl(var(--muted-foreground))"
-                                                            }
+                                                            fill={idx === 0 ? C.chart1 : idx === 1 ? C.chart2 : C.chart3}
                                                         />
                                                     ))}
                                                 </Pie>
@@ -570,13 +615,16 @@ export default function AdminDashboardPage() {
                                         <ResponsiveContainer width="100%" height="100%">
                                             <PieChart>
                                                 <RechartsTooltip />
-                                                <Legend />
-                                                <Pie data={usersStatusPie} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80}>
+                                                <Legend wrapperStyle={{ color: C.foreground }} />
+                                                <Pie
+                                                    data={usersStatusPie}
+                                                    dataKey="value"
+                                                    nameKey="name"
+                                                    innerRadius={45}
+                                                    outerRadius={80}
+                                                >
                                                     {usersStatusPie.map((_, idx) => (
-                                                        <Cell
-                                                            key={idx}
-                                                            fill={idx === 0 ? "hsl(var(--primary))" : "hsl(var(--destructive))"}
-                                                        />
+                                                        <Cell key={idx} fill={idx === 0 ? C.chart1 : C.destructive} />
                                                     ))}
                                                 </Pie>
                                             </PieChart>
@@ -628,11 +676,17 @@ export default function AdminDashboardPage() {
                                     ) : (
                                         <ResponsiveContainer width="100%" height="100%">
                                             <BarChart data={thesisProgramBar}>
-                                                <CartesianGrid strokeDasharray="3 3" />
-                                                <XAxis dataKey="program" tick={{ fontSize: 12 }} interval={0} angle={-20} height={60} />
-                                                <YAxis allowDecimals={false} />
+                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                <XAxis
+                                                    dataKey="program"
+                                                    tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                    interval={0}
+                                                    angle={-20}
+                                                    height={60}
+                                                />
+                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
                                                 <RechartsTooltip />
-                                                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
+                                                <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
                                             </BarChart>
                                         </ResponsiveContainer>
                                     )}
@@ -654,11 +708,17 @@ export default function AdminDashboardPage() {
                                     ) : (
                                         <ResponsiveContainer width="100%" height="100%">
                                             <LineChart data={defensesByMonthLine}>
-                                                <CartesianGrid strokeDasharray="3 3" />
-                                                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                                                <YAxis allowDecimals={false} />
+                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                <XAxis dataKey="month" tick={{ fontSize: 12, fill: C.mutedForeground }} />
+                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
                                                 <RechartsTooltip />
-                                                <Line type="monotone" dataKey="count" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+                                                <Line
+                                                    type="monotone"
+                                                    dataKey="count"
+                                                    stroke={C.chart1}
+                                                    strokeWidth={2}
+                                                    dot={false}
+                                                />
                                             </LineChart>
                                         </ResponsiveContainer>
                                     )}
@@ -702,15 +762,15 @@ export default function AdminDashboardPage() {
                                 ) : (
                                     <ResponsiveContainer width="100%" height="100%">
                                         <AreaChart data={auditDailyArea}>
-                                            <CartesianGrid strokeDasharray="3 3" />
-                                            <XAxis dataKey="day" tick={{ fontSize: 12 }} />
-                                            <YAxis allowDecimals={false} />
+                                            <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                            <XAxis dataKey="day" tick={{ fontSize: 12, fill: C.mutedForeground }} />
+                                            <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
                                             <RechartsTooltip />
                                             <Area
                                                 type="monotone"
                                                 dataKey="count"
-                                                stroke="hsl(var(--primary))"
-                                                fill="hsl(var(--primary))"
+                                                stroke={C.chart2}
+                                                fill={C.chart2}
                                                 fillOpacity={0.2}
                                             />
                                         </AreaChart>
@@ -775,11 +835,17 @@ export default function AdminDashboardPage() {
                                     ) : (
                                         <ResponsiveContainer width="100%" height="100%">
                                             <BarChart data={auditTopActionsBar}>
-                                                <CartesianGrid strokeDasharray="3 3" />
-                                                <XAxis dataKey="action" tick={{ fontSize: 12 }} interval={0} angle={-20} height={70} />
-                                                <YAxis allowDecimals={false} />
+                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                <XAxis
+                                                    dataKey="action"
+                                                    tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                    interval={0}
+                                                    angle={-20}
+                                                    height={70}
+                                                />
+                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
                                                 <RechartsTooltip />
-                                                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
+                                                <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
                                             </BarChart>
                                         </ResponsiveContainer>
                                     )}
