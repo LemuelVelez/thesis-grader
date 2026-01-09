@@ -1,40 +1,36 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
 import { EvaluationController } from "@/controllers/evaluationController"
-
-function pgStatus(err: any) {
-    if (err?.status) return err.status
-    const code = String(err?.code ?? "")
-    if (code === "23505") return 409
-    if (code === "23503") return 400
-    if (code === "23502") return 400
-    if (code === "22P02") return 400
-    if (code === "P0001") return 400
-    return 500
-}
-
-function errorJson(err: any, fallback: string) {
-    const status = pgStatus(err)
-    return NextResponse.json({ ok: false, message: err?.message ?? fallback }, { status })
-}
-
-async function readJson(req: NextRequest) {
-    try {
-        return await req.json()
-    } catch {
-        return {}
-    }
-}
-
-function toNum(v: string | null, fallback: number) {
-    const n = Number(v)
-    return Number.isFinite(n) ? n : fallback
-}
+import { errorJson, readJson, toNum } from "@/lib/http"
+import { requireActor, assertRoles } from "@/lib/apiAuth"
 
 export async function GET(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "rubricTemplates"
+
+        // Staff/Admin-only resources
+        const staffOnly = new Set([
+            "rubricTemplates",
+            "rubricCriteria",
+            "evaluations",
+            "evaluationScores",
+        ])
+
+        // Student evaluations can be accessed by:
+        // - student: only their own records
+        // - staff/admin: any records
+        const isStudentEvaluations = resource === "studentEvaluations"
+
+        if (staffOnly.has(resource)) {
+            assertRoles(actor, ["staff", "admin"])
+        } else if (isStudentEvaluations) {
+            // allowed, but with self-guard below for students
+        } else {
+            return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
+        }
 
         if (resource === "rubricTemplates") {
             const id = sp.get("id")
@@ -70,7 +66,6 @@ export async function GET(req: NextRequest) {
             const evaluatorId = sp.get("evaluatorId") ?? undefined
             const status = sp.get("status") ?? undefined
 
-            // convenience: if scheduleId + evaluatorId => fetch unique assignment
             if (scheduleId && evaluatorId && sp.get("byAssignment") === "true") {
                 const evaluation = await EvaluationController.getEvaluationByAssignment(scheduleId, evaluatorId)
                 if (!evaluation) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
@@ -95,16 +90,30 @@ export async function GET(req: NextRequest) {
         }
 
         if (resource === "studentEvaluations") {
+            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+            const actorId = String((actor as any)?.id ?? "")
+
             const id = sp.get("id")
             if (id) {
                 const studentEvaluation = await EvaluationController.getStudentEvaluationById(id)
-                if (!studentEvaluation) return NextResponse.json({ ok: false, message: "Student evaluation not found" }, { status: 404 })
+                if (!studentEvaluation) {
+                    return NextResponse.json({ ok: false, message: "Student evaluation not found" }, { status: 404 })
+                }
+
+                if (actorRole === "student" && studentEvaluation.studentId !== actorId) {
+                    return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                }
+
                 return NextResponse.json({ ok: true, studentEvaluation })
             }
 
+            const requestedStudentId = sp.get("studentId") ?? undefined
+            const studentId =
+                actorRole === "student" ? actorId : requestedStudentId
+
             const items = await EvaluationController.listStudentEvaluations({
                 scheduleId: sp.get("scheduleId") ?? undefined,
-                studentId: sp.get("studentId") ?? undefined,
+                studentId,
                 status: sp.get("status") ?? undefined,
                 limit: toNum(sp.get("limit"), 50),
                 offset: toNum(sp.get("offset"), 0),
@@ -120,9 +129,28 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "rubricTemplates"
         const body = await readJson(req)
+
+        // Staff/Admin-only creates (rubrics/evaluations/scores)
+        const staffOnly = new Set([
+            "rubricTemplates",
+            "rubricCriteria",
+            "evaluations",
+            "evaluationScores",
+            "evaluationScoresBulk",
+        ])
+
+        if (staffOnly.has(resource)) {
+            assertRoles(actor, ["staff", "admin"])
+        } else if (resource === "studentEvaluations") {
+            // student can only upsert their own
+        } else {
+            return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
+        }
 
         if (resource === "rubricTemplates") {
             const name = String(body?.name ?? "").trim()
@@ -190,10 +218,7 @@ export async function POST(req: NextRequest) {
             const evaluationId = String(body?.evaluationId ?? "").trim()
             const items = Array.isArray(body?.items) ? body.items : []
             if (!evaluationId || !items.length) {
-                return NextResponse.json(
-                    { ok: false, message: "evaluationId and items[] are required" },
-                    { status: 400 }
-                )
+                return NextResponse.json({ ok: false, message: "evaluationId and items[] are required" }, { status: 400 })
             }
             const out = await EvaluationController.bulkUpsertEvaluationScores({
                 evaluationId,
@@ -207,11 +232,20 @@ export async function POST(req: NextRequest) {
         }
 
         if (resource === "studentEvaluations") {
+            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+            const actorId = String((actor as any)?.id ?? "")
+
             const scheduleId = String(body?.scheduleId ?? "").trim()
             const studentId = String(body?.studentId ?? "").trim()
             if (!scheduleId || !studentId) {
                 return NextResponse.json({ ok: false, message: "scheduleId and studentId are required" }, { status: 400 })
             }
+
+            // self-guard for students
+            if (actorRole === "student" && studentId !== actorId) {
+                return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+            }
+
             const item = await EvaluationController.upsertStudentEvaluation({
                 scheduleId,
                 studentId,
@@ -231,9 +265,22 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "rubricTemplates"
         const body = await readJson(req)
+
+        // Staff/Admin-only patches (rubrics/evaluations)
+        const staffOnly = new Set(["rubricTemplates", "rubricCriteria", "evaluations"])
+
+        if (staffOnly.has(resource)) {
+            assertRoles(actor, ["staff", "admin"])
+        } else if (resource === "studentEvaluations") {
+            // allowed, but self-guard below
+        } else {
+            return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
+        }
 
         if (resource === "rubricTemplates") {
             const id = sp.get("id") ?? String(body?.id ?? "")
@@ -275,8 +322,23 @@ export async function PATCH(req: NextRequest) {
         }
 
         if (resource === "studentEvaluations") {
+            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+            const actorId = String((actor as any)?.id ?? "")
+
             const id = sp.get("id") ?? String(body?.id ?? "")
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
+
+            // if student, ensure record is theirs
+            if (actorRole === "student") {
+                const existing = await EvaluationController.getStudentEvaluationById(id)
+                if (!existing) return NextResponse.json({ ok: false, message: "Student evaluation not found" }, { status: 404 })
+                if (existing.studentId !== actorId) {
+                    return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                }
+            } else {
+                assertRoles(actor, ["staff", "admin"])
+            }
+
             const studentEvaluation = await EvaluationController.updateStudentEvaluation(id, {
                 status: body?.status,
                 answers: body?.answers,
@@ -297,8 +359,13 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "rubricTemplates"
+
+        // Staff/Admin-only deletes
+        assertRoles(actor, ["staff", "admin"])
 
         if (resource === "rubricTemplates") {
             const id = sp.get("id")

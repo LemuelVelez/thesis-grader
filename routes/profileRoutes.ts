@@ -2,48 +2,27 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
 import { ProfileController } from "@/controllers/profileController"
-
-function pgStatus(err: any) {
-    if (err?.status) return err.status
-    const code = String(err?.code ?? "")
-    if (code === "23505") return 409
-    if (code === "23503") return 400
-    if (code === "23502") return 400
-    if (code === "22P02") return 400
-    if (code === "P0001") return 400
-    return 500
-}
-
-function errorJson(err: any, fallback: string) {
-    const status = pgStatus(err)
-    return NextResponse.json({ ok: false, message: err?.message ?? fallback }, { status })
-}
-
-async function readJson(req: NextRequest) {
-    try {
-        return await req.json()
-    } catch {
-        return {}
-    }
-}
-
-function toNum(v: string | null, fallback: number) {
-    const n = Number(v)
-    return Number.isFinite(n) ? n : fallback
-}
+import { errorJson, readJson, toNum } from "@/lib/http"
+import { requireActor, assertRoles, assertSelfOrRoles } from "@/lib/apiAuth"
 
 export async function GET(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "users"
 
         if (resource === "users") {
+            // user directory should be staff/admin
+            assertRoles(actor, ["staff", "admin"])
+
             const id = sp.get("id")
             if (id) {
                 const user = await ProfileController.getUserById(id)
                 if (!user) return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 })
                 return NextResponse.json({ ok: true, user })
             }
+
             const out = await ProfileController.listUsers({
                 q: sp.get("q") ?? "",
                 role: sp.get("role") ?? undefined,
@@ -57,6 +36,10 @@ export async function GET(req: NextRequest) {
         if (resource === "students") {
             const userId = sp.get("userId")
             if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
+
+            // student can only read own profile; staff/admin can read any
+            assertSelfOrRoles(actor, userId, ["staff", "admin"])
+
             const profile = await ProfileController.getStudentProfile(userId)
             return NextResponse.json({ ok: true, profile })
         }
@@ -64,6 +47,10 @@ export async function GET(req: NextRequest) {
         if (resource === "staffProfiles") {
             const userId = sp.get("userId")
             if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
+
+            // staff can read own; admin can read any (student cannot read staff)
+            assertSelfOrRoles(actor, userId, ["admin"])
+
             const profile = await ProfileController.getStaffProfile(userId)
             return NextResponse.json({ ok: true, profile })
         }
@@ -76,6 +63,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "students"
         const body = await readJson(req)
@@ -83,6 +72,10 @@ export async function POST(req: NextRequest) {
         if (resource === "students") {
             const userId = String(body?.userId ?? "").trim()
             if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
+
+            // student can only upsert own; staff/admin can upsert any
+            assertSelfOrRoles(actor, userId, ["staff", "admin"])
+
             const profile = await ProfileController.upsertStudentProfile({
                 userId,
                 program: body?.program ?? null,
@@ -94,6 +87,15 @@ export async function POST(req: NextRequest) {
         if (resource === "staffProfiles") {
             const userId = String(body?.userId ?? "").trim()
             if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
+
+            // only staff can upsert own, admin can upsert any
+            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+            if (actorRole === "staff") {
+                assertSelfOrRoles(actor, userId, ["staff"]) // self
+            } else {
+                assertRoles(actor, ["admin"])
+            }
+
             const profile = await ProfileController.upsertStaffProfile({
                 userId,
                 department: body?.department ?? null,
@@ -109,11 +111,16 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "users"
         const body = await readJson(req)
 
         if (resource === "users") {
+            // user management should be admin only
+            assertRoles(actor, ["admin"])
+
             const id = sp.get("id") ?? String(body?.id ?? "")
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 
@@ -135,6 +142,6 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(_req: NextRequest) {
-    // Intentionally not implemented for safety (users/profiles deletion can be destructive).
+    // Intentionally not implemented for safety (user deletion is destructive).
     return NextResponse.json({ ok: false, message: "Not implemented" }, { status: 501 })
 }

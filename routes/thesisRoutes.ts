@@ -1,38 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
 import { ThesisController } from "@/controllers/thesisController"
-
-function pgStatus(err: any) {
-    if (err?.status) return err.status
-    const code = String(err?.code ?? "")
-    if (code === "23505") return 409
-    if (code === "23503") return 400
-    if (code === "23502") return 400
-    if (code === "22P02") return 400
-    if (code === "P0001") return 400
-    return 500
-}
-
-function errorJson(err: any, fallback: string) {
-    const status = pgStatus(err)
-    return NextResponse.json({ ok: false, message: err?.message ?? fallback }, { status })
-}
-
-async function readJson(req: NextRequest) {
-    try {
-        return await req.json()
-    } catch {
-        return {}
-    }
-}
-
-function toNum(v: string | null, fallback: number) {
-    const n = Number(v)
-    return Number.isFinite(n) ? n : fallback
-}
+import { errorJson, readJson, toNum } from "@/lib/http"
+import { requireActor, assertRoles } from "@/lib/apiAuth"
 
 export async function GET(req: NextRequest) {
     try {
+        // Any logged-in user can view thesis data (adjust if you want student-only limitations)
+        await requireActor(req)
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "groups"
 
@@ -65,6 +41,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+        assertRoles(actor, ["staff", "admin"])
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "groups"
         const body = await readJson(req)
@@ -100,6 +79,9 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+        assertRoles(actor, ["staff", "admin"])
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "groups"
         const body = await readJson(req)
@@ -135,6 +117,9 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
     try {
+        const actor = await requireActor(req)
+        assertRoles(actor, ["staff", "admin"])
+
         const sp = req.nextUrl.searchParams
         const resource = sp.get("resource") ?? "groups"
 
