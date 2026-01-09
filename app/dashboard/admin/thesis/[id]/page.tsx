@@ -16,6 +16,8 @@ import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
+import ThesisGroupAdminEditor from "./thesis-group-admin-editor"
+
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
@@ -222,54 +224,30 @@ export default async function Page({ params }: { params: { id: string } | Promis
                             <Badge variant="secondary">members: {members.length}</Badge>
                             <Badge variant="outline">schedules: {schedules.length}</Badge>
                         </div>
+
+                        <Alert>
+                            <AlertTitle>Admin scope</AlertTitle>
+                            <AlertDescription>
+                                Admin can manage the thesis record (group info, adviser, members). Scheduling and scoring are handled in Staff modules.
+                                Schedules below are shown for visibility only.
+                            </AlertDescription>
+                        </Alert>
                     </CardContent>
                 </Card>
 
-                <Card>
-                    <CardHeader className="pb-3">
-                        <CardTitle>Members</CardTitle>
-                        <CardDescription>Students currently assigned to this thesis group.</CardDescription>
-                    </CardHeader>
-
-                    <CardContent>
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Student</TableHead>
-                                    <TableHead className="hidden md:table-cell">Program</TableHead>
-                                    <TableHead className="hidden md:table-cell">Section</TableHead>
-                                    <TableHead className="text-right">Status</TableHead>
-                                </TableRow>
-                            </TableHeader>
-
-                            <TableBody>
-                                {members.length ? (
-                                    members.map((m) => (
-                                        <TableRow key={m.id}>
-                                            <TableCell>
-                                                <div className="space-y-0.5">
-                                                    <div className="text-sm font-medium">{m.name}</div>
-                                                    <div className="text-xs text-muted-foreground">{m.email}</div>
-                                                </div>
-                                            </TableCell>
-                                            <TableCell className="hidden md:table-cell">{m.program ?? "—"}</TableCell>
-                                            <TableCell className="hidden md:table-cell">{m.section ?? "—"}</TableCell>
-                                            <TableCell className="text-right">
-                                                <Badge variant={m.status === "active" ? "secondary" : "outline"}>{m.status}</Badge>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))
-                                ) : (
-                                    <TableRow>
-                                        <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                                            No members assigned to this group.
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
-                    </CardContent>
-                </Card>
+                {/* ✅ Admin-only editor: update group + manage members (no scheduling/scoring here) */}
+                <ThesisGroupAdminEditor
+                    group={{
+                        id: group.id,
+                        title: group.title,
+                        program: group.program,
+                        term: group.term,
+                        adviserId: group.adviser_id,
+                        adviserName: group.adviser_name,
+                        adviserEmail: group.adviser_email,
+                    }}
+                    members={members}
+                />
 
                 <Card>
                     <CardHeader className="pb-3">

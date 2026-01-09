@@ -2,11 +2,7 @@
 // app/dashboard/admin/thesis/page.tsx
 import DashboardLayout from "@/components/dashboard-layout"
 import { requireAdminActor } from "@/lib/admin-auth"
-import {
-    getThesisDashboardStats,
-    listThesisGroups,
-    type ThesisGroupRow,
-} from "@/lib/thesis-admin"
+import { getThesisDashboardStats, listThesisGroups, type ThesisGroupRow } from "@/lib/thesis-admin"
 
 import ThesisAdminClient from "./thesis-client"
 
@@ -28,11 +24,7 @@ function pickOne(v: string | string[] | undefined) {
     return v
 }
 
-export default async function Page({
-    searchParams,
-}: {
-    searchParams: SearchParams | Promise<SearchParams>
-}) {
+export default async function Page({ searchParams }: { searchParams: SearchParams | Promise<SearchParams> }) {
     const sp = await Promise.resolve(searchParams as any as SearchParams)
     const actor = await requireAdminActor()
 
