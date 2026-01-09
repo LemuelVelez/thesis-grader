@@ -10,9 +10,7 @@ type AuthUser = {
     avatar_key: string | null
 }
 
-type MeResponse =
-    | { ok: true; user: AuthUser }
-    | { ok: false }
+type MeResponse = { ok: true; user: AuthUser } | { ok: false }
 
 type AvatarResponse =
     | { ok: true; avatar_key: string | null; url: string | null; expires_in_seconds?: number }
@@ -72,22 +70,6 @@ export function useAuth() {
         }
     }, [])
 
-    const scheduleAvatarRefresh = useCallback(
-        (expiresAtMs: number) => {
-            clearAvatarTimer()
-
-            const now = Date.now()
-            const refreshInMs = expiresAtMs - now - 30_000 // refresh ~30s before expiry
-
-            if (refreshInMs <= 0) return // caller can decide to refresh now
-            avatarTimerRef.current = window.setTimeout(() => {
-                // refreshAvatarUrl() is stable (useCallback) and will be in deps
-                // we call it through the returned function below
-            }, refreshInMs)
-        },
-        [clearAvatarTimer]
-    )
-
     const refresh = useCallback(async () => {
         try {
             const res = await fetch("/api/auth/me", { cache: "no-store" })
@@ -99,15 +81,15 @@ export function useAuth() {
     }, [])
 
     const refreshAvatarUrl = useCallback(async () => {
-        // must have user id to cache per-user
-        if (!user?.id) {
+        const userId = user?.id
+        if (!userId) {
             setAvatarUrl(null)
             setAvatarExpiresAt(null)
             return
         }
 
         try {
-            const res = await fetch("/api/users/me/avatar")
+            const res = await fetch("/api/users/me/avatar", { cache: "no-store" })
             const data = (await res.json().catch(() => ({}))) as AvatarResponse
 
             if (!res.ok || !data?.ok) {
@@ -122,7 +104,7 @@ export function useAuth() {
             if (!key || !url) {
                 setAvatarUrl(null)
                 setAvatarExpiresAt(null)
-                clearAvatarCache(user.id)
+                clearAvatarCache(userId)
                 clearAvatarTimer()
                 return
             }
@@ -134,22 +116,13 @@ export function useAuth() {
             setAvatarExpiresAt(exp)
 
             if (exp) {
-                writeAvatarCache(user.id, { avatar_key: key, url, expiresAt: exp })
-                scheduleAvatarRefresh(exp)
-
-                // If already too close to expiry, fetch again next tick
-                if (exp - Date.now() < 30_000) {
-                    // avoid a tight loop
-                    window.setTimeout(() => {
-                        refreshAvatarUrl()
-                    }, 250)
-                }
+                writeAvatarCache(userId, { avatar_key: key, url, expiresAt: exp })
             }
         } catch {
             setAvatarUrl(null)
             setAvatarExpiresAt(null)
         }
-    }, [user?.id, clearAvatarTimer, scheduleAvatarRefresh]) // NOTE: does not depend on user.avatar_key
+    }, [user?.id, clearAvatarTimer])
 
     // initial load
     useEffect(() => {
@@ -167,11 +140,13 @@ export function useAuth() {
         }
     }, [refresh])
 
-    // keep the timer callback wired to refreshAvatarUrl (after it’s defined)
+    // schedule avatar refresh ~30s before expiry
     useEffect(() => {
-        if (!avatarExpiresAt || !user?.id) return
+        const userId = user?.id
+        if (!userId || !avatarExpiresAt) return
 
         clearAvatarTimer()
+
         const now = Date.now()
         const refreshInMs = avatarExpiresAt - now - 30_000
 
@@ -191,44 +166,44 @@ export function useAuth() {
     useEffect(() => {
         clearAvatarTimer()
 
-        if (!user?.id) {
+        const userId = user?.id
+        if (!userId) {
             setAvatarUrl(null)
             setAvatarExpiresAt(null)
             return
         }
 
-        // if no avatar_key, clear
         if (!user.avatar_key) {
             setAvatarUrl(null)
             setAvatarExpiresAt(null)
-            clearAvatarCache(user.id)
+            clearAvatarCache(userId)
             return
         }
 
-        const cached = readAvatarCache(user.id)
+        const cached = readAvatarCache(userId)
         const now = Date.now()
 
         if (cached && cached.avatar_key === user.avatar_key && cached.expiresAt > now) {
             setAvatarUrl(cached.url)
             setAvatarExpiresAt(cached.expiresAt)
-            // if close to expiring, refresh
+
             if (cached.expiresAt - now < 30_000) refreshAvatarUrl()
             return
         }
 
-        // fetch fresh
         refreshAvatarUrl()
     }, [user?.id, user?.avatar_key, refreshAvatarUrl, clearAvatarTimer])
 
     // cleanup
     useEffect(() => {
-        return () => {
-            clearAvatarTimer()
-        }
+        return () => clearAvatarTimer()
     }, [clearAvatarTimer])
 
     return {
         loading,
+        // ✅ alias so older pages using `isLoading` won't crash TS
+        isLoading: loading,
+
         user,
         refresh,
 

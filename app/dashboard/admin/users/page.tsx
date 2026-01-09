@@ -140,6 +140,132 @@ async function deleteUserSilent(userId: string) {
     return { ok: true as const }
 }
 
+/** ---------------- Avatar helpers (client) ---------------- */
+
+function initialsFromName(name: string) {
+    const n = String(name ?? "").trim()
+    if (!n) return "?"
+    const parts = n.split(/\s+/).filter(Boolean)
+    const a = parts[0]?.[0] ?? ""
+    const b = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : ""
+    return (a + b).toUpperCase() || "?"
+}
+
+const userAvatarUrlCache = new Map<string, string | null>() // userId -> signed url|null
+
+function AvatarCircle(props: { url?: string | null; fallback: string; alt: string }) {
+    const { url, fallback, alt } = props
+    return (
+        <div className="h-8 w-8 overflow-hidden rounded-full border bg-muted">
+            {url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={url} alt={alt} className="h-full w-full object-cover" />
+            ) : (
+                <div className="flex h-full w-full items-center justify-center text-xs font-medium text-muted-foreground">
+                    {fallback}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function UserAvatarCell(props: { user: UserRow }) {
+    const u = props.user
+    const fallback = initialsFromName(u.name)
+
+    const [url, setUrl] = React.useState<string | null>(() => {
+        if (!u.avatar_key) return null
+        if (userAvatarUrlCache.has(u.id)) return userAvatarUrlCache.get(u.id) ?? null
+        return null
+    })
+
+    React.useEffect(() => {
+        let cancelled = false
+
+        async function run() {
+            if (!u.avatar_key) {
+                userAvatarUrlCache.set(u.id, null)
+                setUrl(null)
+                return
+            }
+
+            const cached = userAvatarUrlCache.get(u.id)
+            if (cached !== undefined) {
+                setUrl(cached)
+                return
+            }
+
+            try {
+                const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/avatar`, {
+                    method: "GET",
+                    credentials: "include",
+                    headers: { Accept: "application/json" },
+                    cache: "no-store",
+                })
+
+                if (!res.ok) {
+                    userAvatarUrlCache.set(u.id, null)
+                    if (!cancelled) setUrl(null)
+                    return
+                }
+
+                const data = (await res.json().catch(() => null)) as any
+                const nextUrl = data?.ok ? (data?.url ?? null) : null
+
+                userAvatarUrlCache.set(u.id, nextUrl)
+                if (!cancelled) setUrl(nextUrl)
+            } catch {
+                userAvatarUrlCache.set(u.id, null)
+                if (!cancelled) setUrl(null)
+            }
+        }
+
+        run()
+        return () => {
+            cancelled = true
+        }
+    }, [u.id, u.avatar_key])
+
+    return <AvatarCircle url={url} fallback={fallback} alt={`${u.name} avatar`} />
+}
+
+function AdminMeAvatar() {
+    const [url, setUrl] = React.useState<string | null>(null)
+
+    React.useEffect(() => {
+        let cancelled = false
+
+        async function run() {
+            try {
+                const res = await fetch("/api/users/me/avatar", {
+                    method: "GET",
+                    credentials: "include",
+                    headers: { Accept: "application/json" },
+                    cache: "no-store",
+                })
+                if (!res.ok) {
+                    if (!cancelled) setUrl(null)
+                    return
+                }
+                const data = (await res.json().catch(() => null)) as any
+                const nextUrl = data?.ok ? (data?.url ?? null) : null
+                if (!cancelled) setUrl(nextUrl)
+            } catch {
+                if (!cancelled) setUrl(null)
+            }
+        }
+
+        run()
+        return () => {
+            cancelled = true
+        }
+    }, [])
+
+    return <AvatarCircle url={url} fallback="ME" alt="My avatar" />
+}
+
+/** ---------------- Page ---------------- */
+
 export default function AdminUsersPage() {
     const { loading, user } = useAuth()
 
@@ -424,6 +550,12 @@ export default function AdminUsersPage() {
                 enableHiding: false,
             },
             {
+                id: "avatar",
+                header: "Avatar",
+                cell: ({ row }) => <UserAvatarCell user={row.original} />,
+                enableSorting: false,
+            },
+            {
                 accessorKey: "name",
                 header: ({ column }) => (
                     <Button
@@ -583,6 +715,9 @@ export default function AdminUsersPage() {
             setCPassword("")
             setCShowPassword(false)
 
+            // Clear avatar cache so newly created user doesn't reuse a stale entry
+            userAvatarUrlCache.delete(data.user.id)
+
             await fetchUsers()
             clearSelection()
         } catch {
@@ -618,10 +753,18 @@ export default function AdminUsersPage() {
             <div className="space-y-4">
                 <Card>
                     <CardHeader className="pb-0">
-                        <CardTitle>Users</CardTitle>
-                        <CardDescription>
-                            Create users, change roles/status, reset passwords, and delete users. Total: {total}
-                        </CardDescription>
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <CardTitle>Users</CardTitle>
+                                <CardDescription>
+                                    Create users, change roles/status, reset passwords, and delete users. Total: {total}
+                                </CardDescription>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <div className="text-xs text-muted-foreground">You</div>
+                                <AdminMeAvatar />
+                            </div>
+                        </div>
                     </CardHeader>
 
                     <CardContent className="p-4 md:p-6 pt-4">

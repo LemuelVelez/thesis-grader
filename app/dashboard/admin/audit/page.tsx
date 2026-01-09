@@ -4,25 +4,47 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import type { DateRange } from "react-day-picker"
 import {
-    ClipboardCopy,
+    Calendar as CalendarIcon,
+    Check,
+    Copy,
+    Download,
     Filter,
-    Loader2,
+    MoreHorizontal,
     RefreshCw,
     Search,
-    ShieldCheck,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
-import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
+import { cn } from "@/lib/utils"
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
     Select,
     SelectContent,
@@ -31,632 +53,951 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 
 type AuditLog = {
     id: string
-    actorId: string | null
+    actorId?: string | null
     actorName?: string | null
     actorEmail?: string | null
-    action: string
-    entity: string
-    entityId: string | null
-    details: any
-    createdAt: string
+    action?: string | null
+    entity?: string | null
+    entityId?: string | null
+    timestamp?: string | null
+    details?: any
+    [k: string]: any
 }
 
-function safeJsonStringify(value: any) {
+function roleHome(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    return "/dashboard"
+}
+
+function safeJsonParse(v: any) {
+    if (v == null) return v
+    if (typeof v === "object") return v
+    if (typeof v !== "string") return v
+    const s = v.trim()
+    if (!s) return v
     try {
-        return JSON.stringify(value ?? null, null, 2)
+        return JSON.parse(s)
     } catch {
-        return String(value)
+        return v
     }
 }
 
-function formatDateTime(iso: string) {
+function toIsoMaybe(d?: Date) {
+    if (!d) return null
+    const t = d.getTime()
+    if (!Number.isFinite(t)) return null
+    return new Date(t).toISOString()
+}
+
+function fmtDate(iso?: string | null) {
+    if (!iso) return "—"
     const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return iso
+    if (Number.isNaN(d.getTime())) return String(iso)
     return d.toLocaleString()
 }
 
-function buildQuery(params: Record<string, any>) {
-    const sp = new URLSearchParams()
-    Object.entries(params).forEach(([k, v]) => {
-        if (v === undefined || v === null) return
-        const s = String(v).trim()
-        if (!s) return
-        sp.set(k, s)
+function normalizeAuditResponse(data: any): { total: number | null; logs: AuditLog[] } {
+    const arr =
+        (Array.isArray(data) ? data : null) ||
+        (Array.isArray(data?.logs) ? data.logs : null) ||
+        (Array.isArray(data?.auditLogs) ? data.auditLogs : null) ||
+        (Array.isArray(data?.items) ? data.items : null) ||
+        (Array.isArray(data?.rows) ? data.rows : null) ||
+        (Array.isArray(data?.data) ? data.data : null) ||
+        (Array.isArray(data?.result) ? data.result : null) ||
+        []
+
+    const totalRaw =
+        (typeof data?.total === "number" ? data.total : null) ??
+        (typeof data?.count === "number" ? data.count : null) ??
+        (typeof data?.meta?.total === "number" ? data.meta.total : null) ??
+        null
+
+    const logs: AuditLog[] = (arr as any[]).map((x) => {
+        const actorName =
+            x?.actorName ??
+            x?.actor_name ??
+            x?.actor?.name ??
+            x?.user?.name ??
+            x?.actor ??
+            null
+
+        const actorEmail =
+            x?.actorEmail ??
+            x?.actor_email ??
+            x?.actor?.email ??
+            x?.user?.email ??
+            null
+
+        const timestamp =
+            x?.timestamp ??
+            x?.createdAt ??
+            x?.created_at ??
+            x?.time ??
+            x?.at ??
+            null
+
+        const details =
+            x?.details ??
+            x?.meta ??
+            x?.metadata ??
+            x?.data ??
+            x?.payload ??
+            null
+
+        return {
+            ...x,
+            id: String(x?.id ?? x?.logId ?? x?.auditId ?? `${timestamp ?? ""}-${Math.random()}`),
+            actorId: x?.actorId ?? x?.actor_id ?? x?.actor?.id ?? x?.user?.id ?? null,
+            actorName: actorName != null ? String(actorName) : null,
+            actorEmail: actorEmail != null ? String(actorEmail) : null,
+            action: x?.action != null ? String(x?.action) : null,
+            entity:
+                x?.entity != null
+                    ? String(x?.entity)
+                    : x?.resource != null
+                        ? String(x?.resource)
+                        : null,
+            entityId:
+                x?.entityId != null
+                    ? String(x?.entityId)
+                    : x?.entity_id != null
+                        ? String(x?.entity_id)
+                        : x?.resourceId != null
+                            ? String(x?.resourceId)
+                            : null,
+            timestamp: timestamp != null ? String(timestamp) : null,
+            details: safeJsonParse(details),
+        }
     })
-    return sp.toString()
+
+    return { total: totalRaw, logs }
 }
 
-async function fetchFirstOkJson(urls: string[]) {
+async function fetchJson(url: string) {
+    const res = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+    })
+
+    const ct = res.headers.get("content-type") ?? ""
+    let data: any = null
+
+    if (ct.includes("application/json")) {
+        data = await res.json().catch(() => null)
+    } else {
+        const text = await res.text().catch(() => "")
+        data = { message: text ? text.slice(0, 500) : null }
+    }
+
+    if (!res.ok) {
+        const msg =
+            (data && (data.message || data.error)) ||
+            `Request failed (${res.status})`
+        throw new Error(msg)
+    }
+
+    return { res, data }
+}
+
+function buildParamVariants(p: URLSearchParams) {
+    const variants: URLSearchParams[] = []
+
+    // 1) original (limit/offset)
+    variants.push(new URLSearchParams(p.toString()))
+
+    // 2) page/limit (page starts at 1)
+    {
+        const v = new URLSearchParams(p.toString())
+        const off = Number(v.get("offset") ?? "0")
+        const lim = Number(v.get("limit") ?? "50")
+        if (v.has("offset") && Number.isFinite(off) && Number.isFinite(lim) && lim > 0) {
+            v.delete("offset")
+            v.set("page", String(Math.floor(off / lim) + 1))
+        }
+        variants.push(v)
+    }
+
+    // 3) skip/take
+    {
+        const v = new URLSearchParams(p.toString())
+        if (v.has("offset")) {
+            v.set("skip", v.get("offset") ?? "0")
+            v.delete("offset")
+        }
+        if (v.has("limit")) {
+            v.set("take", v.get("limit") ?? "50")
+            v.delete("limit")
+        }
+        variants.push(v)
+    }
+
+    // unique
+    const seen = new Set<string>()
+    const uniq: URLSearchParams[] = []
+    for (const v of variants) {
+        const key = v.toString()
+        if (seen.has(key)) continue
+        seen.add(key)
+        uniq.push(v)
+    }
+    return uniq
+}
+
+async function fetchAuditLogs(params: URLSearchParams) {
+    const endpoints = ["/api/admin/audit-logs", "/api/admin/audit"]
+
     let lastErr: any = null
 
-    for (const url of urls) {
-        try {
-            const res = await fetch(url, {
-                method: "GET",
-                credentials: "include",
-                headers: { "Accept": "application/json" },
-            })
+    for (const base of endpoints) {
+        for (const variant of buildParamVariants(params)) {
+            const url = `${base}?${variant.toString()}`
+            try {
+                const { res, data } = await fetchJson(url)
 
-            if (res.status === 404) continue
+                // treat 404 as "endpoint not available", keep trying
+                if (res.status === 404) continue
 
-            const data = await res.json().catch(() => null)
-            if (!res.ok) {
-                const msg =
-                    (data && (data.message || data.error)) ||
-                    `Request failed (${res.status})`
-                throw new Error(msg)
+                return { url, data }
+            } catch (e: any) {
+                lastErr = e
+                // try next variant/endpoint
             }
-
-            return { url, data }
-        } catch (e: any) {
-            lastErr = e
         }
     }
 
-    if (lastErr) throw lastErr
-    throw new Error("Audit API not found (tried multiple endpoints).")
+    throw lastErr ?? new Error("No audit endpoint found.")
 }
 
-function normalizeAuditResponse(data: any): { logs: AuditLog[]; total: number } {
-    // Accept a few common response shapes:
-    // { ok: true, logs, total }
-    // { ok: true, items, total }
-    // { ok: true, auditLogs, total }
-    // { logs, total }
-    const raw =
-        (data?.logs ?? data?.items ?? data?.auditLogs ?? data?.rows ?? []) as any[]
-
-    const logs: AuditLog[] = (Array.isArray(raw) ? raw : []).map((x) => ({
-        id: String(x?.id ?? ""),
-        actorId: x?.actorId ?? x?.actor_id ?? null,
-        actorName: x?.actorName ?? x?.actor_name ?? x?.actor?.name ?? null,
-        actorEmail: x?.actorEmail ?? x?.actor_email ?? x?.actor?.email ?? null,
-        action: String(x?.action ?? ""),
-        entity: String(x?.entity ?? ""),
-        entityId: x?.entityId ?? x?.entity_id ?? null,
-        details: x?.details ?? x?.meta ?? x?.data ?? null,
-        createdAt: String(x?.createdAt ?? x?.created_at ?? x?.timestamp ?? ""),
-    }))
-
-    const total =
-        Number.isFinite(Number(data?.total)) ? Number(data.total) :
-            Number.isFinite(Number(data?.count)) ? Number(data.count) :
-                logs.length
-
-    return { logs, total }
+function makeCsvValue(v: any) {
+    if (v == null) return ""
+    const s = typeof v === "string" ? v : JSON.stringify(v)
+    const needsQuotes = /[",\n]/.test(s)
+    const escaped = s.replace(/"/g, '""')
+    return needsQuotes ? `"${escaped}"` : escaped
 }
 
 export default function AdminAuditPage() {
     const router = useRouter()
-    const { user, loading } = useAuth() as any
+    const { user, isLoading } = useAuth()
 
-    const [q, setQ] = React.useState("")
-    const [action, setAction] = React.useState<string>("all")
-    const [entity, setEntity] = React.useState<string>("all")
-    const [actor, setActor] = React.useState("")
-    const [from, setFrom] = React.useState("") // YYYY-MM-DD
-    const [to, setTo] = React.useState("") // YYYY-MM-DD
+    const [loading, setLoading] = React.useState(true)
+    const [refreshing, setRefreshing] = React.useState(false)
+    const [error, setError] = React.useState<string | null>(null)
+
+    const [logs, setLogs] = React.useState<AuditLog[]>([])
+    const [total, setTotal] = React.useState<number | null>(null)
 
     const [limit, setLimit] = React.useState(50)
-    const [page, setPage] = React.useState(0)
+    const [offset, setOffset] = React.useState(0)
 
-    const [isLoading, setIsLoading] = React.useState(false)
-    const [logs, setLogs] = React.useState<AuditLog[]>([])
-    const [total, setTotal] = React.useState(0)
-    const [apiHint, setApiHint] = React.useState<string>("")
+    const [q, setQ] = React.useState("")
+    const [tab, setTab] = React.useState("all")
 
-    // Debounce search text so we don't spam requests while typing
-    const [debouncedQ, setDebouncedQ] = React.useState(q)
+    const [entity, setEntity] = React.useState("all")
+    const [action, setAction] = React.useState("all")
+    const [actor, setActor] = React.useState("all")
+    const [range, setRange] = React.useState<DateRange | undefined>(undefined)
+
+    const [selected, setSelected] = React.useState<AuditLog | null>(null)
+    const [detailsOpen, setDetailsOpen] = React.useState(false)
+    const [prettyJson, setPrettyJson] = React.useState(true)
+
+    const skipAutoLoadRef = React.useRef(false)
+
+    const role = String((user as any)?.role ?? "").toLowerCase()
+    const isAdminReady = !isLoading && !!user && role === "admin"
+
+    // access control
     React.useEffect(() => {
-        const t = setTimeout(() => setDebouncedQ(q), 350)
-        return () => clearTimeout(t)
-    }, [q])
-
-    const isAdmin = String(user?.role ?? "").toLowerCase() === "admin"
-
-    React.useEffect(() => {
-        if (loading) return
+        if (isLoading) return
         if (!user) {
-            router.push("/login")
+            router.replace("/login")
             return
         }
-        if (!isAdmin) {
-            router.push("/dashboard")
+        if (role !== "admin") {
+            router.replace(roleHome(role))
         }
-    }, [loading, user, isAdmin, router])
+    }, [user, isLoading, role, router])
 
-    const offset = page * limit
-
-    const load = React.useCallback(async () => {
-        setIsLoading(true)
-        try {
-            const query = buildQuery({
-                q: debouncedQ,
-                action: action !== "all" ? action : undefined,
-                entity: entity !== "all" ? entity : undefined,
-                actorId: actor,
-                from: from ? `${from}T00:00:00.000Z` : undefined,
-                to: to ? `${to}T23:59:59.999Z` : undefined,
-                limit,
-                offset,
-            })
-
-            const candidates = [
-                `/api/admin/audit?${query}`,
-                `/api/admin/audit-logs?${query}`,
-                `/api/audit?${query}`,
-                `/api/audit-logs?${query}`,
-            ]
-
-            const { url, data } = await fetchFirstOkJson(candidates)
-            setApiHint(url.split("?")[0])
-
-            const norm = normalizeAuditResponse(data)
-            setLogs(norm.logs)
-            setTotal(norm.total)
-        } catch (err: any) {
-            setLogs([])
-            setTotal(0)
-            toast.error("Failed to load audit logs", {
-                description: err?.message ?? "Please try again.",
-            })
-        } finally {
-            setIsLoading(false)
+    const uniqueEntities = React.useMemo(() => {
+        const s = new Set<string>()
+        for (const l of logs) {
+            const e = String(l.entity ?? "").trim()
+            if (e) s.add(e)
         }
-    }, [debouncedQ, action, entity, actor, from, to, limit, offset])
+        return Array.from(s).sort((a, b) => a.localeCompare(b))
+    }, [logs])
 
+    const uniqueActions = React.useMemo(() => {
+        const s = new Set<string>()
+        for (const l of logs) {
+            const a = String(l.action ?? "").trim()
+            if (a) s.add(a)
+        }
+        return Array.from(s).sort((a, b) => a.localeCompare(b))
+    }, [logs])
+
+    const uniqueActors = React.useMemo(() => {
+        const s = new Set<string>()
+        for (const l of logs) {
+            const a = String(l.actorName ?? l.actorEmail ?? "").trim()
+            if (a) s.add(a)
+        }
+        return Array.from(s).sort((a, b) => a.localeCompare(b))
+    }, [logs])
+
+    const buildParams = React.useCallback(
+        (overrideOffset?: number) => {
+            const p = new URLSearchParams()
+            p.set("limit", String(limit))
+            p.set("offset", String(overrideOffset ?? offset))
+
+            const qq = q.trim()
+            if (qq) p.set("q", qq)
+
+            if (entity !== "all") p.set("entity", entity)
+            if (action !== "all") p.set("action", action)
+            if (actor !== "all") p.set("actor", actor)
+
+            const fromIso = toIsoMaybe(range?.from)
+            const toIso = toIsoMaybe(range?.to)
+            if (fromIso) p.set("from", fromIso)
+            if (toIso) p.set("to", toIso)
+
+            if (tab !== "all") p.set("tab", tab)
+
+            return p
+        },
+        [limit, offset, q, entity, action, actor, range, tab]
+    )
+
+    const load = React.useCallback(
+        async (opts?: { overrideOffset?: number; showToast?: boolean; soft?: boolean }) => {
+            setError(null)
+
+            if (!opts?.soft) setLoading(true)
+
+            const params = buildParams(opts?.overrideOffset)
+
+            try {
+                const { data } = await fetchAuditLogs(params)
+                const norm = normalizeAuditResponse(data)
+                setLogs(norm.logs)
+                setTotal(norm.total)
+                if (opts?.showToast) toast.success("Audit logs updated")
+            } catch (e: any) {
+                const msg = String(e?.message ?? "Failed to load audit logs.")
+                setError(msg)
+                toast.error("Failed to load audit logs", { description: msg })
+            } finally {
+                if (!opts?.soft) setLoading(false)
+                setRefreshing(false)
+            }
+        },
+        [buildParams]
+    )
+
+    // auto-load only when admin auth is ready AND pagination changes
     React.useEffect(() => {
-        if (!loading && user && isAdmin) load()
-    }, [load, loading, user, isAdmin])
+        if (!isAdminReady) return
+        if (skipAutoLoadRef.current) {
+            skipAutoLoadRef.current = false
+            return
+        }
+        load({ overrideOffset: offset })
+    }, [isAdminReady, offset, limit, load])
 
-    function resetFilters() {
-        setQ("")
-        setAction("all")
-        setEntity("all")
-        setActor("")
-        setFrom("")
-        setTo("")
-        setPage(0)
+    const filtered = React.useMemo(() => {
+        const qq = q.trim().toLowerCase()
+        const entityF = entity
+        const actionF = action
+        const actorF = actor
+
+        const from = range?.from ? range.from.getTime() : null
+        const to = range?.to ? range.to.getTime() : null
+
+        return logs.filter((l) => {
+            if (tab !== "all") {
+                const ent = String(l.entity ?? "").toLowerCase()
+                const act = String(l.action ?? "").toLowerCase()
+                const t = tab.toLowerCase()
+                if (!ent.includes(t) && !act.includes(t)) return false
+            }
+
+            if (entityF !== "all" && String(l.entity ?? "") !== entityF) return false
+            if (actionF !== "all" && String(l.action ?? "") !== actionF) return false
+
+            const actorKey = String(l.actorName ?? l.actorEmail ?? "")
+            if (actorF !== "all" && actorKey !== actorF) return false
+
+            if (qq) {
+                const hay = [
+                    l.id,
+                    l.actorName,
+                    l.actorEmail,
+                    l.action,
+                    l.entity,
+                    l.entityId,
+                    l.timestamp,
+                    typeof l.details === "string" ? l.details : JSON.stringify(l.details ?? {}),
+                ]
+                    .map((x) => String(x ?? "").toLowerCase())
+                    .join(" ")
+                if (!hay.includes(qq)) return false
+            }
+
+            if (from != null || to != null) {
+                const ts = l.timestamp ? new Date(l.timestamp).getTime() : NaN
+                if (!Number.isFinite(ts)) return false
+                if (from != null && ts < from) return false
+                if (to != null && ts > to) return false
+            }
+
+            return true
+        })
+    }, [logs, q, entity, action, actor, range, tab])
+
+    const canPrev = offset > 0
+    const canNext = total != null ? offset + limit < total : logs.length >= limit
+
+    const showingFrom = total != null ? Math.min(total, offset + 1) : offset + 1
+    const showingTo =
+        total != null
+            ? Math.min(total, offset + filtered.length)
+            : offset + filtered.length
+
+    function openDetails(l: AuditLog) {
+        setSelected(l)
+        setDetailsOpen(true)
     }
 
-    const totalPages = Math.max(1, Math.ceil((total || 0) / limit))
-    const canPrev = page > 0
-    const canNext = page + 1 < totalPages
+    async function copyJson(obj: any) {
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(obj, null, 2))
+            toast.success("Copied")
+        } catch (e: any) {
+            toast.error("Copy failed", { description: String(e?.message ?? "") })
+        }
+    }
+
+    function exportCsv() {
+        const headers = [
+            "timestamp",
+            "actorName",
+            "actorEmail",
+            "action",
+            "entity",
+            "entityId",
+            "id",
+            "details",
+        ]
+        const rows = filtered.map((l) => [
+            makeCsvValue(l.timestamp),
+            makeCsvValue(l.actorName),
+            makeCsvValue(l.actorEmail),
+            makeCsvValue(l.action),
+            makeCsvValue(l.entity),
+            makeCsvValue(l.entityId),
+            makeCsvValue(l.id),
+            makeCsvValue(l.details),
+        ])
+
+        const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n")
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        toast.success("Exported CSV")
+    }
 
     return (
         <DashboardLayout title="Audit Logs">
-            <div className="mx-auto w-full max-w-6xl space-y-4">
+            <div className="space-y-6">
                 <Card>
                     <CardHeader className="space-y-2">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="space-y-1">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
                                 <CardTitle className="flex items-center gap-2">
-                                    <ShieldCheck className="h-5 w-5" />
-                                    Audit Logs
+                                    <Filter className="h-5 w-5" />
+                                    Admin Audit Logs
                                 </CardTitle>
                                 <CardDescription>
-                                    Read-only, immutable history of important system actions (Admin-only).
+                                    Immutable system activity history. Admin-only view.
                                 </CardDescription>
                             </div>
 
-                            <div className="flex items-center gap-2">
-                                <Button variant="outline" onClick={load} disabled={isLoading}>
-                                    {isLoading ? (
-                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    ) : (
-                                        <RefreshCw className="mr-2 h-4 w-4" />
-                                    )}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                    variant="outline"
+                                    onClick={() => {
+                                        if (!isAdminReady) return
+                                        setRefreshing(true)
+                                        load({ overrideOffset: offset, showToast: true, soft: true })
+                                    }}
+                                    disabled={loading || refreshing || !isAdminReady}
+                                >
+                                    <RefreshCw className={cn("mr-2 h-4 w-4", refreshing ? "animate-spin" : "")} />
                                     Refresh
                                 </Button>
-                                <Button variant="outline" onClick={resetFilters} disabled={isLoading}>
-                                    <Filter className="mr-2 h-4 w-4" />
-                                    Reset
+
+                                <Button
+                                    variant="outline"
+                                    onClick={exportCsv}
+                                    disabled={loading || !filtered.length}
+                                >
+                                    <Download className="mr-2 h-4 w-4" />
+                                    Export CSV
+                                </Button>
+                            </div>
+                        </div>
+
+                        <Separator />
+                    </CardHeader>
+
+                    <CardContent className="space-y-4">
+                        {error ? (
+                            <Alert variant="destructive">
+                                <AlertTitle>Unable to load audit logs</AlertTitle>
+                                <AlertDescription>{error}</AlertDescription>
+                            </Alert>
+                        ) : null}
+
+                        <Tabs value={tab} onValueChange={setTab}>
+                            <TabsList className="flex flex-wrap justify-start">
+                                <TabsTrigger value="all">All</TabsTrigger>
+                                <TabsTrigger value="users">Users</TabsTrigger>
+                                <TabsTrigger value="thesis">Thesis</TabsTrigger>
+                                <TabsTrigger value="schedule">Schedule</TabsTrigger>
+                                <TabsTrigger value="rubric">Rubric</TabsTrigger>
+                                <TabsTrigger value="evaluation">Evaluation</TabsTrigger>
+                                <TabsTrigger value="security">Security</TabsTrigger>
+                            </TabsList>
+                        </Tabs>
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
+                            <div className="md:col-span-5">
+                                <Label htmlFor="q">Search</Label>
+                                <div className="relative">
+                                    <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 opacity-60" />
+                                    <Input
+                                        id="q"
+                                        value={q}
+                                        onChange={(e) => setQ(e.target.value)}
+                                        placeholder="Search actor, action, entity, id, details..."
+                                        className="pl-9"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="md:col-span-2">
+                                <Label>Entity</Label>
+                                <Select value={entity} onValueChange={setEntity}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">All</SelectItem>
+                                        {uniqueEntities.map((e) => (
+                                            <SelectItem key={e} value={e}>
+                                                {e}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="md:col-span-2">
+                                <Label>Action</Label>
+                                <Select value={action} onValueChange={setAction}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">All</SelectItem>
+                                        {uniqueActions.map((a) => (
+                                            <SelectItem key={a} value={a}>
+                                                {a}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="md:col-span-3">
+                                <Label>Actor</Label>
+                                <Select value={actor} onValueChange={setActor}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">All</SelectItem>
+                                        {uniqueActors.map((a) => (
+                                            <SelectItem key={a} value={a}>
+                                                {a}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="md:col-span-6">
+                                <Label>Date range</Label>
+                                <Popover>
+                                    <PopoverTrigger asChild>
+                                        <Button
+                                            variant="outline"
+                                            className={cn(
+                                                "w-full justify-start text-left font-normal",
+                                                !range?.from && "text-muted-foreground"
+                                            )}
+                                        >
+                                            <CalendarIcon className="mr-2 h-4 w-4" />
+                                            {range?.from ? (
+                                                range.to ? (
+                                                    <>
+                                                        {range.from.toLocaleDateString()} – {range.to.toLocaleDateString()}
+                                                    </>
+                                                ) : (
+                                                    range.from.toLocaleDateString()
+                                                )
+                                            ) : (
+                                                "Pick a date range"
+                                            )}
+                                        </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className="w-auto p-0" align="start">
+                                        <Calendar
+                                            initialFocus
+                                            mode="range"
+                                            defaultMonth={range?.from}
+                                            selected={range}
+                                            onSelect={setRange}
+                                            numberOfMonths={2}
+                                        />
+                                    </PopoverContent>
+                                </Popover>
+                            </div>
+
+                            <div className="md:col-span-3">
+                                <Label>Page size</Label>
+                                <Select
+                                    value={String(limit)}
+                                    onValueChange={(v) => {
+                                        const n = Number(v)
+                                        setLimit(Number.isFinite(n) && n > 0 ? n : 50)
+                                        setOffset(0)
+                                    }}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="25">25</SelectItem>
+                                        <SelectItem value="50">50</SelectItem>
+                                        <SelectItem value="100">100</SelectItem>
+                                        <SelectItem value="200">200</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="md:col-span-3 flex items-center-safe gap-2 flex-col">
+                                <Button
+                                    className="w-full"
+                                    onClick={() => {
+                                        if (!isAdminReady) return
+                                        skipAutoLoadRef.current = true
+                                        setOffset(0)
+                                        load({ overrideOffset: 0 })
+                                    }}
+                                    disabled={loading || refreshing || !isAdminReady}
+                                >
+                                    <Check className="mr-2 h-4 w-4" />
+                                    Apply
+                                </Button>
+
+                                <Button
+                                    variant="outline"
+                                    className="w-full"
+                                    onClick={() => {
+                                        if (!isAdminReady) return
+                                        setQ("")
+                                        setEntity("all")
+                                        setAction("all")
+                                        setActor("all")
+                                        setRange(undefined)
+                                        setTab("all")
+                                        skipAutoLoadRef.current = true
+                                        setOffset(0)
+                                        load({ overrideOffset: 0 })
+                                    }}
+                                    disabled={loading || refreshing || !isAdminReady}
+                                >
+                                    Clear
                                 </Button>
                             </div>
                         </div>
 
                         <Separator />
 
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
-                            <div className="lg:col-span-5">
-                                <Label htmlFor="q">Search</Label>
-                                <div className="relative mt-2">
-                                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-60" />
-                                    <Input
-                                        id="q"
-                                        value={q}
-                                        onChange={(e) => {
-                                            setQ(e.target.value)
-                                            setPage(0)
-                                        }}
-                                        placeholder="Search action/entity/actor/target…"
-                                        className="pl-9"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="lg:col-span-2">
-                                <Label>Action</Label>
-                                <div className="mt-2">
-                                    <Select
-                                        value={action}
-                                        onValueChange={(v) => {
-                                            setAction(v)
-                                            setPage(0)
-                                        }}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="All" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="all">All</SelectItem>
-                                            <SelectItem value="create">create</SelectItem>
-                                            <SelectItem value="update">update</SelectItem>
-                                            <SelectItem value="delete">delete</SelectItem>
-                                            <SelectItem value="lock">lock</SelectItem>
-                                            <SelectItem value="unlock">unlock</SelectItem>
-                                            <SelectItem value="login">login</SelectItem>
-                                            <SelectItem value="logout">logout</SelectItem>
-                                            <SelectItem value="reset_password">reset_password</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-
-                            <div className="lg:col-span-2">
-                                <Label>Entity</Label>
-                                <div className="mt-2">
-                                    <Select
-                                        value={entity}
-                                        onValueChange={(v) => {
-                                            setEntity(v)
-                                            setPage(0)
-                                        }}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="All" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="all">All</SelectItem>
-                                            <SelectItem value="users">users</SelectItem>
-                                            <SelectItem value="thesis_groups">thesis_groups</SelectItem>
-                                            <SelectItem value="defense_schedules">defense_schedules</SelectItem>
-                                            <SelectItem value="rubric_templates">rubric_templates</SelectItem>
-                                            <SelectItem value="rubric_criteria">rubric_criteria</SelectItem>
-                                            <SelectItem value="evaluations">evaluations</SelectItem>
-                                            <SelectItem value="student_evaluations">student_evaluations</SelectItem>
-                                            <SelectItem value="settings">settings</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-
-                            <div className="lg:col-span-3">
-                                <Label htmlFor="actor">Actor (User ID)</Label>
-                                <Input
-                                    id="actor"
-                                    value={actor}
-                                    onChange={(e) => {
-                                        setActor(e.target.value)
-                                        setPage(0)
-                                    }}
-                                    placeholder="e.g., UUID"
-                                    className="mt-2"
-                                />
-                            </div>
-
-                            <div className="lg:col-span-3">
-                                <Label htmlFor="from">From</Label>
-                                <Input
-                                    id="from"
-                                    type="date"
-                                    value={from}
-                                    onChange={(e) => {
-                                        setFrom(e.target.value)
-                                        setPage(0)
-                                    }}
-                                    className="mt-2"
-                                />
-                            </div>
-
-                            <div className="lg:col-span-3">
-                                <Label htmlFor="to">To</Label>
-                                <Input
-                                    id="to"
-                                    type="date"
-                                    value={to}
-                                    onChange={(e) => {
-                                        setTo(e.target.value)
-                                        setPage(0)
-                                    }}
-                                    className="mt-2"
-                                />
-                            </div>
-
-                            <div className="lg:col-span-3">
-                                <Label>Rows</Label>
-                                <div className="mt-2">
-                                    <Select
-                                        value={String(limit)}
-                                        onValueChange={(v) => {
-                                            const n = Number(v)
-                                            setLimit(Number.isFinite(n) ? n : 50)
-                                            setPage(0)
-                                        }}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="50" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="10">10</SelectItem>
-                                            <SelectItem value="25">25</SelectItem>
-                                            <SelectItem value="50">50</SelectItem>
-                                            <SelectItem value="100">100</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-                            <div className="text-sm text-muted-foreground">
-                                {apiHint ? (
-                                    <span>
-                                        API: <span className="font-mono">{apiHint}</span>
-                                    </span>
-                                ) : (
-                                    <span />
-                                )}
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                                <Badge variant="secondary">
-                                    Total: {Number.isFinite(total) ? total : 0}
-                                </Badge>
-                                <Badge variant="outline">
-                                    Page {page + 1} / {totalPages}
-                                </Badge>
-                            </div>
-                        </div>
-                    </CardHeader>
-
-                    <CardContent className="space-y-3">
-                        <div className="rounded-md border">
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead className="w-50">Time</TableHead>
-                                        <TableHead>Actor</TableHead>
-                                        <TableHead>Action</TableHead>
-                                        <TableHead>Entity</TableHead>
-                                        <TableHead>Target</TableHead>
-                                        <TableHead className="text-right">Details</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-
-                                <TableBody>
-                                    {isLoading ? (
-                                        <TableRow>
-                                            <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
-                                                <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />
-                                                Loading audit logs…
-                                            </TableCell>
-                                        </TableRow>
-                                    ) : logs.length === 0 ? (
-                                        <TableRow>
-                                            <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
-                                                No audit logs found.
-                                            </TableCell>
-                                        </TableRow>
-                                    ) : (
-                                        logs.map((log) => (
-                                            <TableRow key={log.id}>
-                                                <TableCell className="align-top">
-                                                    <div className="text-sm">{formatDateTime(log.createdAt)}</div>
-                                                    <div className="text-xs text-muted-foreground font-mono">{log.id}</div>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    <div className="text-sm">
-                                                        {log.actorName ? log.actorName : log.actorId ? "User" : "System"}
-                                                    </div>
-                                                    <div className="text-xs text-muted-foreground">
-                                                        {log.actorEmail ? log.actorEmail : log.actorId ? (
-                                                            <span className="font-mono">{log.actorId}</span>
-                                                        ) : (
-                                                            <span className="font-mono">—</span>
-                                                        )}
-                                                    </div>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    <Badge variant="secondary" className="capitalize">
-                                                        {log.action || "unknown"}
-                                                    </Badge>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    <div className="text-sm">{log.entity || "—"}</div>
-                                                </TableCell>
-
-                                                <TableCell className="align-top">
-                                                    {log.entityId ? (
-                                                        <span className="font-mono text-xs">{log.entityId}</span>
-                                                    ) : (
-                                                        <span className="text-xs text-muted-foreground">—</span>
-                                                    )}
-                                                </TableCell>
-
-                                                <TableCell className="align-top text-right">
-                                                    <Dialog>
-                                                        <DialogTrigger asChild>
-                                                            <Button variant="outline" size="sm">
-                                                                View
-                                                            </Button>
-                                                        </DialogTrigger>
-                                                        <DialogContent className="max-w-3xl">
-                                                            <DialogHeader>
-                                                                <DialogTitle>Audit Log Details</DialogTitle>
-                                                            </DialogHeader>
-
-                                                            <div className="space-y-3">
-                                                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                                                    <div className="rounded-md border p-3">
-                                                                        <div className="text-xs text-muted-foreground">Time</div>
-                                                                        <div className="text-sm">{formatDateTime(log.createdAt)}</div>
-                                                                    </div>
-                                                                    <div className="rounded-md border p-3">
-                                                                        <div className="text-xs text-muted-foreground">Action</div>
-                                                                        <div className="text-sm">{log.action}</div>
-                                                                    </div>
-                                                                    <div className="rounded-md border p-3">
-                                                                        <div className="text-xs text-muted-foreground">Entity</div>
-                                                                        <div className="text-sm">{log.entity}</div>
-                                                                    </div>
-                                                                    <div className="rounded-md border p-3">
-                                                                        <div className="text-xs text-muted-foreground">Target ID</div>
-                                                                        <div className="text-sm font-mono break-all">{log.entityId ?? "—"}</div>
-                                                                    </div>
-                                                                </div>
-
-                                                                <div className="flex items-center justify-between gap-2">
-                                                                    <div className="text-sm text-muted-foreground">
-                                                                        <span className="font-mono">{log.id}</span>
-                                                                    </div>
-
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={async () => {
-                                                                            const text = safeJsonStringify(log.details)
-                                                                            try {
-                                                                                await navigator.clipboard.writeText(text)
-                                                                                toast.success("Copied details")
-                                                                            } catch {
-                                                                                toast.error("Failed to copy")
-                                                                            }
-                                                                        }}
-                                                                    >
-                                                                        <ClipboardCopy className="mr-2 h-4 w-4" />
-                                                                        Copy JSON
-                                                                    </Button>
-                                                                </div>
-
-                                                                <div className="rounded-md border bg-muted/30">
-                                                                    <pre
-                                                                        className={cn(
-                                                                            "max-h-105 overflow-auto p-4 text-xs leading-relaxed",
-                                                                            "font-mono"
-                                                                        )}
-                                                                    >
-                                                                        {safeJsonStringify(log.details)}
-                                                                    </pre>
-                                                                </div>
-                                                            </div>
-                                                        </DialogContent>
-                                                    </Dialog>
-                                                </TableCell>
-                                            </TableRow>
-                                        ))
-                                    )}
-                                </TableBody>
-                            </Table>
-                        </div>
-
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="text-sm text-muted-foreground">
-                                Showing{" "}
-                                <span className="font-medium text-foreground">
-                                    {logs.length === 0 ? 0 : offset + 1}
-                                </span>{" "}
-                                to{" "}
-                                <span className="font-medium text-foreground">
-                                    {Math.min(offset + logs.length, total || offset + logs.length)}
-                                </span>
+                                {loading ? (
+                                    <span>Loading…</span>
+                                ) : (
+                                    <span>
+                                        Showing <span className="font-medium text-foreground">{showingFrom}</span>–
+                                        <span className="font-medium text-foreground">{showingTo}</span>
+                                        {total != null ? (
+                                            <>
+                                                {" "}
+                                                of <span className="font-medium text-foreground">{total}</span>
+                                            </>
+                                        ) : null}
+                                    </span>
+                                )}
                             </div>
 
                             <div className="flex items-center gap-2">
                                 <Button
                                     variant="outline"
-                                    onClick={() => setPage((p) => Math.max(0, p - 1))}
-                                    disabled={isLoading || !canPrev}
+                                    onClick={() => setOffset((o) => Math.max(0, o - limit))}
+                                    disabled={loading || !canPrev}
                                 >
                                     Prev
                                 </Button>
                                 <Button
                                     variant="outline"
-                                    onClick={() => setPage((p) => p + 1)}
-                                    disabled={isLoading || !canNext}
+                                    onClick={() => setOffset((o) => o + limit)}
+                                    disabled={loading || !canNext}
                                 >
                                     Next
                                 </Button>
-
-                                <Button
-                                    variant="outline"
-                                    onClick={() => {
-                                        // CSV export of currently loaded rows (not the entire dataset)
-                                        if (!logs.length) {
-                                            toast.error("No rows to export")
-                                            return
-                                        }
-                                        const cols = ["createdAt", "actorId", "actorName", "actorEmail", "action", "entity", "entityId", "details"]
-                                        const escape = (v: any) => {
-                                            const s = v === null || v === undefined ? "" : String(v)
-                                            const needs = /[",\n]/.test(s)
-                                            const out = s.replace(/"/g, '""')
-                                            return needs ? `"${out}"` : out
-                                        }
-                                        const lines = [
-                                            cols.join(","),
-                                            ...logs.map((r) =>
-                                                cols
-                                                    .map((c) => {
-                                                        if (c === "details") return escape(safeJsonStringify((r as any)[c]))
-                                                        return escape((r as any)[c])
-                                                    })
-                                                    .join(",")
-                                            ),
-                                        ]
-                                        const csv = lines.join("\n")
-                                        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
-                                        const url = URL.createObjectURL(blob)
-                                        const a = document.createElement("a")
-                                        a.href = url
-                                        a.download = `audit-logs-page-${page + 1}.csv`
-                                        document.body.appendChild(a)
-                                        a.click()
-                                        a.remove()
-                                        URL.revokeObjectURL(url)
-                                        toast.success("Exported CSV")
-                                    }}
-                                    disabled={isLoading}
-                                >
-                                    Export CSV
-                                </Button>
                             </div>
+                        </div>
+
+                        <div className="rounded-md border">
+                            {loading ? (
+                                <div className="space-y-3 p-4">
+                                    <Skeleton className="h-6 w-1/2" />
+                                    <Skeleton className="h-6 w-2/3" />
+                                    <Skeleton className="h-6 w-3/4" />
+                                    <Skeleton className="h-6 w-2/5" />
+                                </div>
+                            ) : filtered.length ? (
+                                <div className="w-full overflow-x-auto">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead className="w-56">Time</TableHead>
+                                                <TableHead className="w-64">Actor</TableHead>
+                                                <TableHead className="w-40">Action</TableHead>
+                                                <TableHead className="w-40">Entity</TableHead>
+                                                <TableHead>Entity ID</TableHead>
+                                                <TableHead className="w-20 text-right">More</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {filtered.map((l) => (
+                                                <TableRow key={l.id}>
+                                                    <TableCell className="align-top">
+                                                        <div className="text-sm font-medium">{fmtDate(l.timestamp)}</div>
+                                                        <div className="max-w-56 truncate text-xs text-muted-foreground">
+                                                            {l.id}
+                                                        </div>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        <div className="text-sm font-medium">{l.actorName || "—"}</div>
+                                                        <div className="max-w-64 truncate text-xs text-muted-foreground">
+                                                            {l.actorEmail || l.actorId || ""}
+                                                        </div>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        {l.action ? (
+                                                            <Badge variant="secondary" className="whitespace-nowrap">
+                                                                {l.action}
+                                                            </Badge>
+                                                        ) : (
+                                                            "—"
+                                                        )}
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        {l.entity ? (
+                                                            <Badge variant="outline" className="whitespace-nowrap">
+                                                                {l.entity}
+                                                            </Badge>
+                                                        ) : (
+                                                            "—"
+                                                        )}
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top">
+                                                        <div className="max-w-64 truncate text-sm">{l.entityId || "—"}</div>
+                                                    </TableCell>
+
+                                                    <TableCell className="align-top text-right">
+                                                        <DropdownMenu>
+                                                            <DropdownMenuTrigger asChild>
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    className="h-8 w-8"
+                                                                >
+                                                                    <MoreHorizontal className="h-4 w-4" />
+                                                                    <span className="sr-only">Open menu</span>
+                                                                </Button>
+                                                            </DropdownMenuTrigger>
+                                                            <DropdownMenuContent align="end" className="w-48">
+                                                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                                                <DropdownMenuSeparator />
+                                                                <DropdownMenuItem onClick={() => openDetails(l)}>
+                                                                    View details
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuItem onClick={() => copyJson(l)}>
+                                                                    <Copy className="mr-2 h-4 w-4" />
+                                                                    Copy row JSON
+                                                                </DropdownMenuItem>
+                                                                {l.details != null ? (
+                                                                    <DropdownMenuItem onClick={() => copyJson(l.details)}>
+                                                                        <Copy className="mr-2 h-4 w-4" />
+                                                                        Copy details JSON
+                                                                    </DropdownMenuItem>
+                                                                ) : null}
+                                                            </DropdownMenuContent>
+                                                        </DropdownMenu>
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                            ) : (
+                                <div className="p-8 text-center">
+                                    <div className="text-sm font-medium">No audit logs found</div>
+                                    <div className="mt-1 text-sm text-muted-foreground">
+                                        Try changing filters, widening the date range, or refreshing.
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </CardContent>
                 </Card>
 
-                <Card>
-                    <CardHeader>
-                        <CardTitle className="text-base">Notes</CardTitle>
-                        <CardDescription>
-                            This page is intentionally read-only. Audit logs must not be deleted or edited.
-                        </CardDescription>
-                    </CardHeader>
-                </Card>
+                <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+                    <DialogContent className="max-w-3xl">
+                        <DialogHeader>
+                            <DialogTitle>Audit log details</DialogTitle>
+                            <DialogDescription>
+                                Review the complete record and metadata for auditing.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Time: </span>
+                                    <span className="font-medium">{fmtDate(selected?.timestamp ?? null)}</span>
+                                </div>
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Actor: </span>
+                                    <span className="font-medium">{selected?.actorName || "—"}</span>
+                                </div>
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Action: </span>
+                                    <span className="font-medium">{selected?.action || "—"}</span>
+                                </div>
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Entity: </span>
+                                    <span className="font-medium">{selected?.entity || "—"}</span>
+                                </div>
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Entity ID: </span>
+                                    <span className="font-medium">{selected?.entityId || "—"}</span>
+                                </div>
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Row ID: </span>
+                                    <span className="font-medium">{selected?.id || "—"}</span>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-sm">Pretty JSON</Label>
+                                    <div className="flex items-center gap-2">
+                                        <Switch checked={prettyJson} onCheckedChange={setPrettyJson} />
+                                    </div>
+                                </div>
+
+                                <ScrollArea className="h-56 rounded-md border p-3">
+                                    <pre className="whitespace-pre-wrap wrap-break-word text-xs">
+                                        {selected
+                                            ? prettyJson
+                                                ? JSON.stringify(selected, null, 2)
+                                                : JSON.stringify(selected)
+                                            : "—"}
+                                    </pre>
+                                </ScrollArea>
+                            </div>
+                        </div>
+
+                        <Separator />
+
+                        <div className="space-y-2">
+                            <Label>Details</Label>
+                            <Textarea
+                                readOnly
+                                value={
+                                    selected?.details != null
+                                        ? prettyJson
+                                            ? JSON.stringify(selected.details, null, 2)
+                                            : JSON.stringify(selected.details)
+                                        : ""
+                                }
+                                placeholder="No details"
+                                className="min-h-48 font-mono text-xs"
+                            />
+                        </div>
+
+                        <DialogFooter className="gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={() => (selected ? copyJson(selected) : null)}
+                                disabled={!selected}
+                            >
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy row
+                            </Button>
+                            <Button
+                                onClick={() => (selected ? copyJson(selected.details ?? {}) : null)}
+                                disabled={!selected}
+                            >
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy details
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             </div>
         </DashboardLayout>
     )
