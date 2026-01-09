@@ -6,7 +6,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 type RouteContext = {
-    params: { id: string }
+    params?: { id?: string }
 }
 
 function errorJson(err: any, fallback: string) {
@@ -14,13 +14,20 @@ function errorJson(err: any, fallback: string) {
     return NextResponse.json({ error: err?.message ?? fallback }, { status })
 }
 
-// ✅ FIX: add GET so /api/admin/rubric-criteria/:id works (prevents unexpected client calls from failing)
-export async function GET(_req: NextRequest, ctx: RouteContext) {
+function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): string {
+    const fromParams = ctx?.params?.id
+    if (fromParams) return String(fromParams)
+
+    const parts = req.nextUrl.pathname.split("/").filter(Boolean)
+    const last = parts[parts.length - 1] ?? ""
+    return String(last)
+}
+
+// ✅ GET /api/admin/rubric-criteria/:id
+export async function GET(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
-        if (!id) {
-            return NextResponse.json({ error: "Missing id" }, { status: 400 })
-        }
+        const id = getIdFromCtxOrPath(req, ctx)
+        if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const data = await (RubricCriteriaController.getById as any)(id)
         return NextResponse.json(data)
@@ -31,7 +38,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
 export async function PUT(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
+        const id = getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }
@@ -48,9 +55,9 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     }
 }
 
-export async function DELETE(_req: NextRequest, ctx: RouteContext) {
+export async function DELETE(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
+        const id = getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }

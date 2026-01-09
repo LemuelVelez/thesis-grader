@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 export type RubricTemplateRow = {
     id: string
     name: string
+    description: string | null
     version: number
     active: boolean
     created_at: string
@@ -13,7 +14,7 @@ export type RubricTemplateRow = {
 export async function listRubricTemplates(args?: { activeOnly?: boolean }) {
     const activeOnly = !!args?.activeOnly
     const q = `
-    select id, name, version, active, created_at, updated_at
+    select id, name, description, version, active, created_at, updated_at
     from rubric_templates
     ${activeOnly ? "where active = true" : ""}
     order by active desc, updated_at desc
@@ -22,10 +23,10 @@ export async function listRubricTemplates(args?: { activeOnly?: boolean }) {
     return (rows as RubricTemplateRow[]) ?? []
 }
 
-// ✅ NEW: used to return full row after create/update
+// ✅ used to return full row after create/update
 export async function getRubricTemplate(id: string) {
     const q = `
-    select id, name, version, active, created_at, updated_at
+    select id, name, description, version, active, created_at, updated_at
     from rubric_templates
     where id = $1
     limit 1
@@ -34,17 +35,33 @@ export async function getRubricTemplate(id: string) {
     return (rows?.[0] as RubricTemplateRow | undefined) ?? undefined
 }
 
-export async function createRubricTemplate(args: { name: string; version?: number; active?: boolean }) {
+export async function createRubricTemplate(args: {
+    name: string
+    description?: string | null
+    version?: number
+    active?: boolean
+}) {
     const q = `
-    insert into rubric_templates (name, version, active)
-    values ($1, $2, $3)
+    insert into rubric_templates (name, description, version, active)
+    values ($1, $2, $3, $4)
     returning id
   `
-    const { rows } = await db.query(q, [args.name, args.version ?? 1, args.active ?? true])
+    const { rows } = await db.query(q, [
+        args.name,
+        args.description ?? null,
+        args.version ?? 1,
+        args.active ?? true,
+    ])
     return rows[0]?.id as string | undefined
 }
 
-export async function updateRubricTemplate(args: { id: string; name?: string; version?: number; active?: boolean }) {
+export async function updateRubricTemplate(args: {
+    id: string
+    name?: string
+    description?: string | null
+    version?: number
+    active?: boolean
+}) {
     const set: string[] = []
     const params: any[] = []
 
@@ -54,6 +71,10 @@ export async function updateRubricTemplate(args: { id: string; name?: string; ve
     if (args.name !== undefined) {
         params.push(args.name)
         set.push(`name = $${params.length}`)
+    }
+    if (args.description !== undefined) {
+        params.push(args.description) // can be null to clear
+        set.push(`description = $${params.length}`)
     }
     if (args.version !== undefined) {
         params.push(args.version)

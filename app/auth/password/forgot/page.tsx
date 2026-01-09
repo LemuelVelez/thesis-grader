@@ -42,10 +42,7 @@ export default function ForgotPasswordPage() {
                 return
             }
 
-            toast.success(
-                (data as any)?.message ?? "If your email exists, a reset link will be sent.",
-                { id: tId }
-            )
+            toast.success((data as any)?.message ?? "If your email exists, a reset link will be sent.", { id: tId })
 
             setEmail("")
         } catch {
@@ -58,13 +55,17 @@ export default function ForgotPasswordPage() {
     return (
         <div className="min-h-svh w-full">
             <div className="mx-auto flex min-h-svh w-full max-w-md flex-col justify-center px-4 py-10 sm:px-6">
-                <div className="mb-6 flex items-center justify-center gap-3">
+                <Link
+                    href="/"
+                    aria-label="Go to home"
+                    className="mb-6 flex items-center justify-center gap-3 rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                >
                     <Image src="/logo.svg" alt="THESISGRADER logo" width={44} height={44} priority />
                     <div className="leading-tight">
                         <div className="text-lg font-semibold tracking-tight">THESISGRADER</div>
                         <div className="text-xs text-muted-foreground">Reset your password</div>
                     </div>
-                </div>
+                </Link>
 
                 <Card>
                     <CardContent className="p-6">

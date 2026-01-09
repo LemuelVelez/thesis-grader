@@ -39,6 +39,20 @@ function normalizeId(raw: any): string | null {
     return s
 }
 
+// ✅ Allows partial update + supports clearing description by sending null
+function pickOptionalText(body: any, keys: string[]): string | null | undefined {
+    if (!body || typeof body !== "object") return undefined
+    for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(body, k)) {
+            const v = body[k]
+            if (v === null) return null
+            if (v === undefined) return undefined
+            return String(v)
+        }
+    }
+    return undefined
+}
+
 export const RubricCriteriaController = {
     // ✅ Lenient list: invalid templateId => return all instead of 400
     async list(query?: any) {
@@ -51,15 +65,8 @@ export const RubricCriteriaController = {
 
         const template_id = normalizeId(templateIdRaw)
 
-        // No filter => return all (used by admin rubrics page)
-        if (!template_id) {
-            return await listAllRubricCriteria()
-        }
-
-        // Invalid filter => also return all (prevents noisy 400s from accidental bad params)
-        if (!isUuid(template_id)) {
-            return await listAllRubricCriteria()
-        }
+        if (!template_id) return await listAllRubricCriteria()
+        if (!isUuid(template_id)) return await listAllRubricCriteria()
 
         return await listRubricCriteria(template_id)
     },
@@ -94,10 +101,14 @@ export const RubricCriteriaController = {
 
         if (!criterion) throw badRequest("criterion (or title/name/label) is required")
 
+        // ✅ accept many possible keys from frontend
+        const description =
+            pickOptionalText(body, ["description", "desc", "criteriaDescription", "criteria_description"]) ?? null
+
         const id = await createRubricCriterion({
             template_id: templateIdStr,
             criterion: String(criterion),
-            description: body?.description ?? body?.desc ?? null,
+            description,
             weight: toNumber(body?.weight ?? body?.points ?? body?.score),
             min_score: toNumber(body?.min_score ?? body?.minScore),
             max_score: toNumber(body?.max_score ?? body?.maxScore),
@@ -112,10 +123,11 @@ export const RubricCriteriaController = {
         const idStr = String(id).trim()
         if (!isUuid(idStr)) throw badRequest(`Invalid id (expected UUID): "${idStr}"`)
 
+        // ✅ IMPORTANT: only update description if the key exists in the request body
         const updatedId = await updateRubricCriterion({
             id: idStr,
             criterion: body?.criterion ?? body?.title ?? body?.name ?? body?.label,
-            description: body?.description ?? body?.desc,
+            description: pickOptionalText(body, ["description", "desc", "criteriaDescription", "criteria_description"]),
             weight: toNumber(body?.weight ?? body?.points ?? body?.score),
             min_score: toNumber(body?.min_score ?? body?.minScore),
             max_score: toNumber(body?.max_score ?? body?.maxScore),

@@ -38,6 +38,20 @@ function isUuid(s: string) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
 }
 
+// ✅ Allows partial update + supports clearing description by sending null
+function pickOptionalText(body: any, keys: string[]): string | null | undefined {
+    if (!body || typeof body !== "object") return undefined
+    for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(body, k)) {
+            const v = body[k]
+            if (v === null) return null
+            if (v === undefined) return undefined
+            return String(v)
+        }
+    }
+    return undefined
+}
+
 export const RubricTemplatesController = {
     async list(query?: any) {
         const activeOnly = toBool(query?.activeOnly ?? query?.active_only)
@@ -58,8 +72,12 @@ export const RubricTemplatesController = {
         const name = body?.name ?? body?.title ?? body?.label
         if (!name) throw badRequest("name is required")
 
+        const description =
+            pickOptionalText(body, ["description", "desc"]) ?? null
+
         const id = await createRubricTemplate({
             name: String(name),
+            description,
             version: toNumber(body?.version),
             active: toBool(body?.active),
         })
@@ -76,6 +94,7 @@ export const RubricTemplatesController = {
         const updatedId = await updateRubricTemplate({
             id: idStr,
             name: body?.name ?? body?.title ?? body?.label,
+            description: pickOptionalText(body, ["description", "desc"]),
             version: toNumber(body?.version),
             active: toBool(body?.active),
         })

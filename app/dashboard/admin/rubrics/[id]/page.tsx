@@ -4,16 +4,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import {
-    ArrowLeft,
-    Plus,
-    RefreshCw,
-    Save,
-    Trash2,
-    MoreHorizontal,
-    Code2,
-    ListChecks,
-} from "lucide-react"
+import { ArrowLeft, Plus, RefreshCw, Save, Trash2, MoreHorizontal, Code2, ListChecks } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
@@ -63,6 +54,7 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 type RubricTemplate = Record<string, any>
@@ -72,12 +64,49 @@ function getId(obj: any): string {
     return String(obj?.id ?? obj?._id ?? obj?.uuid ?? "")
 }
 
-function getName(t: RubricTemplate): string {
+function getTemplateName(t: RubricTemplate): string {
     return String(t?.name ?? t?.title ?? t?.label ?? t?.rubricName ?? "Untitled Rubric")
 }
 
-function getDescription(t: RubricTemplate): string {
+function getTemplateDescription(t: RubricTemplate): string {
     return String(t?.description ?? t?.desc ?? t?.details ?? "")
+}
+
+function getTemplateVersion(t: RubricTemplate): number {
+    const v = t?.version
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : 1
+}
+
+function getTemplateActive(t: RubricTemplate): boolean {
+    return Boolean(t?.active ?? true)
+}
+
+function getCriterionTemplateId(c: RubricCriterion): string {
+    return String(c?.template_id ?? c?.templateId ?? c?.rubricTemplateId ?? c?.rubric_template_id ?? c?.rubricId ?? "")
+}
+
+function getCriterionTitle(c: RubricCriterion): string {
+    return String(c?.criterion ?? c?.title ?? c?.name ?? c?.label ?? "Untitled criterion")
+}
+
+function getCriterionDescription(c: RubricCriterion): string {
+    return String(c?.description ?? c?.desc ?? "")
+}
+
+function getCriterionWeight(c: RubricCriterion): string {
+    const w = c?.weight ?? c?.points ?? c?.score ?? ""
+    return w === null || w === undefined ? "" : String(w)
+}
+
+function getCriterionMinScore(c: RubricCriterion): string {
+    const v = c?.min_score ?? c?.minScore ?? ""
+    return v === null || v === undefined ? "" : String(v)
+}
+
+function getCriterionMaxScore(c: RubricCriterion): string {
+    const v = c?.max_score ?? c?.maxScore ?? ""
+    return v === null || v === undefined ? "" : String(v)
 }
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -90,6 +119,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
         },
         cache: "no-store",
     })
+
     if (!res.ok) {
         let message = `Request failed (${res.status})`
         try {
@@ -100,6 +130,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
         }
         throw new Error(message)
     }
+
     return (await res.json()) as T
 }
 
@@ -119,10 +150,17 @@ function prettyJson(value: any) {
     }
 }
 
+function normalizeList(value: any): any[] {
+    if (Array.isArray(value)) return value
+    const list = value?.items ?? value?.data ?? value?.rows
+    if (Array.isArray(list)) return list
+    return []
+}
+
 export default function AdminRubricDetailPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
-    const templateId = decodeURIComponent(String(params?.id ?? ""))
+    const templateId = decodeURIComponent(String(params?.id ?? "")).trim()
 
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
@@ -134,6 +172,8 @@ export default function AdminRubricDetailPage() {
     // Template form state
     const [name, setName] = React.useState("")
     const [description, setDescription] = React.useState("")
+    const [version, setVersion] = React.useState<string>("1")
+    const [active, setActive] = React.useState<boolean>(true)
     const [savingTemplate, setSavingTemplate] = React.useState(false)
 
     // JSON editor state
@@ -146,6 +186,8 @@ export default function AdminRubricDetailPage() {
     const [criterionTitle, setCriterionTitle] = React.useState("")
     const [criterionDesc, setCriterionDesc] = React.useState("")
     const [criterionWeight, setCriterionWeight] = React.useState<string>("")
+    const [criterionMinScore, setCriterionMinScore] = React.useState<string>("")
+    const [criterionMaxScore, setCriterionMaxScore] = React.useState<string>("")
     const [criterionJson, setCriterionJson] = React.useState("{}")
     const [criterionJsonError, setCriterionJsonError] = React.useState<string | null>(null)
     const [savingCriterion, setSavingCriterion] = React.useState(false)
@@ -153,62 +195,58 @@ export default function AdminRubricDetailPage() {
     const load = React.useCallback(async () => {
         setError(null)
         setLoading(true)
+
         try {
-            // Best effort: try query by id, else fetch all and find.
-            const [tplRes, critRes] = await Promise.allSettled([
-                apiFetch<any>(`/api/admin/rubric-templates?id=${encodeURIComponent(templateId)}`),
-                apiFetch<any>(`/api/admin/rubric-criteria?templateId=${encodeURIComponent(templateId)}`),
-            ])
+            let foundTemplate: RubricTemplate | null = null
 
-            let found: RubricTemplate | null = null
-
-            if (tplRes.status === "fulfilled") {
-                const value = tplRes.value
-                const list = Array.isArray(value) ? value : value?.items ?? value?.data ?? []
-                if (Array.isArray(list)) {
-                    found = list.find((x) => getId(x) === templateId) ?? null
-                } else if (value && typeof value === "object") {
-                    // Some APIs return a single object
-                    if (getId(value) === templateId) found = value
+            // 1) GET /api/admin/rubric-templates/:id
+            try {
+                const one = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`)
+                foundTemplate = one?.data ?? one?.item ?? one
+            } catch {
+                // 2) fallback GET /api/admin/rubric-templates?id=:id
+                try {
+                    const one = await apiFetch<any>(`/api/admin/rubric-templates?id=${encodeURIComponent(templateId)}`)
+                    if (one && typeof one === "object" && !Array.isArray(one)) {
+                        const maybe = one?.data ?? one?.item ?? one
+                        if (maybe && typeof maybe === "object" && getId(maybe) === templateId) {
+                            foundTemplate = maybe
+                        } else {
+                            const list = normalizeList(one)
+                            foundTemplate = list.find((x) => getId(x) === templateId) ?? null
+                        }
+                    } else {
+                        const list = normalizeList(one)
+                        foundTemplate = list.find((x) => getId(x) === templateId) ?? null
+                    }
+                } catch {
+                    // 3) fallback list all then find
+                    const all = await apiFetch<any>("/api/admin/rubric-templates")
+                    const list = normalizeList(all)
+                    foundTemplate = list.find((x) => getId(x) === templateId) ?? null
                 }
             }
 
-            if (!found) {
-                // fallback: list everything and search
-                const all = await apiFetch<any>("/api/admin/rubric-templates")
-                const list = Array.isArray(all) ? all : all?.items ?? all?.data ?? []
-                if (Array.isArray(list)) {
-                    found = list.find((x) => getId(x) === templateId) ?? null
-                }
-            }
+            if (!foundTemplate) throw new Error("Rubric not found")
 
-            setTemplate(found)
+            setTemplate(foundTemplate)
+            setName(getTemplateName(foundTemplate))
+            setDescription(getTemplateDescription(foundTemplate))
+            setVersion(String(getTemplateVersion(foundTemplate)))
+            setActive(getTemplateActive(foundTemplate))
+            setTemplateJson(prettyJson(foundTemplate))
+            setTemplateJsonError(null)
 
-            if (found) {
-                setName(getName(found))
-                setDescription(getDescription(found))
-                setTemplateJson(prettyJson(found))
-                setTemplateJsonError(null)
-            }
-
-            if (critRes.status === "fulfilled") {
-                const value = critRes.value
-                const list = Array.isArray(value) ? value : value?.items ?? value?.data ?? []
-                setCriteria(Array.isArray(list) ? list : [])
-            } else {
-                // fallback: get all and filter
+            // Criteria: fetch by templateId (preferred)
+            try {
+                const crit = await apiFetch<any>(`/api/admin/rubric-criteria?templateId=${encodeURIComponent(templateId)}`)
+                setCriteria(normalizeList(crit))
+            } catch {
+                // fallback: fetch all and filter
                 const all = await apiFetch<any>("/api/admin/rubric-criteria")
-                const list = Array.isArray(all) ? all : all?.items ?? all?.data ?? []
-                const arr = Array.isArray(list) ? list : []
-                const filtered = arr.filter((c) => {
-                    const tid = String(c?.templateId ?? c?.rubricTemplateId ?? c?.rubricId ?? "")
-                    return tid === templateId
-                })
+                const list = normalizeList(all)
+                const filtered = list.filter((c) => getCriterionTemplateId(c) === templateId)
                 setCriteria(filtered)
-            }
-
-            if (!found) {
-                throw new Error("Rubric not found")
             }
         } catch (e: any) {
             setError(e?.message ?? "Failed to load rubric")
@@ -234,11 +272,18 @@ export default function AdminRubricDetailPage() {
         if (!templateId) return
         setSavingTemplate(true)
         setError(null)
+
         try {
+            const vNum = Number(version)
+            const descTrim = description.trim()
+
             const payload: Record<string, any> = {
                 ...(template ?? {}),
                 name: name.trim() || "Untitled Rubric",
-                description: description.trim(),
+                // ✅ send null if empty to allow clearing
+                description: descTrim ? descTrim : null,
+                version: Number.isFinite(vNum) && vNum > 0 ? vNum : 1,
+                active: Boolean(active),
             }
 
             const updated = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, {
@@ -248,6 +293,10 @@ export default function AdminRubricDetailPage() {
 
             const next = updated?.data ?? updated?.item ?? updated
             setTemplate(next)
+            setName(getTemplateName(next))
+            setDescription(getTemplateDescription(next))
+            setVersion(String(getTemplateVersion(next)))
+            setActive(getTemplateActive(next))
             setTemplateJson(prettyJson(next))
             setTemplateJsonError(null)
         } catch (e: any) {
@@ -261,6 +310,7 @@ export default function AdminRubricDetailPage() {
         if (!templateId) return
         setSavingTemplate(true)
         setError(null)
+
         const parsed = safeJsonParse(templateJson)
         if (!parsed.ok) {
             setTemplateJsonError(parsed.error)
@@ -268,6 +318,7 @@ export default function AdminRubricDetailPage() {
             return
         }
         setTemplateJsonError(null)
+
         try {
             const updated = await apiFetch<any>(`/api/admin/rubric-templates/${encodeURIComponent(templateId)}`, {
                 method: "PUT",
@@ -275,8 +326,10 @@ export default function AdminRubricDetailPage() {
             })
             const next = updated?.data ?? updated?.item ?? updated
             setTemplate(next)
-            setName(getName(next))
-            setDescription(getDescription(next))
+            setName(getTemplateName(next))
+            setDescription(getTemplateDescription(next))
+            setVersion(String(getTemplateVersion(next)))
+            setActive(getTemplateActive(next))
             setTemplateJson(prettyJson(next))
         } catch (e: any) {
             setError(e?.message ?? "Failed to save rubric")
@@ -300,12 +353,17 @@ export default function AdminRubricDetailPage() {
         setCriterionTitle("")
         setCriterionDesc("")
         setCriterionWeight("")
+        setCriterionMinScore("1")
+        setCriterionMaxScore("5")
+
         setCriterionJson(
             prettyJson({
-                templateId,
-                title: "",
+                template_id: templateId,
+                criterion: "",
                 description: "",
-                weight: "",
+                weight: 1,
+                min_score: 1,
+                max_score: 5,
             })
         )
         setCriterionJsonError(null)
@@ -314,9 +372,11 @@ export default function AdminRubricDetailPage() {
 
     function openEditCriterion(c: RubricCriterion) {
         setCriterionEditing(c)
-        setCriterionTitle(String(c?.title ?? c?.name ?? c?.label ?? ""))
-        setCriterionDesc(String(c?.description ?? c?.desc ?? ""))
-        setCriterionWeight(String(c?.weight ?? c?.points ?? c?.score ?? ""))
+        setCriterionTitle(getCriterionTitle(c))
+        setCriterionDesc(getCriterionDescription(c))
+        setCriterionWeight(getCriterionWeight(c))
+        setCriterionMinScore(getCriterionMinScore(c) || "1")
+        setCriterionMaxScore(getCriterionMaxScore(c) || "5")
         setCriterionJson(prettyJson(c))
         setCriterionJsonError(null)
         setCriterionDialogOpen(true)
@@ -326,7 +386,6 @@ export default function AdminRubricDetailPage() {
         setSavingCriterion(true)
         setError(null)
 
-        // Prefer JSON editor if user changed it; otherwise build from form
         const parsed = safeJsonParse(criterionJson)
         if (!parsed.ok) {
             setCriterionJsonError(parsed.error)
@@ -339,21 +398,35 @@ export default function AdminRubricDetailPage() {
             const isEdit = Boolean(criterionEditing && getId(criterionEditing))
             const cid = isEdit ? getId(criterionEditing) : ""
 
-            // Ensure templateId is present for creates (and for some backends, updates too)
-            const payload: Record<string, any> = {
-                ...(parsed.value ?? {}),
-            }
-            if (!payload.templateId && !payload.rubricTemplateId && !payload.rubricId) {
-                payload.templateId = templateId
+            const payload: Record<string, any> = { ...(parsed.value ?? {}) }
+
+            if (
+                !payload.template_id &&
+                !payload.templateId &&
+                !payload.rubricTemplateId &&
+                !payload.rubric_template_id &&
+                !payload.rubricId
+            ) {
+                payload.template_id = templateId
             }
 
-            // If JSON is basically empty, add form fields as fallback
-            if (!Object.keys(payload).length) {
-                payload.templateId = templateId
-                payload.title = criterionTitle
-                payload.description = criterionDesc
-                if (criterionWeight !== "") payload.weight = criterionWeight
+            // ✅ Ensure title saves from the form if JSON is missing/empty
+            const formTitle = criterionTitle.trim()
+            if (!payload.criterion && !payload.title && !payload.name && !payload.label) {
+                payload.criterion = formTitle
+            } else if (payload.criterion !== undefined && String(payload.criterion).trim() === "" && formTitle) {
+                payload.criterion = formTitle
             }
+
+            // ✅ FIX: ensure description saves from the form if JSON has "" / missing
+            const formDescTrim = criterionDesc.trim()
+            if (payload.description === undefined || payload.description === "") {
+                payload.description = formDescTrim ? formDescTrim : null
+            }
+
+            if (criterionWeight !== "" && payload.weight === undefined) payload.weight = criterionWeight
+            if (criterionMinScore !== "" && payload.min_score === undefined) payload.min_score = criterionMinScore
+            if (criterionMaxScore !== "" && payload.max_score === undefined) payload.max_score = criterionMaxScore
 
             if (isEdit) {
                 await apiFetch(`/api/admin/rubric-criteria/${encodeURIComponent(cid)}`, {
@@ -386,7 +459,7 @@ export default function AdminRubricDetailPage() {
         }
     }
 
-    const templateTitle = template ? getName(template) : "Rubric"
+    const templateTitle = template ? getTemplateName(template) : "Rubric"
 
     return (
         <DashboardLayout title="Rubric">
@@ -422,9 +495,9 @@ export default function AdminRubricDetailPage() {
                             </Button>
 
                             {loading ? (
-                                <Skeleton className="h-9 w-55" />
+                                <Skeleton className="h-9 w-60" />
                             ) : (
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
                                     <h1 className="text-2xl font-semibold tracking-tight">{templateTitle}</h1>
                                     <Badge variant="outline" className="font-mono text-[10px]">
                                         {templateId}
@@ -450,14 +523,14 @@ export default function AdminRubricDetailPage() {
                                     <AlertDialogHeader>
                                         <AlertDialogTitle>Delete this rubric?</AlertDialogTitle>
                                         <AlertDialogDescription>
-                                            This action cannot be undone. Make sure you’ve handled any rubric criteria
-                                            that reference this template.
+                                            This action cannot be undone. Any criteria attached to this rubric template
+                                            will be deleted as well (via DB cascade).
                                         </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
                                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                                         <AlertDialogAction
-                                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                            className="bg-destructive text-white hover:bg-destructive/90"
                                             onClick={onDeleteTemplate}
                                         >
                                             Delete
@@ -504,6 +577,8 @@ export default function AdminRubricDetailPage() {
                                     <div className="grid gap-4">
                                         <Skeleton className="h-10 w-[320px]" />
                                         <Skeleton className="h-24 w-full" />
+                                        <Skeleton className="h-10 w-55" />
+                                        <Skeleton className="h-10 w-65" />
                                         <Skeleton className="h-10 w-40" />
                                     </div>
                                 ) : (
@@ -518,14 +593,47 @@ export default function AdminRubricDetailPage() {
                                             />
                                         </div>
 
+                                        {/* ✅ NEW: Template Description field */}
                                         <div className="grid gap-2">
-                                            <Label htmlFor="description">Description</Label>
+                                            <Label htmlFor="t-desc">Description</Label>
                                             <Textarea
-                                                id="description"
+                                                id="t-desc"
                                                 value={description}
                                                 onChange={(e) => setDescription(e.target.value)}
-                                                placeholder="Optional description"
+                                                placeholder="Optional notes about this rubric template…"
                                             />
+                                            <p className="text-xs text-muted-foreground">
+                                                Stored in <code>rubric_templates.description</code>.
+                                            </p>
+                                        </div>
+
+                                        <div className="grid gap-4 sm:grid-cols-2">
+                                            <div className="grid gap-2">
+                                                <Label htmlFor="version">Version</Label>
+                                                <Input
+                                                    id="version"
+                                                    inputMode="numeric"
+                                                    value={version}
+                                                    onChange={(e) => setVersion(e.target.value)}
+                                                    placeholder="1"
+                                                />
+                                                <p className="text-xs text-muted-foreground">
+                                                    Stored in <code>rubric_templates.version</code>.
+                                                </p>
+                                            </div>
+
+                                            <div className="grid gap-2">
+                                                <Label>Active</Label>
+                                                <div className="flex items-center justify-between rounded-md border p-3">
+                                                    <div className="space-y-1">
+                                                        <p className="text-sm font-medium">Active template</p>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            Stored in <code>rubric_templates.active</code>.
+                                                        </p>
+                                                    </div>
+                                                    <Switch checked={active} onCheckedChange={setActive} />
+                                                </div>
+                                            </div>
                                         </div>
 
                                         <div className="flex items-center justify-end gap-2">
@@ -534,14 +642,6 @@ export default function AdminRubricDetailPage() {
                                                 {savingTemplate ? "Saving…" : "Save"}
                                             </Button>
                                         </div>
-
-                                        <Alert>
-                                            <AlertTitle>Note</AlertTitle>
-                                            <AlertDescription>
-                                                If your backend uses different field names (e.g., <code>title</code> instead of{" "}
-                                                <code>name</code>), use the <strong>Advanced</strong> tab to edit the raw JSON.
-                                            </AlertDescription>
-                                        </Alert>
                                     </div>
                                 )}
                             </CardContent>
@@ -555,6 +655,7 @@ export default function AdminRubricDetailPage() {
                                     <CardTitle>Criteria</CardTitle>
                                     <CardDescription>Manage the criteria attached to this rubric template.</CardDescription>
                                 </div>
+
                                 <Dialog open={criterionDialogOpen} onOpenChange={setCriterionDialogOpen}>
                                     <DialogTrigger asChild>
                                         <Button onClick={openCreateCriterion} disabled={loading}>
@@ -562,24 +663,28 @@ export default function AdminRubricDetailPage() {
                                             Add criterion
                                         </Button>
                                     </DialogTrigger>
-                                    <DialogContent className="sm:max-w-180">
+
+                                    <DialogContent className="sm:max-w-4xl">
                                         <DialogHeader>
                                             <DialogTitle>{criterionEditing ? "Edit criterion" : "Add criterion"}</DialogTitle>
                                             <DialogDescription>
-                                                Use the form for common fields, or edit the JSON directly if your schema differs.
+                                                Use the form for common fields (matches your SQL schema), or edit the JSON directly.
                                             </DialogDescription>
                                         </DialogHeader>
 
                                         <div className="grid gap-6 py-2 md:grid-cols-2">
                                             <div className="grid gap-4">
                                                 <div className="grid gap-2">
-                                                    <Label htmlFor="c-title">Title</Label>
+                                                    <Label htmlFor="c-title">Criterion</Label>
                                                     <Input
                                                         id="c-title"
                                                         value={criterionTitle}
                                                         onChange={(e) => setCriterionTitle(e.target.value)}
                                                         placeholder="e.g., Clarity of Presentation"
                                                     />
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Stored as <code>rubric_criteria.criterion</code>.
+                                                    </p>
                                                 </div>
 
                                                 <div className="grid gap-2">
@@ -590,16 +695,41 @@ export default function AdminRubricDetailPage() {
                                                         onChange={(e) => setCriterionDesc(e.target.value)}
                                                         placeholder="Optional notes"
                                                     />
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Stored as <code>rubric_criteria.description</code>.
+                                                    </p>
                                                 </div>
 
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="c-weight">Weight / Points</Label>
-                                                    <Input
-                                                        id="c-weight"
-                                                        value={criterionWeight}
-                                                        onChange={(e) => setCriterionWeight(e.target.value)}
-                                                        placeholder="e.g., 10"
-                                                    />
+                                                <div className="grid gap-4 sm:grid-cols-3">
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="c-weight">Weight</Label>
+                                                        <Input
+                                                            id="c-weight"
+                                                            value={criterionWeight}
+                                                            onChange={(e) => setCriterionWeight(e.target.value)}
+                                                            placeholder="1"
+                                                        />
+                                                    </div>
+
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="c-min">Min score</Label>
+                                                        <Input
+                                                            id="c-min"
+                                                            value={criterionMinScore}
+                                                            onChange={(e) => setCriterionMinScore(e.target.value)}
+                                                            placeholder="1"
+                                                        />
+                                                    </div>
+
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="c-max">Max score</Label>
+                                                        <Input
+                                                            id="c-max"
+                                                            value={criterionMaxScore}
+                                                            onChange={(e) => setCriterionMaxScore(e.target.value)}
+                                                            placeholder="5"
+                                                        />
+                                                    </div>
                                                 </div>
                                             </div>
 
@@ -609,13 +739,13 @@ export default function AdminRubricDetailPage() {
                                                     id="c-json"
                                                     value={criterionJson}
                                                     onChange={(e) => setCriterionJson(e.target.value)}
-                                                    className="min-h-60 font-mono text-xs"
+                                                    className="min-h-64 font-mono text-xs"
                                                 />
                                                 {criterionJsonError ? (
                                                     <p className="text-sm text-destructive">{criterionJsonError}</p>
                                                 ) : null}
                                                 <p className="text-xs text-muted-foreground">
-                                                    Tip: ensure the payload includes <code>templateId</code> (or your equivalent).
+                                                    Tip: ensure the payload includes <code>template_id</code> (or your equivalent alias).
                                                 </p>
                                             </div>
                                         </div>
@@ -641,13 +771,14 @@ export default function AdminRubricDetailPage() {
 
                             <CardContent className="pt-4">
                                 <ScrollArea className="w-full">
-                                    <div className="min-w-225">
+                                    <div className="min-w-245">
                                         <Table>
                                             <TableHeader>
                                                 <TableRow>
-                                                    <TableHead>Title</TableHead>
+                                                    <TableHead>Criterion</TableHead>
                                                     <TableHead className="w-[45%]">Description</TableHead>
                                                     <TableHead className="text-right">Weight</TableHead>
+                                                    <TableHead className="text-right">Range</TableHead>
                                                     <TableHead className="text-right">Actions</TableHead>
                                                 </TableRow>
                                             </TableHeader>
@@ -657,13 +788,16 @@ export default function AdminRubricDetailPage() {
                                                     Array.from({ length: 5 }).map((_, i) => (
                                                         <TableRow key={`skc-${i}`}>
                                                             <TableCell>
-                                                                <Skeleton className="h-5 w-55" />
+                                                                <Skeleton className="h-5 w-60" />
                                                             </TableCell>
                                                             <TableCell>
                                                                 <Skeleton className="h-5 w-105" />
                                                             </TableCell>
                                                             <TableCell className="text-right">
-                                                                <Skeleton className="ml-auto h-5 w-15" />
+                                                                <Skeleton className="ml-auto h-5 w-16" />
+                                                            </TableCell>
+                                                            <TableCell className="text-right">
+                                                                <Skeleton className="ml-auto h-5 w-22.5" />
                                                             </TableCell>
                                                             <TableCell className="text-right">
                                                                 <Skeleton className="ml-auto h-9 w-10" />
@@ -672,16 +806,18 @@ export default function AdminRubricDetailPage() {
                                                     ))
                                                 ) : criteria.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                                                        <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                                                             No criteria yet. Click <strong>Add criterion</strong> to create one.
                                                         </TableCell>
                                                     </TableRow>
                                                 ) : (
                                                     criteria.map((c) => {
                                                         const cid = getId(c)
-                                                        const title = String(c?.title ?? c?.name ?? c?.label ?? "Untitled criterion")
-                                                        const desc = String(c?.description ?? c?.desc ?? "")
-                                                        const weight = c?.weight ?? c?.points ?? c?.score ?? ""
+                                                        const title = getCriterionTitle(c)
+                                                        const desc = getCriterionDescription(c)
+                                                        const weight = getCriterionWeight(c)
+                                                        const minS = getCriterionMinScore(c)
+                                                        const maxS = getCriterionMaxScore(c)
 
                                                         return (
                                                             <TableRow key={cid || title}>
@@ -701,7 +837,17 @@ export default function AdminRubricDetailPage() {
                                                                 </TableCell>
 
                                                                 <TableCell className="text-right">
-                                                                    {weight !== "" ? <Badge variant="secondary">{String(weight)}</Badge> : "—"}
+                                                                    {weight !== "" ? <Badge variant="secondary">{weight}</Badge> : "—"}
+                                                                </TableCell>
+
+                                                                <TableCell className="text-right">
+                                                                    {minS !== "" || maxS !== "" ? (
+                                                                        <Badge variant="outline">
+                                                                            {minS || "?"}–{maxS || "?"}
+                                                                        </Badge>
+                                                                    ) : (
+                                                                        "—"
+                                                                    )}
                                                                 </TableCell>
 
                                                                 <TableCell className="text-right">
@@ -767,13 +913,14 @@ export default function AdminRubricDetailPage() {
                             <CardHeader>
                                 <CardTitle>Advanced (JSON)</CardTitle>
                                 <CardDescription>
-                                    Edit the full rubric template payload. Useful if your backend schema differs from the form fields.
+                                    Edit the full rubric template payload. Your backend persists{" "}
+                                    <code>name</code>, <code>description</code>, <code>version</code>, and <code>active</code>.
                                 </CardDescription>
                             </CardHeader>
                             <Separator />
                             <CardContent className="pt-6">
                                 {loading ? (
-                                    <Skeleton className="h-70 w-full" />
+                                    <Skeleton className="h-72 w-full" />
                                 ) : (
                                     <div className="grid gap-3">
                                         <Textarea
@@ -787,7 +934,7 @@ export default function AdminRubricDetailPage() {
 
                                         <div className="flex items-center justify-between gap-2">
                                             <p className="text-xs text-muted-foreground">
-                                                Make sure the object includes the template identifier expected by your backend.
+                                                Make sure the object includes valid values for fields your backend persists.
                                             </p>
                                             <Button onClick={onSaveTemplateJson} disabled={savingTemplate}>
                                                 <Save className="mr-2 h-4 w-4" />

@@ -6,7 +6,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 type RouteContext = {
-    params: { id: string }
+    params?: { id?: string }
 }
 
 function errorJson(err: any, fallback: string) {
@@ -14,10 +14,20 @@ function errorJson(err: any, fallback: string) {
     return NextResponse.json({ error: err?.message ?? fallback }, { status })
 }
 
-// ✅ FIX: add GET so /api/admin/rubric-templates/:id works
-export async function GET(_req: NextRequest, ctx: RouteContext) {
+function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): string {
+    const fromParams = ctx?.params?.id
+    if (fromParams) return String(fromParams)
+
+    // Fallback: parse last segment from pathname
+    const parts = req.nextUrl.pathname.split("/").filter(Boolean)
+    const last = parts[parts.length - 1] ?? ""
+    return String(last)
+}
+
+// ✅ GET /api/admin/rubric-templates/:id
+export async function GET(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
+        const id = getIdFromCtxOrPath(req, ctx)
         if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const data = await (RubricTemplatesController.getById as any)(id)
@@ -29,7 +39,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
 export async function PUT(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
+        const id = getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }
@@ -46,9 +56,9 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     }
 }
 
-export async function DELETE(_req: NextRequest, ctx: RouteContext) {
+export async function DELETE(req: NextRequest, ctx: RouteContext) {
     try {
-        const { id } = ctx.params
+        const id = getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }

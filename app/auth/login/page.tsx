@@ -111,13 +111,17 @@ export default function LoginPage() {
     return (
         <div className="min-h-svh w-full">
             <div className="mx-auto flex min-h-svh w-full max-w-md flex-col justify-center px-4 py-10 sm:px-6">
-                <div className="mb-6 flex items-center justify-center gap-3">
+                <Link
+                    href="/"
+                    aria-label="Go to home"
+                    className="mb-6 flex items-center justify-center gap-3 rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                >
                     <Image src="/logo.svg" alt="THESISGRADER logo" width={44} height={44} priority />
                     <div className="leading-tight">
                         <div className="text-lg font-semibold tracking-tight">THESISGRADER</div>
                         <div className="text-xs text-muted-foreground">Sign in to continue</div>
                     </div>
-                </div>
+                </Link>
 
                 <Card>
                     <CardContent className="p-6">

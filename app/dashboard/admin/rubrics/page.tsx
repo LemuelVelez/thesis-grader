@@ -129,7 +129,15 @@ export default function AdminRubricsPage() {
     const countsByTemplateId = React.useMemo(() => {
         const map = new Map<string, number>()
         for (const c of criteria) {
-            const templateId = String(c?.templateId ?? c?.rubricTemplateId ?? c?.rubricId ?? "")
+            // ✅ FIX: DB uses template_id, so count correctly
+            const templateId = String(
+                c?.template_id ??
+                c?.templateId ??
+                c?.rubricTemplateId ??
+                c?.rubric_template_id ??
+                c?.rubricId ??
+                ""
+            )
             if (!templateId) continue
             map.set(templateId, (map.get(templateId) ?? 0) + 1)
         }
@@ -200,6 +208,7 @@ export default function AdminRubricsPage() {
             const payload: Record<string, any> = {
                 name: createName.trim() || "Untitled Rubric",
             }
+            // ✅ Send description when present (API supports it)
             if (createDescription.trim()) payload.description = createDescription.trim()
 
             const created = await apiFetch<any>("/api/admin/rubric-templates", {
@@ -329,7 +338,11 @@ export default function AdminRubricsPage() {
                             <CardDescription>Templates available in the system</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-3xl font-semibold">{templates.length}</div>}
+                            {loading ? (
+                                <Skeleton className="h-8 w-20" />
+                            ) : (
+                                <div className="text-3xl font-semibold">{templates.length}</div>
+                            )}
                         </CardContent>
                     </Card>
 
@@ -339,7 +352,11 @@ export default function AdminRubricsPage() {
                             <CardDescription>Across all templates</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-3xl font-semibold">{criteria.length}</div>}
+                            {loading ? (
+                                <Skeleton className="h-8 w-20" />
+                            ) : (
+                                <div className="text-3xl font-semibold">{criteria.length}</div>
+                            )}
                         </CardContent>
                     </Card>
 
