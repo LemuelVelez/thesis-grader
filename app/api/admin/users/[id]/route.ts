@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextResponse } from "next/server"
-import { cookies } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 
 import { db } from "@/lib/db"
 import { env } from "@/lib/env"
@@ -9,6 +8,8 @@ import { requireRole } from "@/lib/rbac"
 import { hashPassword } from "@/lib/security"
 
 export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
+export const revalidate = 0
 
 function isRole(v: unknown): v is Role {
     return v === "student" || v === "staff" || v === "admin"
@@ -17,9 +18,12 @@ function isStatus(v: unknown): v is "active" | "disabled" {
     return v === "active" || v === "disabled"
 }
 
-async function requireAdminFromCookies() {
-    const cookieStore = await cookies()
-    const token = cookieStore.get(SESSION_COOKIE)?.value
+async function requireAdmin(req: NextRequest) {
+    const cookieToken = req.cookies.get(SESSION_COOKIE)?.value
+    const authHeader = req.headers.get("authorization") || ""
+    const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : ""
+    const token = cookieToken || bearerToken
+
     if (!token) return { ok: false as const, status: 401, message: "Unauthorized" }
 
     const actor = await getUserFromSession(token)
@@ -39,13 +43,16 @@ async function getIdFromCtx(ctx: { params: Promise<{ id: string }> }) {
     return String(p?.id ?? "").trim()
 }
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
-            return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
+            return NextResponse.json(
+                { ok: false, message: "Database is not configured (DATABASE_URL missing)." },
+                { status: 500 }
+            )
         }
 
-        const auth = await requireAdminFromCookies()
+        const auth = await requireAdmin(req)
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
 
         const id = await getIdFromCtx(ctx)
@@ -68,13 +75,16 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     }
 }
 
-export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
-            return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
+            return NextResponse.json(
+                { ok: false, message: "Database is not configured (DATABASE_URL missing)." },
+                { status: 500 }
+            )
         }
 
-        const auth = await requireAdminFromCookies()
+        const auth = await requireAdmin(req)
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
         const actor = auth.actor
 
@@ -171,13 +181,16 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     }
 }
 
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
     try {
         if (!env.DATABASE_URL) {
-            return NextResponse.json({ ok: false, message: "Database is not configured (DATABASE_URL missing)." }, { status: 500 })
+            return NextResponse.json(
+                { ok: false, message: "Database is not configured (DATABASE_URL missing)." },
+                { status: 500 }
+            )
         }
 
-        const auth = await requireAdminFromCookies()
+        const auth = await requireAdmin(req)
         if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status })
         const actor = auth.actor
 

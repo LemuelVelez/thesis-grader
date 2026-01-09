@@ -85,15 +85,35 @@ function roleBasePath(role: string) {
     return "/dashboard"
 }
 
+function kickToLoginIfUnauthorized(res: Response) {
+    if (res.status === 401) {
+        toast.error("Unauthorized: your session is missing/expired. Please sign in again.")
+        window.location.href = "/auth/login"
+        return true
+    }
+    if (res.status === 403) {
+        toast.error("Forbidden: Admins only.")
+        window.location.href = "/dashboard"
+        return true
+    }
+    return false
+}
+
 async function patchUserSilent(
     userId: string,
     patch: Partial<{ name: string; role: UserRow["role"]; status: UserRow["status"]; password: string }>
 ) {
     const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
         method: "PATCH",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
     })
+
+    if (kickToLoginIfUnauthorized(res)) {
+        return { ok: false as const, message: "Unauthorized" }
+    }
+
     const data = (await res.json().catch(() => ({}))) as UpdateUserResponse
     if (!res.ok || !data.ok) {
         const msg = (data as any)?.message || "Update failed."
@@ -103,7 +123,15 @@ async function patchUserSilent(
 }
 
 async function deleteUserSilent(userId: string) {
-    const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" })
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+        credentials: "include",
+    })
+
+    if (kickToLoginIfUnauthorized(res)) {
+        return { ok: false as const }
+    }
+
     const data = await res.json().catch(() => ({} as any))
     if (!res.ok || !data.ok) {
         const msg = data?.message || "Delete failed."
@@ -165,8 +193,18 @@ export default function AdminUsersPage() {
             params.set("limit", "200")
             params.set("offset", "0")
 
-            const res = await fetch(`/api/admin/users?${params.toString()}`, { cache: "no-store" })
-            const data = (await res.json()) as ListUsersResponse
+            const res = await fetch(`/api/admin/users?${params.toString()}`, {
+                cache: "no-store",
+                credentials: "include",
+            })
+
+            if (kickToLoginIfUnauthorized(res)) {
+                setRows([])
+                setTotal(0)
+                return
+            }
+
+            const data = (await res.json().catch(() => ({}))) as ListUsersResponse
 
             if (!res.ok || !data.ok) {
                 const msg = (data as any)?.message || "Failed to load users."
@@ -205,11 +243,17 @@ export default function AdminUsersPage() {
             try {
                 const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
                     method: "PATCH",
+                    credentials: "include",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(patch),
                 })
 
-                const data = (await res.json()) as UpdateUserResponse
+                if (kickToLoginIfUnauthorized(res)) {
+                    toast.error("Unauthorized.", { id: tId })
+                    return false
+                }
+
+                const data = (await res.json().catch(() => ({}))) as UpdateUserResponse
 
                 if (!res.ok || !data.ok) {
                     const msg = (data as any)?.message || "Update failed."
@@ -231,7 +275,16 @@ export default function AdminUsersPage() {
     const doDeleteUser = React.useCallback(async (userId: string) => {
         const tId = toast.loading("Deleting user...")
         try {
-            const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" })
+            const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+                method: "DELETE",
+                credentials: "include",
+            })
+
+            if (kickToLoginIfUnauthorized(res)) {
+                toast.error("Unauthorized.", { id: tId })
+                return
+            }
+
             const data = (await res.json().catch(() => ({}))) as any
 
             if (!res.ok || !data.ok) {
@@ -265,7 +318,7 @@ export default function AdminUsersPage() {
                 for (const r of results) {
                     if (r.status === "fulfilled" && r.value.ok) okUsers.push(r.value.user)
                     else {
-                        const msg = r.status === "fulfilled" ? r.value.message : "Update failed."
+                        const msg = r.status === "fulfilled" ? (r.value as any).message : "Update failed."
                         failures.push(msg)
                     }
                 }
@@ -299,9 +352,11 @@ export default function AdminUsersPage() {
             setBusy(true)
 
             try {
-                const results = await Promise.allSettled(selected.map((u) => patchUserSilent(u.id, { password: password.trim() })))
+                const results = await Promise.allSettled(
+                    selected.map((u) => patchUserSilent(u.id, { password: password.trim() }))
+                )
 
-                const okCount = results.filter((r) => r.status === "fulfilled" && r.value.ok).length
+                const okCount = results.filter((r) => r.status === "fulfilled" && (r.value as any).ok).length
                 const failCount = selected.length - okCount
 
                 toast.success(`Passwords reset: ${okCount}/${selected.length}`, { id: tId })
@@ -330,7 +385,7 @@ export default function AdminUsersPage() {
 
         try {
             const results = await Promise.allSettled(selected.map((u) => deleteUserSilent(u.id)))
-            const okCount = results.filter((r) => r.status === "fulfilled" && r.value.ok).length
+            const okCount = results.filter((r) => r.status === "fulfilled" && (r.value as any).ok).length
             const failCount = selected.length - okCount
 
             toast.success(`Deleted: ${okCount}/${selected.length}`, { id: tId })
@@ -490,6 +545,7 @@ export default function AdminUsersPage() {
         try {
             const res = await fetch("/api/admin/users", {
                 method: "POST",
+                credentials: "include",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: cName.trim(),
@@ -499,7 +555,12 @@ export default function AdminUsersPage() {
                 }),
             })
 
-            const data = (await res.json()) as CreateUserResponse
+            if (kickToLoginIfUnauthorized(res)) {
+                toast.error("Unauthorized.", { id: tId })
+                return
+            }
+
+            const data = (await res.json().catch(() => ({}))) as CreateUserResponse
 
             if (!res.ok || !data.ok) {
                 const msg = (data as any)?.message || "Failed to create user."
