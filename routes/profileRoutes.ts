@@ -1,57 +1,101 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
+import { z } from "zod"
 import { ProfileController } from "@/controllers/profileController"
-import { errorJson, readJson, toNum } from "@/lib/http"
+import { errorJson, readJson } from "@/lib/http"
 import { requireActor, assertRoles, assertSelfOrRoles } from "@/lib/apiAuth"
+import { parseQuery, parseBody, zUuid, zLimit, zOffset } from "@/lib/validate"
+
+const ProfileResource = z.enum(["users", "students", "staffProfiles"])
+
+const ProfileBaseQuerySchema = z.object({
+    resource: ProfileResource.default("users"),
+})
+
+const UsersGetQuerySchema = z.object({
+    resource: z.literal("users"),
+    id: zUuid.optional(),
+    q: z.string().optional().default(""),
+    role: z.string().optional(),
+    status: z.string().optional(),
+    limit: zLimit,
+    offset: zOffset,
+})
+
+const StudentProfileQuerySchema = z.object({
+    resource: z.literal("students"),
+    userId: zUuid,
+})
+
+const StaffProfileQuerySchema = z.object({
+    resource: z.literal("staffProfiles"),
+    userId: zUuid,
+})
+
+const UpsertStudentProfileBodySchema = z.object({
+    userId: zUuid,
+    program: z.string().nullable().optional(),
+    section: z.string().nullable().optional(),
+})
+
+const UpsertStaffProfileBodySchema = z.object({
+    userId: zUuid,
+    department: z.string().nullable().optional(),
+})
+
+const PatchUserBodySchema = z.object({
+    id: zUuid.optional(),
+    name: z.string().trim().min(1).optional(),
+    email: z.string().email().optional(),
+    role: z.enum(["student", "staff", "admin"]).optional(),
+    status: z.enum(["active", "disabled"]).optional(),
+    avatarKey: z.string().nullable().optional(),
+})
 
 export async function GET(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
 
-        const sp = req.nextUrl.searchParams
-        const resource = sp.get("resource") ?? "users"
-
-        if (resource === "users") {
-            // user directory should be staff/admin
+        if (base.resource === "users") {
             assertRoles(actor, ["staff", "admin"])
+            const q = parseQuery(UsersGetQuerySchema, req.nextUrl.searchParams)
 
-            const id = sp.get("id")
-            if (id) {
-                const user = await ProfileController.getUserById(id)
+            if (q.id) {
+                const user = await ProfileController.getUserById(q.id)
                 if (!user) return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 })
                 return NextResponse.json({ ok: true, user })
             }
 
             const out = await ProfileController.listUsers({
-                q: sp.get("q") ?? "",
-                role: sp.get("role") ?? undefined,
-                status: sp.get("status") ?? undefined,
-                limit: toNum(sp.get("limit"), 50),
-                offset: toNum(sp.get("offset"), 0),
+                q: q.q,
+                role: q.role,
+                status: q.status,
+                limit: q.limit,
+                offset: q.offset,
             })
             return NextResponse.json({ ok: true, ...out })
         }
 
-        if (resource === "students") {
-            const userId = sp.get("userId")
-            if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
-
-            // student can only read own profile; staff/admin can read any
-            assertSelfOrRoles(actor, userId, ["staff", "admin"])
-
-            const profile = await ProfileController.getStudentProfile(userId)
+        if (base.resource === "students") {
+            const q = parseQuery(StudentProfileQuerySchema, req.nextUrl.searchParams)
+            assertSelfOrRoles(actor, q.userId, ["staff", "admin"])
+            const profile = await ProfileController.getStudentProfile(q.userId)
             return NextResponse.json({ ok: true, profile })
         }
 
-        if (resource === "staffProfiles") {
-            const userId = sp.get("userId")
-            if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
+        if (base.resource === "staffProfiles") {
+            const q = parseQuery(StaffProfileQuerySchema, req.nextUrl.searchParams)
 
-            // staff can read own; admin can read any (student cannot read staff)
-            assertSelfOrRoles(actor, userId, ["admin"])
+            // only staff/admin can access, student blocked explicitly
+            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+            if (actorRole === "student") return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
 
-            const profile = await ProfileController.getStaffProfile(userId)
+            // staff can only read own; admin can read any
+            assertSelfOrRoles(actor, q.userId, ["admin"])
+
+            const profile = await ProfileController.getStaffProfile(q.userId)
             return NextResponse.json({ ok: true, profile })
         }
 
@@ -64,46 +108,39 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
+        const raw = await readJson(req)
 
-        const sp = req.nextUrl.searchParams
-        const resource = sp.get("resource") ?? "students"
-        const body = await readJson(req)
-
-        if (resource === "students") {
-            const userId = String(body?.userId ?? "").trim()
-            if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
-
-            // student can only upsert own; staff/admin can upsert any
-            assertSelfOrRoles(actor, userId, ["staff", "admin"])
+        if (base.resource === "students") {
+            const body = parseBody(UpsertStudentProfileBodySchema, raw)
+            assertSelfOrRoles(actor, body.userId, ["staff", "admin"])
 
             const profile = await ProfileController.upsertStudentProfile({
-                userId,
-                program: body?.program ?? null,
-                section: body?.section ?? null,
+                userId: body.userId,
+                program: body.program ?? null,
+                section: body.section ?? null,
             })
             return NextResponse.json({ ok: true, profile }, { status: 201 })
         }
 
-        if (resource === "staffProfiles") {
-            const userId = String(body?.userId ?? "").trim()
-            if (!userId) return NextResponse.json({ ok: false, message: "userId is required" }, { status: 400 })
-
-            // only staff can upsert own, admin can upsert any
+        if (base.resource === "staffProfiles") {
+            const body = parseBody(UpsertStaffProfileBodySchema, raw)
             const actorRole = String((actor as any)?.role ?? "").toLowerCase()
+
             if (actorRole === "staff") {
-                assertSelfOrRoles(actor, userId, ["staff"]) // self
+                assertSelfOrRoles(actor, body.userId, ["staff"])
             } else {
                 assertRoles(actor, ["admin"])
             }
 
             const profile = await ProfileController.upsertStaffProfile({
-                userId,
-                department: body?.department ?? null,
+                userId: body.userId,
+                department: body.department ?? null,
             })
             return NextResponse.json({ ok: true, profile }, { status: 201 })
         }
 
-        return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
+        return NextResponse.json({ ok: false, message: "Invalid resource (use students or staffProfiles)" }, { status: 400 })
     } catch (err: any) {
         return errorJson(err, "Failed to create profile data")
     }
@@ -112,36 +149,33 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const base = parseQuery(ProfileBaseQuerySchema, req.nextUrl.searchParams)
+        const raw = await readJson(req)
 
-        const sp = req.nextUrl.searchParams
-        const resource = sp.get("resource") ?? "users"
-        const body = await readJson(req)
-
-        if (resource === "users") {
-            // user management should be admin only
+        if (base.resource === "users") {
             assertRoles(actor, ["admin"])
 
-            const id = sp.get("id") ?? String(body?.id ?? "")
+            const body = parseBody(PatchUserBodySchema, raw)
+            const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 
             const user = await ProfileController.updateUser(id, {
-                name: body?.name,
-                email: body?.email,
-                role: body?.role,
-                status: body?.status,
-                avatarKey: body?.avatarKey,
+                name: body.name,
+                email: body.email,
+                role: body.role as any,
+                status: body.status as any,
+                avatarKey: body.avatarKey,
             })
             if (!user) return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 })
             return NextResponse.json({ ok: true, user })
         }
 
-        return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
+        return NextResponse.json({ ok: false, message: "Invalid resource (PATCH supports users only)" }, { status: 400 })
     } catch (err: any) {
         return errorJson(err, "Failed to update profile data")
     }
 }
 
 export async function DELETE(_req: NextRequest) {
-    // Intentionally not implemented for safety (user deletion is destructive).
     return NextResponse.json({ ok: false, message: "Not implemented" }, { status: 501 })
 }
