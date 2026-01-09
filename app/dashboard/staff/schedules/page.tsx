@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
+
 /* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
@@ -81,6 +81,10 @@ type ThesisGroupOption = {
     term?: string | null
 }
 
+type AdminGroupsOk = { ok: true; total: number; groups: any[] }
+type AdminGroupsErr = { ok: false; message?: string }
+type AdminGroupsResponse = AdminGroupsOk | AdminGroupsErr
+
 function toISODate(d: Date) {
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, "0")
@@ -118,26 +122,32 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
         },
         cache: "no-store",
     })
+
+    const text = await res.text().catch(() => "")
+    const asJson = (() => {
+        try {
+            return text ? JSON.parse(text) : null
+        } catch {
+            return null
+        }
+    })()
+
     if (!res.ok) {
-        const msg = await res.text().catch(() => "")
-        throw new Error(msg || `Request failed (${res.status})`)
+        const msg =
+            (asJson && (asJson.message || asJson.error)) ||
+            text ||
+            `Request failed (${res.status})`
+        throw new Error(String(msg))
     }
-    return (await res.json()) as T
+
+    return (asJson ?? ({} as any)) as T
 }
 
-function normalizeGroups(data: any): ThesisGroupOption[] {
-    const raw =
-        (Array.isArray(data) ? data : null) ??
-        (Array.isArray(data?.groups) ? data.groups : null) ??
-        (Array.isArray(data?.items) ? data.items : null) ??
-        (Array.isArray(data?.rows) ? data.rows : null) ??
-        (Array.isArray(data?.data) ? data.data : null) ??
-        []
-
+function normalizeAdminGroups(groups: any[]): ThesisGroupOption[] {
     const out: ThesisGroupOption[] = []
-    for (const g of raw) {
+    for (const g of groups ?? []) {
         const id = String(g?.id ?? g?.group_id ?? g?.groupId ?? "").trim()
-        const title = String(g?.title ?? g?.group_title ?? g?.name ?? g?.groupName ?? "").trim()
+        const title = String(g?.title ?? g?.group_title ?? g?.name ?? "").trim()
         if (!id) continue
         out.push({
             id,
@@ -146,50 +156,25 @@ function normalizeGroups(data: any): ThesisGroupOption[] {
             term: g?.term ?? null,
         })
     }
-
     // de-dupe by id
     const map = new Map<string, ThesisGroupOption>()
     for (const i of out) map.set(i.id, i)
     return Array.from(map.values())
 }
 
-async function tryFetchGroups(query: string): Promise<{ groups: ThesisGroupOption[]; source?: string }> {
-    const q = String(query ?? "").trim()
+async function fetchAdminThesisGroups(args: { q: string; limit: number; offset: number }) {
+    const params = new URLSearchParams()
+    params.set("q", args.q)
+    params.set("limit", String(args.limit))
+    params.set("offset", String(args.offset))
 
-    const endpoints = [
-        // preferred staff endpoints (if you have them)
-        `/api/staff/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
-        `/api/staff/thesis-groups?search=${encodeURIComponent(q)}&limit=25`,
-        `/api/staff/groups?q=${encodeURIComponent(q)}&limit=25`,
-
-        // common admin endpoints (fallback)
-        `/api/admin/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
-        `/api/admin/groups?q=${encodeURIComponent(q)}&limit=25`,
-
-        // generic fallback (if your project uses it)
-        `/api/thesis-groups?q=${encodeURIComponent(q)}&limit=25`,
-        `/api/groups?q=${encodeURIComponent(q)}&limit=25`,
-    ]
-
-    let lastErr: any = null
-    for (const url of endpoints) {
-        try {
-            const res = await fetch(url, { cache: "no-store" })
-            if (!res.ok) {
-                // 404 etc -> try next
-                lastErr = new Error(`HTTP ${res.status} ${url}`)
-                continue
-            }
-            const data = await res.json().catch(() => null)
-            const groups = normalizeGroups(data)
-            return { groups, source: url }
-        } catch (e: any) {
-            lastErr = e
-        }
+    const res = await apiJson<AdminGroupsResponse>(`/api/admin/thesis-groups?${params.toString()}`)
+    if (!res || (res as any).ok !== true) {
+        const msg = (res as any)?.message ?? "Failed to load thesis groups"
+        throw new Error(msg)
     }
-
-    // If we got here, none worked
-    throw lastErr ?? new Error("No group list endpoint available")
+    const ok = res as AdminGroupsOk
+    return { total: ok.total ?? 0, groups: normalizeAdminGroups(ok.groups ?? []) }
 }
 
 export default function StaffSchedulesPage() {
@@ -213,14 +198,13 @@ export default function StaffSchedulesPage() {
     const [createOpen, setCreateOpen] = React.useState(false)
     const [creating, setCreating] = React.useState(false)
 
-    // group picker (user friendly)
+    // group picker (uses /api/admin/thesis-groups)
     const [groupOpen, setGroupOpen] = React.useState(false)
     const [groupQuery, setGroupQuery] = React.useState("")
     const [groupLoading, setGroupLoading] = React.useState(false)
     const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
     const [selectedGroup, setSelectedGroup] = React.useState<ThesisGroupOption | null>(null)
-    const [groupEndpointHint, setGroupEndpointHint] = React.useState<string>("")
-    const [groupEndpointError, setGroupEndpointError] = React.useState<string>("")
+    const [groupError, setGroupError] = React.useState<string>("")
 
     const [newScheduledAt, setNewScheduledAt] = React.useState("")
     const [newRoom, setNewRoom] = React.useState("")
@@ -291,37 +275,33 @@ export default function StaffSchedulesPage() {
         setPage(0)
     }
 
-    // Load groups when the create dialog opens (and when searching)
-    const loadGroups = React.useCallback(
-        async (query: string) => {
-            setGroupLoading(true)
-            setGroupEndpointError("")
-            try {
-                const res = await tryFetchGroups(query)
-                setGroups(res.groups)
-                setGroupEndpointHint(res.source ?? "")
-            } catch (e: any) {
-                setGroups([])
-                setGroupEndpointHint("")
-                setGroupEndpointError(
-                    "No group list endpoint found. Please add an API to list thesis groups so staff can pick a group."
-                )
-            } finally {
-                setGroupLoading(false)
-            }
-        },
-        []
-    )
+    const loadGroups = React.useCallback(async (query: string) => {
+        setGroupLoading(true)
+        setGroupError("")
+        try {
+            const { groups } = await fetchAdminThesisGroups({ q: query.trim(), limit: 50, offset: 0 })
+            setGroups(groups)
+        } catch (e: any) {
+            setGroups([])
+            // Most likely: admin auth required by cookies
+            setGroupError(
+                e?.message ||
+                "Failed to load thesis groups. (Note: /api/admin/thesis-groups requires admin cookies.)"
+            )
+        } finally {
+            setGroupLoading(false)
+        }
+    }, [])
 
     React.useEffect(() => {
         if (!createOpen) return
-        // initial fetch
+        setSelectedGroup(null)
+        setGroupQuery("")
         loadGroups("")
     }, [createOpen])
 
     React.useEffect(() => {
         if (!createOpen) return
-        // debounce search
         const t = setTimeout(() => {
             loadGroups(groupQuery)
         }, 350)
@@ -349,7 +329,6 @@ export default function StaffSchedulesPage() {
             toast.success("Schedule created")
             setCreateOpen(false)
 
-            // reset
             setSelectedGroup(null)
             setGroupQuery("")
             setNewScheduledAt("")
@@ -386,7 +365,10 @@ export default function StaffSchedulesPage() {
 
     const selectedGroupLabel = React.useMemo(() => {
         if (!selectedGroup) return "Select a group..."
-        const meta = [selectedGroup.program?.trim() ? selectedGroup.program : null, selectedGroup.term?.trim() ? selectedGroup.term : null]
+        const meta = [
+            selectedGroup.program?.trim() ? selectedGroup.program : null,
+            selectedGroup.term?.trim() ? selectedGroup.term : null,
+        ]
             .filter(Boolean)
             .join(" • ")
         return meta ? `${selectedGroup.title} (${meta})` : selectedGroup.title
@@ -409,7 +391,11 @@ export default function StaffSchedulesPage() {
 
                         <div className="flex items-center gap-2">
                             <Button variant="outline" onClick={fetchList} disabled={busy}>
-                                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                                {busy ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                )}
                                 Refresh
                             </Button>
 
@@ -425,7 +411,7 @@ export default function StaffSchedulesPage() {
                                     <DialogHeader>
                                         <DialogTitle>Create defense schedule</DialogTitle>
                                         <DialogDescription>
-                                            Select the group (no need to type UUID), then set date/time, room, and status.
+                                            Select the group, then set date/time, room, and status.
                                         </DialogDescription>
                                     </DialogHeader>
 
@@ -439,12 +425,16 @@ export default function StaffSchedulesPage() {
                                                         type="button"
                                                         variant="outline"
                                                         role="combobox"
-                                                        className={cn("w-full justify-between", !selectedGroup && "text-muted-foreground")}
+                                                        className={cn(
+                                                            "w-full justify-between",
+                                                            !selectedGroup && "text-muted-foreground"
+                                                        )}
                                                     >
                                                         <span className="truncate">{selectedGroupLabel}</span>
                                                         <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
                                                     </Button>
                                                 </PopoverTrigger>
+
                                                 <PopoverContent className="w-105 p-0" align="start">
                                                     <Command>
                                                         <div className="flex items-center gap-2 border-b px-3 py-2">
@@ -452,7 +442,7 @@ export default function StaffSchedulesPage() {
                                                             <CommandInput
                                                                 value={groupQuery}
                                                                 onValueChange={setGroupQuery}
-                                                                placeholder="Search group title / program / term..."
+                                                                placeholder="Search group title..."
                                                             />
                                                             <Button
                                                                 type="button"
@@ -462,7 +452,11 @@ export default function StaffSchedulesPage() {
                                                                 disabled={groupLoading}
                                                                 title="Refresh groups"
                                                             >
-                                                                {groupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                                                {groupLoading ? (
+                                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                                ) : (
+                                                                    <RefreshCw className="h-4 w-4" />
+                                                                )}
                                                             </Button>
                                                         </div>
 
@@ -471,9 +465,12 @@ export default function StaffSchedulesPage() {
                                                                 {groupLoading ? "Loading groups..." : "No groups found."}
                                                             </CommandEmpty>
 
-                                                            <CommandGroup heading="Groups">
+                                                            <CommandGroup heading="Thesis groups">
                                                                 {groups.map((g) => {
-                                                                    const meta = [g.program?.trim() ? g.program : null, g.term?.trim() ? g.term : null]
+                                                                    const meta = [
+                                                                        g.program?.trim() ? g.program : null,
+                                                                        g.term?.trim() ? g.term : null,
+                                                                    ]
                                                                         .filter(Boolean)
                                                                         .join(" • ")
                                                                     return (
@@ -502,7 +499,7 @@ export default function StaffSchedulesPage() {
 
                                             <div className="flex items-center justify-between">
                                                 <p className="text-xs text-muted-foreground">
-                                                    {groupEndpointHint ? `Source: ${groupEndpointHint}` : "Pick from the group list."}
+                                                    Source: <span className="font-mono">/api/admin/thesis-groups</span>
                                                 </p>
                                                 <Button
                                                     type="button"
@@ -516,10 +513,10 @@ export default function StaffSchedulesPage() {
                                                 </Button>
                                             </div>
 
-                                            {groupEndpointError ? (
+                                            {groupError ? (
                                                 <Alert variant="destructive">
-                                                    <AlertTitle>Group picker needs an API</AlertTitle>
-                                                    <AlertDescription>{groupEndpointError}</AlertDescription>
+                                                    <AlertTitle>Cannot load thesis groups</AlertTitle>
+                                                    <AlertDescription>{groupError}</AlertDescription>
                                                 </Alert>
                                             ) : null}
                                         </div>
@@ -564,10 +561,7 @@ export default function StaffSchedulesPage() {
                                         <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
                                             Cancel
                                         </Button>
-                                        <Button
-                                            onClick={onCreate}
-                                            disabled={creating || !selectedGroup || !newScheduledAt.trim()}
-                                        >
+                                        <Button onClick={onCreate} disabled={creating || !selectedGroup || !newScheduledAt.trim()}>
                                             {creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                             Create
                                         </Button>
@@ -680,7 +674,10 @@ export default function StaffSchedulesPage() {
                                                                     <PopoverTrigger asChild>
                                                                         <Button
                                                                             variant="outline"
-                                                                            className={cn("w-full justify-start", !fromDate && "text-muted-foreground")}
+                                                                            className={cn(
+                                                                                "w-full justify-start",
+                                                                                !fromDate && "text-muted-foreground"
+                                                                            )}
                                                                         >
                                                                             {fromDate ? toISODate(fromDate) : "Pick a date"}
                                                                         </Button>
@@ -716,7 +713,10 @@ export default function StaffSchedulesPage() {
                                                                     <PopoverTrigger asChild>
                                                                         <Button
                                                                             variant="outline"
-                                                                            className={cn("w-full justify-start", !toDate && "text-muted-foreground")}
+                                                                            className={cn(
+                                                                                "w-full justify-start",
+                                                                                !toDate && "text-muted-foreground"
+                                                                            )}
                                                                         >
                                                                             {toDate ? toISODate(toDate) : "Pick a date"}
                                                                         </Button>
@@ -801,10 +801,7 @@ export default function StaffSchedulesPage() {
                                                                         {s.group_title?.trim() ? s.group_title : s.group_id}
                                                                     </div>
                                                                     <div className="text-xs text-muted-foreground">
-                                                                        {[
-                                                                            s.program?.trim() ? s.program : null,
-                                                                            s.term?.trim() ? s.term : null,
-                                                                        ]
+                                                                        {[s.program?.trim() ? s.program : null, s.term?.trim() ? s.term : null]
                                                                             .filter(Boolean)
                                                                             .join(" • ") || "—"}
                                                                     </div>
@@ -878,8 +875,7 @@ export default function StaffSchedulesPage() {
                                             </span>
                                             <span>•</span>
                                             <span>
-                                                Showing{" "}
-                                                <span className="font-medium text-foreground">{schedules.length}</span> of{" "}
+                                                Showing <span className="font-medium text-foreground">{schedules.length}</span> of{" "}
                                                 <span className="font-medium text-foreground">{total}</span>
                                             </span>
                                         </div>
@@ -940,7 +936,9 @@ export default function StaffSchedulesPage() {
                                     <Alert>
                                         <CheckCircle2 className="h-4 w-4" />
                                         <AlertTitle>Tip</AlertTitle>
-                                        <AlertDescription>Open a schedule to manage its panelists (add/remove).</AlertDescription>
+                                        <AlertDescription>
+                                            Open a schedule to manage its panelists (add/remove).
+                                        </AlertDescription>
                                     </Alert>
                                 </CardContent>
                             </Card>

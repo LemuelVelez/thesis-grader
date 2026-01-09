@@ -18,11 +18,12 @@ import { cn } from "@/lib/utils"
 
 type DashboardLayoutProps = {
     title?: string
+    description?: string
     mainClassName?: string
     children: React.ReactNode
 }
 
-export default function DashboardLayout({ title, mainClassName, children }: DashboardLayoutProps) {
+export default function DashboardLayout({ title, description, mainClassName, children }: DashboardLayoutProps) {
     return (
         <SidebarProvider defaultOpen>
             <Sidebar variant="inset" collapsible="icon">
@@ -41,6 +42,12 @@ export default function DashboardLayout({ title, mainClassName, children }: Dash
             {/* ✅ min-w-0 prevents the content area from forcing horizontal overflow */}
             <SidebarInset className="min-w-0">
                 <DashboardHeader title={title} />
+
+                {description ? (
+                    <div className="px-4 pb-2 md:px-6">
+                        <p className="text-sm text-muted-foreground">{description}</p>
+                    </div>
+                ) : null}
 
                 {/* ✅ prevent page-level horizontal scroll; tables should scroll inside their own wrappers */}
                 <main className={cn("flex-1 min-w-0 overflow-x-hidden p-4 md:p-6", mainClassName)}>
