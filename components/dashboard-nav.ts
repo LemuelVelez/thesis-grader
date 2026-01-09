@@ -103,7 +103,7 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
                     { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
                     { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
                     { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
-                    { label: "Thesis Groups", href: `${base}/thesis`, icon: BookOpen },
+                    { label: "Thesis Groups", href: `${base}/thesis-groups`, icon: BookOpen },
                 ],
             },
         ]

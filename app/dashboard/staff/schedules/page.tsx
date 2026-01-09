@@ -1,4 +1,3 @@
-
 /* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
@@ -81,9 +80,9 @@ type ThesisGroupOption = {
     term?: string | null
 }
 
-type AdminGroupsOk = { ok: true; total: number; groups: any[] }
-type AdminGroupsErr = { ok: false; message?: string }
-type AdminGroupsResponse = AdminGroupsOk | AdminGroupsErr
+type StaffGroupsOk = { ok: true; total: number; groups: any[] }
+type StaffGroupsErr = { ok: false; message?: string }
+type StaffGroupsResponse = StaffGroupsOk | StaffGroupsErr
 
 function toISODate(d: Date) {
     const y = d.getFullYear()
@@ -133,17 +132,14 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
     })()
 
     if (!res.ok) {
-        const msg =
-            (asJson && (asJson.message || asJson.error)) ||
-            text ||
-            `Request failed (${res.status})`
+        const msg = (asJson && (asJson.message || asJson.error)) || text || `Request failed (${res.status})`
         throw new Error(String(msg))
     }
 
     return (asJson ?? ({} as any)) as T
 }
 
-function normalizeAdminGroups(groups: any[]): ThesisGroupOption[] {
+function normalizeGroups(groups: any[]): ThesisGroupOption[] {
     const out: ThesisGroupOption[] = []
     for (const g of groups ?? []) {
         const id = String(g?.id ?? g?.group_id ?? g?.groupId ?? "").trim()
@@ -162,19 +158,19 @@ function normalizeAdminGroups(groups: any[]): ThesisGroupOption[] {
     return Array.from(map.values())
 }
 
-async function fetchAdminThesisGroups(args: { q: string; limit: number; offset: number }) {
+async function fetchStaffThesisGroups(args: { q: string; limit: number; offset: number }) {
     const params = new URLSearchParams()
     params.set("q", args.q)
     params.set("limit", String(args.limit))
     params.set("offset", String(args.offset))
 
-    const res = await apiJson<AdminGroupsResponse>(`/api/admin/thesis-groups?${params.toString()}`)
+    const res = await apiJson<StaffGroupsResponse>(`/api/staff/thesis-groups?${params.toString()}`)
     if (!res || (res as any).ok !== true) {
         const msg = (res as any)?.message ?? "Failed to load thesis groups"
         throw new Error(msg)
     }
-    const ok = res as AdminGroupsOk
-    return { total: ok.total ?? 0, groups: normalizeAdminGroups(ok.groups ?? []) }
+    const ok = res as StaffGroupsOk
+    return { total: ok.total ?? 0, groups: normalizeGroups(ok.groups ?? []) }
 }
 
 export default function StaffSchedulesPage() {
@@ -198,7 +194,7 @@ export default function StaffSchedulesPage() {
     const [createOpen, setCreateOpen] = React.useState(false)
     const [creating, setCreating] = React.useState(false)
 
-    // group picker (uses /api/admin/thesis-groups)
+    // group picker (uses /api/staff/thesis-groups)
     const [groupOpen, setGroupOpen] = React.useState(false)
     const [groupQuery, setGroupQuery] = React.useState("")
     const [groupLoading, setGroupLoading] = React.useState(false)
@@ -279,15 +275,11 @@ export default function StaffSchedulesPage() {
         setGroupLoading(true)
         setGroupError("")
         try {
-            const { groups } = await fetchAdminThesisGroups({ q: query.trim(), limit: 50, offset: 0 })
+            const { groups } = await fetchStaffThesisGroups({ q: query.trim(), limit: 50, offset: 0 })
             setGroups(groups)
         } catch (e: any) {
             setGroups([])
-            // Most likely: admin auth required by cookies
-            setGroupError(
-                e?.message ||
-                "Failed to load thesis groups. (Note: /api/admin/thesis-groups requires admin cookies.)"
-            )
+            setGroupError(e?.message || "Failed to load thesis groups.")
         } finally {
             setGroupLoading(false)
         }
@@ -365,10 +357,7 @@ export default function StaffSchedulesPage() {
 
     const selectedGroupLabel = React.useMemo(() => {
         if (!selectedGroup) return "Select a group..."
-        const meta = [
-            selectedGroup.program?.trim() ? selectedGroup.program : null,
-            selectedGroup.term?.trim() ? selectedGroup.term : null,
-        ]
+        const meta = [selectedGroup.program?.trim() ? selectedGroup.program : null, selectedGroup.term?.trim() ? selectedGroup.term : null]
             .filter(Boolean)
             .join(" • ")
         return meta ? `${selectedGroup.title} (${meta})` : selectedGroup.title
@@ -391,11 +380,7 @@ export default function StaffSchedulesPage() {
 
                         <div className="flex items-center gap-2">
                             <Button variant="outline" onClick={fetchList} disabled={busy}>
-                                {busy ? (
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : (
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                )}
+                                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                                 Refresh
                             </Button>
 
@@ -410,9 +395,7 @@ export default function StaffSchedulesPage() {
                                 <DialogContent className="sm:max-w-lg">
                                     <DialogHeader>
                                         <DialogTitle>Create defense schedule</DialogTitle>
-                                        <DialogDescription>
-                                            Select the group, then set date/time, room, and status.
-                                        </DialogDescription>
+                                        <DialogDescription>Select the group, then set date/time, room, and status.</DialogDescription>
                                     </DialogHeader>
 
                                     <div className="grid gap-4">
@@ -425,10 +408,7 @@ export default function StaffSchedulesPage() {
                                                         type="button"
                                                         variant="outline"
                                                         role="combobox"
-                                                        className={cn(
-                                                            "w-full justify-between",
-                                                            !selectedGroup && "text-muted-foreground"
-                                                        )}
+                                                        className={cn("w-full justify-between", !selectedGroup && "text-muted-foreground")}
                                                     >
                                                         <span className="truncate">{selectedGroupLabel}</span>
                                                         <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
@@ -452,25 +432,16 @@ export default function StaffSchedulesPage() {
                                                                 disabled={groupLoading}
                                                                 title="Refresh groups"
                                                             >
-                                                                {groupLoading ? (
-                                                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                                                ) : (
-                                                                    <RefreshCw className="h-4 w-4" />
-                                                                )}
+                                                                {groupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                                                             </Button>
                                                         </div>
 
                                                         <CommandList>
-                                                            <CommandEmpty>
-                                                                {groupLoading ? "Loading groups..." : "No groups found."}
-                                                            </CommandEmpty>
+                                                            <CommandEmpty>{groupLoading ? "Loading groups..." : "No groups found."}</CommandEmpty>
 
                                                             <CommandGroup heading="Thesis groups">
                                                                 {groups.map((g) => {
-                                                                    const meta = [
-                                                                        g.program?.trim() ? g.program : null,
-                                                                        g.term?.trim() ? g.term : null,
-                                                                    ]
+                                                                    const meta = [g.program?.trim() ? g.program : null, g.term?.trim() ? g.term : null]
                                                                         .filter(Boolean)
                                                                         .join(" • ")
                                                                     return (
@@ -484,9 +455,7 @@ export default function StaffSchedulesPage() {
                                                                         >
                                                                             <div className="min-w-0">
                                                                                 <div className="truncate text-sm font-medium">{g.title}</div>
-                                                                                <div className="truncate text-xs text-muted-foreground">
-                                                                                    {meta || g.id}
-                                                                                </div>
+                                                                                <div className="truncate text-xs text-muted-foreground">{meta || g.id}</div>
                                                                             </div>
                                                                         </CommandItem>
                                                                     )
@@ -499,7 +468,7 @@ export default function StaffSchedulesPage() {
 
                                             <div className="flex items-center justify-between">
                                                 <p className="text-xs text-muted-foreground">
-                                                    Source: <span className="font-mono">/api/admin/thesis-groups</span>
+                                                    Source: <span className="font-mono">/api/staff/thesis-groups</span>
                                                 </p>
                                                 <Button
                                                     type="button"
@@ -599,9 +568,7 @@ export default function StaffSchedulesPage() {
                                         <CardDescription>Scheduled</CardDescription>
                                         <CardTitle className="text-2xl">{stats.scheduledCount}</CardTitle>
                                     </CardHeader>
-                                    <CardContent className="text-xs text-muted-foreground">
-                                        Currently marked as scheduled
-                                    </CardContent>
+                                    <CardContent className="text-xs text-muted-foreground">Currently marked as scheduled</CardContent>
                                 </Card>
 
                                 <Card>
@@ -609,9 +576,7 @@ export default function StaffSchedulesPage() {
                                         <CardDescription>Completed</CardDescription>
                                         <CardTitle className="text-2xl">{stats.completedCount}</CardTitle>
                                     </CardHeader>
-                                    <CardContent className="text-xs text-muted-foreground">
-                                        Completed/done on the current page
-                                    </CardContent>
+                                    <CardContent className="text-xs text-muted-foreground">Completed/done on the current page</CardContent>
                                 </Card>
                             </div>
 
@@ -626,7 +591,7 @@ export default function StaffSchedulesPage() {
                                         </div>
 
                                         <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
-                                            <div className="relative w-full sm:w-[320px]">
+                                            <div className="relative w-full sm:w-80">
                                                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                                                 <Input
                                                     value={q}
@@ -674,10 +639,7 @@ export default function StaffSchedulesPage() {
                                                                     <PopoverTrigger asChild>
                                                                         <Button
                                                                             variant="outline"
-                                                                            className={cn(
-                                                                                "w-full justify-start",
-                                                                                !fromDate && "text-muted-foreground"
-                                                                            )}
+                                                                            className={cn("w-full justify-start", !fromDate && "text-muted-foreground")}
                                                                         >
                                                                             {fromDate ? toISODate(fromDate) : "Pick a date"}
                                                                         </Button>
@@ -713,10 +675,7 @@ export default function StaffSchedulesPage() {
                                                                     <PopoverTrigger asChild>
                                                                         <Button
                                                                             variant="outline"
-                                                                            className={cn(
-                                                                                "w-full justify-start",
-                                                                                !toDate && "text-muted-foreground"
-                                                                            )}
+                                                                            className={cn("w-full justify-start", !toDate && "text-muted-foreground")}
                                                                         >
                                                                             {toDate ? toISODate(toDate) : "Pick a date"}
                                                                         </Button>
@@ -896,11 +855,7 @@ export default function StaffSchedulesPage() {
 
                                             <Tooltip>
                                                 <TooltipTrigger asChild>
-                                                    <Button
-                                                        variant="outline"
-                                                        onClick={() => setPage((p) => p + 1)}
-                                                        disabled={!canNext || busy}
-                                                    >
+                                                    <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={!canNext || busy}>
                                                         Next
                                                     </Button>
                                                 </TooltipTrigger>
@@ -936,9 +891,7 @@ export default function StaffSchedulesPage() {
                                     <Alert>
                                         <CheckCircle2 className="h-4 w-4" />
                                         <AlertTitle>Tip</AlertTitle>
-                                        <AlertDescription>
-                                            Open a schedule to manage its panelists (add/remove).
-                                        </AlertDescription>
+                                        <AlertDescription>Open a schedule to manage its panelists (add/remove).</AlertDescription>
                                     </Alert>
                                 </CardContent>
                             </Card>
