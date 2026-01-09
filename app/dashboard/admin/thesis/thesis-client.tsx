@@ -5,19 +5,16 @@ import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronLeft, ChevronRight, Plus, Search, Trash2 } from "lucide-react"
 
 import type { ThesisGroupRow } from "@/lib/thesis-admin"
-import { cn } from "@/lib/utils"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
@@ -30,8 +27,6 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-
-type UserPick = { id: string; name: string; email: string; role: "student" | "staff" | "admin" }
 
 function formatDate(iso: string | null | undefined) {
     if (!iso) return "—"
@@ -47,123 +42,6 @@ function buildHref(base: string, params: Record<string, string | undefined>) {
     })
     const qs = sp.toString()
     return qs ? `${base}?${qs}` : base
-}
-
-async function searchUsers(params: { q: string; role?: string; status?: string; limit?: number }) {
-    const sp = new URLSearchParams()
-    sp.set("resource", "users")
-    sp.set("q", params.q ?? "")
-    sp.set("limit", String(params.limit ?? 10))
-    sp.set("offset", "0")
-    if (params.role) sp.set("role", params.role)
-    if (params.status) sp.set("status", params.status)
-
-    const res = await fetch(`/api/profiles?${sp.toString()}`, { method: "GET" })
-    const data = (await res.json().catch(() => ({}))) as any
-    if (!res.ok || !data?.ok) {
-        throw new Error(data?.message || "Failed to load users")
-    }
-    return (data.users ?? []) as UserPick[]
-}
-
-function AdviserPicker(props: {
-    value: UserPick | null
-    onChange: (u: UserPick | null) => void
-    disabled?: boolean
-}) {
-    const [open, setOpen] = React.useState(false)
-    const [q, setQ] = React.useState("")
-    const [items, setItems] = React.useState<UserPick[]>([])
-    const [loading, setLoading] = React.useState(false)
-
-    React.useEffect(() => {
-        let alive = true
-        const t = setTimeout(async () => {
-            setLoading(true)
-            try {
-                const out = await searchUsers({ q, role: "staff", status: "active", limit: 10 })
-                // Include admins too (adviser can be staff/admin)
-                const outAdmins = await searchUsers({ q, role: "admin", status: "active", limit: 10 })
-                const merged = [...out, ...outAdmins]
-                const dedup = Array.from(new Map(merged.map((u) => [u.id, u])).values())
-                if (alive) setItems(dedup)
-            } catch {
-                if (alive) setItems([])
-            } finally {
-                if (alive) setLoading(false)
-            }
-        }, 250)
-        return () => {
-            alive = false
-            clearTimeout(t)
-        }
-    }, [q])
-
-    return (
-        <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-                <Button type="button" variant="outline" role="combobox" aria-expanded={open} className="w-full justify-between" disabled={props.disabled}>
-                    {props.value ? (
-                        <span className="line-clamp-1">
-                            {props.value.name} <span className="text-muted-foreground">({props.value.email})</span>
-                        </span>
-                    ) : (
-                        <span className="text-muted-foreground">Select adviser (staff/admin)…</span>
-                    )}
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                </Button>
-            </PopoverTrigger>
-
-            <PopoverContent className="w-full p-0" align="start">
-                <Command>
-                    <CommandInput value={q} onValueChange={setQ} placeholder="Search staff/admin by name or email…" />
-                    <CommandList>
-                        <CommandEmpty>{loading ? "Searching…" : "No matches found."}</CommandEmpty>
-
-                        <CommandGroup heading="Results">
-                            {items.map((u) => {
-                                const selected = props.value?.id === u.id
-                                const value = `${u.id} ${u.name} ${u.email}`
-                                return (
-                                    <CommandItem
-                                        key={u.id}
-                                        value={value}
-                                        onSelect={() => {
-                                            props.onChange(u)
-                                            setOpen(false)
-                                        }}
-                                    >
-                                        <Check className={cn("mr-2 h-4 w-4", selected ? "opacity-100" : "opacity-0")} />
-                                        <div className="min-w-0">
-                                            <div className="line-clamp-1">{u.name}</div>
-                                            <div className="line-clamp-1 text-xs text-muted-foreground">{u.email}</div>
-                                        </div>
-                                        <Badge variant="outline" className="ml-auto">
-                                            {u.role}
-                                        </Badge>
-                                    </CommandItem>
-                                )
-                            })}
-                        </CommandGroup>
-
-                        <Separator />
-
-                        <CommandGroup heading="Options">
-                            <CommandItem
-                                value="clear"
-                                onSelect={() => {
-                                    props.onChange(null)
-                                    setOpen(false)
-                                }}
-                            >
-                                Clear adviser (unassigned)
-                            </CommandItem>
-                        </CommandGroup>
-                    </CommandList>
-                </Command>
-            </PopoverContent>
-        </Popover>
-    )
 }
 
 export default function ThesisAdminClient(props: {
@@ -187,9 +65,9 @@ export default function ThesisAdminClient(props: {
     const [title, setTitle] = React.useState("")
     const [program, setProgram] = React.useState("")
     const [term, setTerm] = React.useState("")
-    const [adviser, setAdviser] = React.useState<UserPick | null>(null)
+    const [adviserEmail, setAdviserEmail] = React.useState("")
 
-    // Delete dialog state
+    // AlertDialog state for delete confirmation
     const [deleteOpen, setDeleteOpen] = React.useState(false)
     const [deleteTarget, setDeleteTarget] = React.useState<{ id: string; title: string } | null>(null)
 
@@ -201,7 +79,7 @@ export default function ThesisAdminClient(props: {
             title: title.trim(),
             program: program.trim() || null,
             term: term.trim() || null,
-            adviserId: adviser?.id ?? null,
+            adviserEmail: adviserEmail.trim() || null,
         }
 
         if (!payload.title) {
@@ -212,7 +90,7 @@ export default function ThesisAdminClient(props: {
         setBusy(true)
         const tId = toast.loading("Creating thesis group...")
         try {
-            const res = await fetch("/api/thesis?resource=groups", {
+            const res = await fetch("/api/admin/thesis-groups", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -229,7 +107,7 @@ export default function ThesisAdminClient(props: {
             setTitle("")
             setProgram("")
             setTerm("")
-            setAdviser(null)
+            setAdviserEmail("")
 
             router.refresh()
         } catch {
@@ -245,7 +123,7 @@ export default function ThesisAdminClient(props: {
         setBusy(true)
         const tId = toast.loading("Deleting thesis group...")
         try {
-            const res = await fetch(`/api/thesis?resource=groups&id=${encodeURIComponent(groupId)}`, {
+            const res = await fetch(`/api/admin/thesis-groups/${encodeURIComponent(groupId)}`, {
                 method: "DELETE",
             })
             const data = (await res.json().catch(() => ({}))) as any
@@ -328,7 +206,7 @@ export default function ThesisAdminClient(props: {
             <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                 <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">
-                        Admin manages thesis records (groups, advisers, members). Scheduling and scoring are handled in Staff modules.
+                        Admin thesis records management (groups, titles, advisers, program, term). Scheduling is handled by Staff.
                     </p>
                     <p className="text-xs text-muted-foreground">
                         Signed in as: <span className="font-medium">{props.actor.name}</span> ({props.actor.email})
@@ -338,7 +216,12 @@ export default function ThesisAdminClient(props: {
                 <form method="get" className="flex w-full gap-2 md:w-105">
                     <div className="relative w-full">
                         <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                        <Input name="q" defaultValue={props.q} placeholder="Search by title, program, term, adviser…" className="pl-8" />
+                        <Input
+                            name="q"
+                            defaultValue={props.q}
+                            placeholder="Search by title, program, term, adviser…"
+                            className="pl-8"
+                        />
                     </div>
                     <input type="hidden" name="limit" value={String(props.limit)} />
                     <Button type="submit" variant="secondary" disabled={busy}>
@@ -392,7 +275,9 @@ export default function ThesisAdminClient(props: {
                         <Plus className="h-4 w-4" />
                         Create thesis group
                     </CardTitle>
-                    <CardDescription>Create a thesis group record. Adviser is optional (must be staff/admin).</CardDescription>
+                    <CardDescription>
+                        Create a thesis group record. Adviser is optional (recommended: staff account).
+                    </CardDescription>
                 </CardHeader>
 
                 <CardContent>
@@ -432,8 +317,14 @@ export default function ThesisAdminClient(props: {
                         </div>
 
                         <div className="space-y-2 md:col-span-3">
-                            <Label>Adviser (optional)</Label>
-                            <AdviserPicker value={adviser} onChange={setAdviser} disabled={busy} />
+                            <Label htmlFor="adviser_email">Adviser email (optional)</Label>
+                            <Input
+                                id="adviser_email"
+                                value={adviserEmail}
+                                onChange={(e) => setAdviserEmail(e.target.value)}
+                                placeholder="staff@school.edu"
+                                disabled={busy}
+                            />
                         </div>
 
                         <div className="md:col-span-12">
@@ -516,10 +407,16 @@ export default function ThesisAdminClient(props: {
                                         <TableCell className="text-right">
                                             <div className="flex items-center justify-end gap-2">
                                                 <Button asChild variant="secondary" size="sm" disabled={busy}>
-                                                    <Link href={`/dashboard/admin/thesis/${g.id}`}>Manage</Link>
+                                                    <Link href={`/dashboard/admin/thesis/${g.id}`}>View</Link>
                                                 </Button>
 
-                                                <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={() => requestDelete(g)}>
+                                                <Button
+                                                    type="button"
+                                                    variant="destructive"
+                                                    size="sm"
+                                                    disabled={busy}
+                                                    onClick={() => requestDelete(g)}
+                                                >
                                                     <Trash2 className="mr-2 h-4 w-4" />
                                                     Delete
                                                 </Button>
@@ -548,7 +445,12 @@ export default function ThesisAdminClient(props: {
                     </Button>
 
                     <Button asChild variant="outline" disabled={!nextHref || busy}>
-                        <Link href={nextHref ?? buildHref(baseHref, { q: props.q || undefined, page: String(props.totalPages), limit: String(props.limit) })}>
+                        <Link
+                            href={
+                                nextHref ??
+                                buildHref(baseHref, { q: props.q || undefined, page: String(props.totalPages), limit: String(props.limit) })
+                            }
+                        >
                             Next
                             <ChevronRight className="ml-2 h-4 w-4" />
                         </Link>

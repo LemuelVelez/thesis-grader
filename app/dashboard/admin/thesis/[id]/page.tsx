@@ -16,7 +16,7 @@ import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
-import ThesisGroupAdminEditor from "./thesis-group-admin-editor"
+import GroupClient, { type MemberRow as MemberRowClient } from "./group-client"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -158,6 +158,9 @@ export default async function Page({ params }: { params: { id: string } | Promis
     const schedulesRes = await db.query(schedulesQ, [groupId])
     const schedules = (schedulesRes.rows as ScheduleRow[]) ?? []
 
+    // pass members to client component (same shape)
+    const membersForClient = members as unknown as MemberRowClient[]
+
     return (
         <DashboardLayout title="Thesis Group">
             <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -224,35 +227,18 @@ export default async function Page({ params }: { params: { id: string } | Promis
                             <Badge variant="secondary">members: {members.length}</Badge>
                             <Badge variant="outline">schedules: {schedules.length}</Badge>
                         </div>
-
-                        <Alert>
-                            <AlertTitle>Admin scope</AlertTitle>
-                            <AlertDescription>
-                                Admin can manage the thesis record (group info, adviser, members). Scheduling and scoring are handled in Staff modules.
-                                Schedules below are shown for visibility only.
-                            </AlertDescription>
-                        </Alert>
                     </CardContent>
                 </Card>
 
-                {/* ✅ Admin-only editor: update group + manage members (no scheduling/scoring here) */}
-                <ThesisGroupAdminEditor
-                    group={{
-                        id: group.id,
-                        title: group.title,
-                        program: group.program,
-                        term: group.term,
-                        adviserId: group.adviser_id,
-                        adviserName: group.adviser_name,
-                        adviserEmail: group.adviser_email,
-                    }}
-                    members={members}
-                />
+                {/* ✅ Admin can manage thesis records, including group membership */}
+                <GroupClient groupId={group.id} initialMembers={membersForClient} />
 
                 <Card>
                     <CardHeader className="pb-3">
                         <CardTitle>Defense schedules</CardTitle>
-                        <CardDescription>Latest 50 schedules for this group (most recent first).</CardDescription>
+                        <CardDescription>
+                            View-only for Admin. Schedule creation/updates are handled by Staff.
+                        </CardDescription>
                     </CardHeader>
 
                     <CardContent>
