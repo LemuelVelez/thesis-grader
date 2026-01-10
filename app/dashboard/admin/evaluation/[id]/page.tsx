@@ -5,7 +5,7 @@ import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowLeft, Loader2, Lock, RefreshCw, ShieldCheck, Unlock } from "lucide-react"
+import { ArrowLeft, Loader2, Lock, RefreshCw, ShieldCheck, Unlock, Users } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { useAuth } from "@/hooks/use-auth"
@@ -33,28 +33,51 @@ import {
 type ApiOk<T> = { ok: true } & T
 type ApiErr = { ok: false; error?: string; message?: string }
 
-type EvalScoreRow = {
-    criterionId?: string
-    criterion?: string
-    description?: string | null
-    weight?: number | string | null
-    minScore?: number | null
-    maxScore?: number | null
-    score?: number | null
-    comment?: string | null
-}
+type Person = { id: string; name: string | null; email: string }
 
-type EvalDetail = {
-    id: string
-    status?: string | null
-    submittedAt?: string | null
-    lockedAt?: string | null
-    createdAt?: string | null
-
-    scheduleId?: string | null
-    evaluatorId?: string | null
-
-    scores?: EvalScoreRow[]
+type DetailPayload = {
+    evaluation: {
+        id: string
+        status: string
+        submittedAt: string | null
+        lockedAt: string | null
+        createdAt: string | null
+    }
+    schedule: {
+        id: string
+        scheduledAt: string
+        room: string | null
+        status: string | null
+    }
+    group: {
+        id: string
+        title: string
+        program: string | null
+        term: string | null
+        adviser: Person | null
+        students: Person[]
+    }
+    evaluator: Person
+    panelists: Person[]
+    rubric: {
+        id: string
+        name: string
+        version: number
+        active: boolean
+        description: string | null
+        createdAt: string
+        updatedAt: string
+    } | null
+    criteria: Array<{
+        criterionId: string
+        criterion: string
+        description: string | null
+        weight: string
+        minScore: number
+        maxScore: number
+        score: number | null
+        comment: string | null
+    }>
 }
 
 function safeText(v: any, fallback = "") {
@@ -73,6 +96,22 @@ function fmtDateTime(iso?: string | null) {
     const dt = new Date(s)
     if (Number.isNaN(dt.getTime())) return s
     return dt.toLocaleString()
+}
+
+function fmtDate(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return s
+    return dt.toLocaleDateString()
+}
+
+function fmtTime(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return s
+    return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
 function statusBadge(status?: string | null) {
@@ -95,22 +134,12 @@ async function apiJson<T>(method: string, url: string, body?: any): Promise<ApiO
     return data
 }
 
-function normalizeScoreRows(raw: any): EvalScoreRow[] {
-    const arr = raw?.scores ?? raw?.items ?? raw?.rows ?? raw
-    const rows = Array.isArray(arr) ? arr : []
-    return rows.map((x: any) => {
-        const crit = x?.criterion ?? x?.rubricCriterion ?? x?.rubric_criterion ?? null
-        return {
-            criterionId: safeText(x?.criterionId ?? x?.criterion_id ?? crit?.id ?? "", "") || undefined,
-            criterion: safeText(x?.criterion ?? crit?.criterion ?? crit?.name ?? "", "") || undefined,
-            description: crit?.description ?? x?.description ?? null,
-            weight: x?.weight ?? crit?.weight ?? null,
-            minScore: x?.minScore ?? crit?.min_score ?? crit?.minScore ?? null,
-            maxScore: x?.maxScore ?? crit?.max_score ?? crit?.maxScore ?? null,
-            score: typeof x?.score === "number" ? x.score : (Number.isFinite(Number(x?.score)) ? Number(x.score) : null),
-            comment: x?.comment ?? null,
-        }
-    })
+function personLabel(p: Person | null | undefined) {
+    if (!p) return "—"
+    const n = safeText(p.name, "")
+    const e = safeText(p.email, "")
+    if (n && e) return `${n} (${e})`
+    return n || e || "—"
 }
 
 export default function AdminEvaluationDetailPage() {
@@ -123,7 +152,7 @@ export default function AdminEvaluationDetailPage() {
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
 
-    const [detail, setDetail] = React.useState<EvalDetail | null>(null)
+    const [detail, setDetail] = React.useState<DetailPayload | null>(null)
     const [raw, setRaw] = React.useState<any>(null)
 
     const [showInternalIds, setShowInternalIds] = React.useState(false)
@@ -146,33 +175,19 @@ export default function AdminEvaluationDetailPage() {
         if (!id) return
         setLoading(true)
         try {
-            const [evRes, scoresRes] = await Promise.all([
-                apiJson<any>("GET", `/api/evaluation?resource=evaluations&id=${encodeURIComponent(id)}`),
-                apiJson<any>("GET", `/api/evaluation?resource=evaluationScores&evaluationId=${encodeURIComponent(id)}`),
-            ])
+            const res = await apiJson<{ detail: DetailPayload }>(
+                "GET",
+                `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`
+            )
+            if (!res.ok) throw new Error(res.error ?? "Failed to load evaluation detail")
 
-            if (!evRes.ok) throw new Error(evRes.error ?? "Failed to load evaluation")
-
-            const ev = (evRes as any).evaluation
-            if (!ev) throw new Error("Evaluation not found")
-
-            const scores = scoresRes.ok ? normalizeScoreRows(scoresRes) : []
-
-            setDetail({
-                id: safeText(ev.id, id),
-                status: ev.status ?? null,
-                submittedAt: ev.submittedAt ?? ev.submitted_at ?? null,
-                lockedAt: ev.lockedAt ?? ev.locked_at ?? null,
-                createdAt: ev.createdAt ?? ev.created_at ?? null,
-                scheduleId: ev.scheduleId ?? ev.schedule_id ?? null,
-                evaluatorId: ev.evaluatorId ?? ev.evaluator_id ?? null,
-                scores,
-            })
-
-            setRaw({ evaluation: ev, scores: scoresRes.ok ? (scoresRes as any).scores ?? [] : null })
+            const d = (res as any).detail as DetailPayload
+            setDetail(d)
+            setRaw(d)
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to load evaluation")
             setDetail(null)
+            setRaw(null)
         } finally {
             setLoading(false)
         }
@@ -199,10 +214,10 @@ export default function AdminEvaluationDetailPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [authLoading, user?.id, id])
 
-    const isLocked = safeText(detail?.status, "").toLowerCase() === "locked"
+    const isLocked = safeText(detail?.evaluation?.status, "").toLowerCase() === "locked"
 
     const scoreSummary = React.useMemo(() => {
-        const rows = detail?.scores ?? []
+        const rows = detail?.criteria ?? []
         let scoredCount = 0
         let totalWeight = 0
         let weightedSum = 0
@@ -219,17 +234,17 @@ export default function AdminEvaluationDetailPage() {
 
         const avg = totalWeight > 0 ? weightedSum / totalWeight : 0
         return { rows: rows.length, scoredCount, weightedAverage: avg }
-    }, [detail?.scores])
+    }, [detail?.criteria])
 
     async function setLock(lock: boolean) {
-        if (!detail?.id) return
+        if (!detail?.evaluation?.id) return
 
         const desiredLockedAt = lock ? new Date().toISOString() : null
-        const desiredStatus = lock ? "locked" : detail.submittedAt ? "submitted" : "pending"
+        const desiredStatus = lock ? "locked" : detail.evaluation.submittedAt ? "submitted" : "pending"
 
         const res = await apiJson(
             "PATCH",
-            `/api/evaluation?resource=evaluations&id=${encodeURIComponent(detail.id)}`,
+            `/api/evaluation?resource=evaluations&id=${encodeURIComponent(detail.evaluation.id)}`,
             { status: desiredStatus, lockedAt: desiredLockedAt }
         )
         if (!res.ok) throw new Error(res.error ?? "Failed to update evaluation")
@@ -250,17 +265,21 @@ export default function AdminEvaluationDetailPage() {
                         <div>
                             <div className="flex items-center gap-2">
                                 <ShieldCheck className="h-5 w-5" />
-                                <h1 className="text-xl font-semibold">Evaluation record</h1>
+                                <h1 className="text-xl font-semibold">Evaluation detail</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Admin view of a single evaluator submission. Scores are loaded from evaluationScores.
+                                Schedule, group, evaluator, rubric, and scores (admin view).
                             </p>
                         </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
-                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            {refreshing ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
                             Refresh
                         </Button>
 
@@ -286,7 +305,7 @@ export default function AdminEvaluationDetailPage() {
 
                 {loading ? (
                     <div className="space-y-3">
-                        <Skeleton className="h-24 w-full" />
+                        <Skeleton className="h-28 w-full" />
                         <Skeleton className="h-64 w-full" />
                     </div>
                 ) : !detail ? (
@@ -298,12 +317,13 @@ export default function AdminEvaluationDetailPage() {
                     </Card>
                 ) : (
                     <>
+                        {/* Summary */}
                         <Card>
                             <CardHeader className="space-y-2">
                                 <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                    <span>Evaluation</span>
+                                    <span>Overview</span>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        {statusBadge(detail.status)}
+                                        {statusBadge(detail.evaluation.status)}
                                         {isLocked ? (
                                             <Button
                                                 size="sm"
@@ -339,17 +359,63 @@ export default function AdminEvaluationDetailPage() {
                                 </CardTitle>
 
                                 <CardDescription className="space-y-1">
-                                    <div className="text-xs text-muted-foreground">Submitted: {fmtDateTime(detail.submittedAt) || "—"}</div>
-                                    <div className="text-xs text-muted-foreground">Locked: {fmtDateTime(detail.lockedAt) || "—"}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        Submitted: {fmtDateTime(detail.evaluation.submittedAt) || "—"}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                        Locked: {fmtDateTime(detail.evaluation.lockedAt) || "—"}
+                                    </div>
                                 </CardDescription>
                             </CardHeader>
 
-                            <CardContent className="space-y-3">
+                            <CardContent className="space-y-4">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Schedule</div>
+                                        <div className="mt-1 font-medium">{safeText(detail.group.title, "—")}</div>
+                                        <div className="mt-1 text-sm text-muted-foreground">
+                                            {fmtDate(detail.schedule.scheduledAt)} {fmtTime(detail.schedule.scheduledAt)}
+                                            {detail.schedule.room ? <> · Room {detail.schedule.room}</> : null}
+                                        </div>
+                                        {(detail.group.program || detail.group.term) ? (
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                {[safeText(detail.group.program, ""), safeText(detail.group.term, "")].filter(Boolean).join(" · ")}
+                                            </div>
+                                        ) : null}
+                                        <div className="mt-2">{statusBadge(detail.schedule.status)}</div>
+                                    </div>
+
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Evaluator</div>
+                                        <div className="mt-1 font-medium">{personLabel(detail.evaluator)}</div>
+                                        <div className="mt-3 text-xs text-muted-foreground">Adviser</div>
+                                        <div className="mt-1 text-sm">{personLabel(detail.group.adviser)}</div>
+                                    </div>
+                                </div>
+
+                                {detail.rubric ? (
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Rubric</div>
+                                        <div className="mt-1 font-medium">
+                                            {detail.rubric.name} (v{detail.rubric.version}) {detail.rubric.active ? "" : "(inactive)"}
+                                        </div>
+                                        {detail.rubric.description ? (
+                                            <div className="mt-1 text-sm text-muted-foreground">{detail.rubric.description}</div>
+                                        ) : null}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                                        No rubric template found (no active template and no scored criterion template).
+                                    </div>
+                                )}
+
                                 {showInternalIds ? (
                                     <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
-                                        <div>Evaluation ID: {detail.id}</div>
-                                        <div>Schedule ID: {safeText(detail.scheduleId, "—")}</div>
-                                        <div>Evaluator ID: {safeText(detail.evaluatorId, "—")}</div>
+                                        <div>Evaluation ID: {detail.evaluation.id}</div>
+                                        <div>Schedule ID: {detail.schedule.id}</div>
+                                        <div>Group ID: {detail.group.id}</div>
+                                        <div>Evaluator ID: {detail.evaluator.id}</div>
+                                        <div>Rubric ID: {detail.rubric?.id ?? "—"}</div>
                                     </div>
                                 ) : null}
 
@@ -361,6 +427,60 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
+                        {/* People */}
+                        <Card>
+                            <CardHeader className="space-y-1">
+                                <CardTitle className="flex items-center gap-2">
+                                    <Users className="h-4 w-4" />
+                                    People
+                                </CardTitle>
+                                <CardDescription>Students in the group and panelists assigned to the schedule.</CardDescription>
+                            </CardHeader>
+
+                            <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div className="rounded-md border p-3">
+                                    <div className="text-sm font-semibold">Students ({detail.group.students?.length ?? 0})</div>
+                                    <Separator className="my-2" />
+                                    {detail.group.students?.length ? (
+                                        <div className="space-y-2">
+                                            {detail.group.students.map((s) => (
+                                                <div key={s.id} className="text-sm">
+                                                    {personLabel(s)}
+                                                    {showInternalIds ? <div className="text-[10px] text-muted-foreground">{s.id}</div> : null}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-muted-foreground">No students found for this group.</div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-md border p-3">
+                                    <div className="text-sm font-semibold">Panelists ({detail.panelists?.length ?? 0})</div>
+                                    <Separator className="my-2" />
+                                    {detail.panelists?.length ? (
+                                        <div className="space-y-2">
+                                            {detail.panelists.map((p) => {
+                                                const isEvaluator = p.id === detail.evaluator.id
+                                                return (
+                                                    <div key={p.id} className="text-sm">
+                                                        <div className="flex items-center gap-2">
+                                                            <span>{personLabel(p)}</span>
+                                                            {isEvaluator ? <Badge variant="secondary">Evaluator</Badge> : null}
+                                                        </div>
+                                                        {showInternalIds ? <div className="text-[10px] text-muted-foreground">{p.id}</div> : null}
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-muted-foreground">No panelists found for this schedule.</div>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        {/* Scores */}
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle>Scores & comments</CardTitle>
@@ -371,34 +491,40 @@ export default function AdminEvaluationDetailPage() {
                             </CardHeader>
 
                             <CardContent className="space-y-4">
-                                {Array.isArray(detail.scores) && detail.scores.length > 0 ? (
+                                {Array.isArray(detail.criteria) && detail.criteria.length > 0 ? (
                                     <div className="rounded-md border">
                                         <Table>
                                             <TableHeader>
                                                 <TableRow>
                                                     <TableHead className="w-80">Criterion</TableHead>
-                                                    <TableHead className="w-28">Weight</TableHead>
-                                                    <TableHead className="w-28">Score</TableHead>
+                                                    <TableHead className="w-24">Weight</TableHead>
+                                                    <TableHead className="w-28">Min–Max</TableHead>
+                                                    <TableHead className="w-24">Score</TableHead>
                                                     <TableHead>Comment</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {detail.scores.map((r, idx) => {
+                                                {detail.criteria.map((r) => {
                                                     const w = toNumber(r.weight, 1)
-                                                    const sc = typeof r.score === "number" ? r.score : toNumber(r.score, NaN)
-                                                    const crit = safeText(r.criterion, `Criterion ${idx + 1}`)
+                                                    const sc = typeof r.score === "number" ? r.score : null
                                                     return (
-                                                        <TableRow key={`${r.criterionId ?? idx}`}>
+                                                        <TableRow key={r.criterionId}>
                                                             <TableCell className="align-top">
                                                                 <div className="space-y-1">
-                                                                    <div className="font-medium">{crit}</div>
+                                                                    <div className="font-medium">{safeText(r.criterion, "—")}</div>
                                                                     {r.description ? (
                                                                         <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
+                                                                    ) : null}
+                                                                    {showInternalIds ? (
+                                                                        <div className="text-[10px] text-muted-foreground">{r.criterionId}</div>
                                                                     ) : null}
                                                                 </div>
                                                             </TableCell>
                                                             <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
-                                                            <TableCell className="align-top">{Number.isFinite(sc) ? sc : "—"}</TableCell>
+                                                            <TableCell className="align-top">
+                                                                {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
+                                                            </TableCell>
+                                                            <TableCell className="align-top">{sc ?? "—"}</TableCell>
                                                             <TableCell className="align-top">
                                                                 <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
                                                             </TableCell>
@@ -410,7 +536,7 @@ export default function AdminEvaluationDetailPage() {
                                     </div>
                                 ) : (
                                     <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                        No score rows returned for this evaluation.
+                                        No rubric criteria returned. (No active template and no scored template found.)
                                     </div>
                                 )}
 

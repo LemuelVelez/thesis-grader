@@ -22,6 +22,9 @@ function normOffset(v: unknown) {
  * - staff evaluations (table: evaluations)
  * - student feedback (table: student_evaluations)
  *
+ * Enhancements:
+ * - include studentCount (group_members) and panelistCount (schedule_panelists)
+ *
  * IMPORTANT FIX:
  * - Do NOT cast to enum types (like ::student_eval_status) because that can 500 if the enum/type differs or is missing.
  * - Compare using status::text in a case-insensitive way instead.
@@ -50,6 +53,20 @@ export async function GET(req: NextRequest) {
         const offset = normOffset(sp.get("offset"))
 
         const like = q ? `%${q}%` : null
+
+        // Aggregates (one row per group_id / schedule_id)
+        const AGG_JOINS = `
+            left join (
+                select group_id, count(*)::int as student_count
+                from group_members
+                group by group_id
+            ) gmc on gmc.group_id = tg.id
+            left join (
+                select schedule_id, count(*)::int as panelist_count
+                from schedule_panelists
+                group by schedule_id
+            ) spc on spc.schedule_id = ds.id
+        `
 
         if (type === "staff") {
             const where: string[] = []
@@ -123,11 +140,15 @@ export async function GET(req: NextRequest) {
                     u.name as "evaluatorName",
                     u.email as "evaluatorEmail",
                     u.role as "evaluatorRole",
-                    u.status as "evaluatorStatus"
+                    u.status as "evaluatorStatus",
+
+                    coalesce(gmc.student_count, 0)::int as "studentCount",
+                    coalesce(spc.panelist_count, 0)::int as "panelistCount"
                 from evaluations e
                 join defense_schedules ds on ds.id = e.schedule_id
                 join thesis_groups tg on tg.id = ds.group_id
                 join users u on u.id = e.evaluator_id
+                ${AGG_JOINS}
                 ${whereSql}
                 order by ds.scheduled_at desc nulls last, e.created_at desc
                 limit $${i} offset $${i + 1}
@@ -217,11 +238,15 @@ export async function GET(req: NextRequest) {
 
                     u.id as "studentId",
                     u.name as "studentName",
-                    u.email as "studentEmail"
+                    u.email as "studentEmail",
+
+                    coalesce(gmc.student_count, 0)::int as "studentCount",
+                    coalesce(spc.panelist_count, 0)::int as "panelistCount"
                 from student_evaluations se
                 join defense_schedules ds on ds.id = se.schedule_id
                 join thesis_groups tg on tg.id = ds.group_id
                 join users u on u.id = se.student_id
+                ${AGG_JOINS}
                 ${whereSql}
                 order by se.updated_at desc nulls last
                 limit $${i} offset $${i + 1}
