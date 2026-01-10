@@ -553,7 +553,7 @@ export default function AdminEvaluationPage() {
                                 <h1 className="text-xl font-semibold">Evaluation Management</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Admin oversight for staff evaluations and student feedback.
+                                Admin oversight: assign evaluators, view scores, and lock/unlock submissions.
                             </p>
                         </div>
                     </div>
@@ -599,7 +599,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 </CardTitle>
                                 <CardDescription>
-                                    Schedules are loaded from <span className="font-medium">defense_schedules</span> (even if no evaluations exist yet).
+                                    Admins can open any record to view rubric scores and comments (read-only), and can lock/unlock if needed.
                                 </CardDescription>
                             </CardHeader>
 
@@ -695,6 +695,19 @@ export default function AdminEvaluationPage() {
                                             className="w-full"
                                             variant="outline"
                                             disabled={!staffScheduleFilter}
+                                            onClick={() => {
+                                                if (!staffScheduleFilter) return
+                                                router.push(`/dashboard/admin/evaluation/${staffScheduleFilter}`)
+                                            }}
+                                        >
+                                            <Eye className="mr-2 h-4 w-4" />
+                                            View schedule detail
+                                        </Button>
+
+                                        <Button
+                                            className="w-full"
+                                            variant="outline"
+                                            disabled={!staffScheduleFilter}
                                             onClick={() =>
                                                 openConfirm(
                                                     "Assign panelists for this schedule?",
@@ -737,7 +750,7 @@ export default function AdminEvaluationPage() {
                                                     <TableHead className="w-40">Status</TableHead>
                                                     <TableHead className="w-56">Submitted</TableHead>
                                                     <TableHead className="w-56">Locked</TableHead>
-                                                    <TableHead className="w-72 text-right">Action</TableHead>
+                                                    <TableHead className="w-80 text-right">Action</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
@@ -807,7 +820,7 @@ export default function AdminEvaluationPage() {
                                                                         <Button asChild size="sm" variant="outline">
                                                                             <Link href={`/dashboard/admin/evaluation/${it.id}`}>
                                                                                 <Eye className="mr-2 h-4 w-4" />
-                                                                                View
+                                                                                View scores
                                                                             </Link>
                                                                         </Button>
 
@@ -964,7 +977,7 @@ export default function AdminEvaluationPage() {
                                         </Select>
                                     </div>
 
-                                    <div className="flex items-end gap-2 lg:col-span-4">
+                                    <div className="flex flex-col gap-2 lg:col-span-4 lg:flex-row">
                                         <Button
                                             variant="outline"
                                             className="w-full"
@@ -977,6 +990,19 @@ export default function AdminEvaluationPage() {
                                         >
                                             <Filter className="mr-2 h-4 w-4" />
                                             Clear filters
+                                        </Button>
+
+                                        <Button
+                                            className="w-full"
+                                            variant="outline"
+                                            disabled={!studentScheduleFilter}
+                                            onClick={() => {
+                                                if (!studentScheduleFilter) return
+                                                router.push(`/dashboard/admin/evaluation/${studentScheduleFilter}`)
+                                            }}
+                                        >
+                                            <Eye className="mr-2 h-4 w-4" />
+                                            View schedule detail
                                         </Button>
                                     </div>
                                 </div>

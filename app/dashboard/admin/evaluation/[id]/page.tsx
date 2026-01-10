@@ -103,6 +103,12 @@ type ScheduleDetailPayload = {
     }>
 }
 
+type EvalScoreSummary = {
+    rows: number
+    scoredCount: number
+    weightedAverage: number
+}
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -165,6 +171,26 @@ function personLabel(p: Person | null | undefined) {
     return n || e || "—"
 }
 
+function computeSummary(criteria: Array<{ weight: string; score: number | null }>): EvalScoreSummary {
+    const rows = Array.isArray(criteria) ? criteria.length : 0
+    let scoredCount = 0
+    let totalWeight = 0
+    let weightedSum = 0
+
+    for (const r of criteria ?? []) {
+        const w = toNumber(r?.weight, 1)
+        const sc = typeof r?.score === "number" ? r.score : toNumber(r?.score, NaN)
+        if (Number.isFinite(sc)) {
+            scoredCount += 1
+            totalWeight += w
+            weightedSum += sc * w
+        }
+    }
+
+    const avg = totalWeight > 0 ? weightedSum / totalWeight : 0
+    return { rows, scoredCount, weightedAverage: avg }
+}
+
 export default function AdminEvaluationDetailPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
@@ -177,6 +203,10 @@ export default function AdminEvaluationDetailPage() {
 
     const [detail, setDetail] = React.useState<DetailPayload | null>(null)
     const [scheduleDetail, setScheduleDetail] = React.useState<ScheduleDetailPayload | null>(null)
+
+    // score summaries for scheduleDetail.evaluations (small N; safe to fetch)
+    const [evalSummaries, setEvalSummaries] = React.useState<Record<string, EvalScoreSummary>>({})
+    const [evalSummariesLoading, setEvalSummariesLoading] = React.useState<Record<string, boolean>>({})
 
     // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
@@ -241,26 +271,69 @@ export default function AdminEvaluationDetailPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [authLoading, user?.id, id])
 
+    // When viewing a scheduleDetail, load score summaries for each evaluation row (small N).
+    React.useEffect(() => {
+        const evals = scheduleDetail?.evaluations ?? []
+        if (!scheduleDetail?.schedule?.id) return
+        if (!evals.length) return
+
+        let cancelled = false
+
+        async function run() {
+            const toFetch = evals
+                .map((e) => safeText(e.id, ""))
+                .filter(Boolean)
+                .filter((eid) => !evalSummaries[eid] && !evalSummariesLoading[eid])
+
+            if (!toFetch.length) return
+
+            const nextLoading: Record<string, boolean> = {}
+            for (const eid of toFetch) nextLoading[eid] = true
+            setEvalSummariesLoading((prev) => ({ ...prev, ...nextLoading }))
+
+            try {
+                const results = await Promise.all(
+                    toFetch.map(async (eid) => {
+                        const r = await apiJson<{ detail: DetailPayload }>(
+                            "GET",
+                            `/api/admin/evaluations/detail?id=${encodeURIComponent(eid)}`
+                        )
+                        if (!r.ok) throw new Error(r.error ?? "Failed to load evaluation detail")
+                        const d = (r as any).detail as DetailPayload
+                        const summary = computeSummary(d?.criteria ?? [])
+                        return { eid, summary }
+                    })
+                )
+
+                if (cancelled) return
+
+                const next: Record<string, EvalScoreSummary> = {}
+                for (const it of results) next[it.eid] = it.summary
+                setEvalSummaries((prev) => ({ ...prev, ...next }))
+            } catch {
+                // silent (we still allow viewing each record)
+            } finally {
+                if (cancelled) return
+                setEvalSummariesLoading((prev) => {
+                    const out = { ...prev }
+                    for (const eid of toFetch) delete out[eid]
+                    return out
+                })
+            }
+        }
+
+        run()
+        return () => {
+            cancelled = true
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [scheduleDetail?.schedule?.id])
+
     const isLocked = safeText(detail?.evaluation?.status, "").toLowerCase() === "locked"
 
     const scoreSummary = React.useMemo(() => {
         const rows = detail?.criteria ?? []
-        let scoredCount = 0
-        let totalWeight = 0
-        let weightedSum = 0
-
-        for (const r of rows) {
-            const w = toNumber(r.weight, 1)
-            const sc = typeof r.score === "number" ? r.score : toNumber(r.score, NaN)
-            if (Number.isFinite(sc)) {
-                scoredCount += 1
-                totalWeight += w
-                weightedSum += sc * w
-            }
-        }
-
-        const avg = totalWeight > 0 ? weightedSum / totalWeight : 0
-        return { rows: rows.length, scoredCount, weightedAverage: avg }
+        return computeSummary(rows as any)
     }, [detail?.criteria])
 
     async function setLock(lock: boolean) {
@@ -307,7 +380,7 @@ export default function AdminEvaluationDetailPage() {
                                 {detail
                                     ? "Schedule, group, evaluator, rubric, and scores (admin view)."
                                     : scheduleDetail
-                                        ? "Schedule, group, panelists, and evaluation assignments."
+                                        ? "Schedule, group, panelists, evaluation assignments, and score summaries."
                                         : "Admin view."}
                             </p>
                         </div>
@@ -376,7 +449,7 @@ export default function AdminEvaluationDetailPage() {
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Group</div>
                                         <div className="mt-1 font-medium">{safeText(scheduleDetail.group.title, "—")}</div>
-                                        {(scheduleDetail.group.program || scheduleDetail.group.term) ? (
+                                        {scheduleDetail.group.program || scheduleDetail.group.term ? (
                                             <div className="mt-1 text-sm text-muted-foreground">
                                                 {[safeText(scheduleDetail.group.program, ""), safeText(scheduleDetail.group.term, "")]
                                                     .filter(Boolean)
@@ -391,8 +464,8 @@ export default function AdminEvaluationDetailPage() {
                                         <div className="mt-1 font-medium">{personLabel(scheduleDetail.group.adviser)}</div>
                                         <div className="mt-3 text-xs text-muted-foreground">Counts</div>
                                         <div className="mt-1 text-sm">
-                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists: {scheduleDetail.panelists?.length ?? 0} · Evaluations:{" "}
-                                            {scheduleDetail.evaluations?.length ?? 0}
+                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists: {scheduleDetail.panelists?.length ?? 0} ·
+                                            Evaluations: {scheduleDetail.evaluations?.length ?? 0}
                                         </div>
                                     </div>
                                 </div>
@@ -409,7 +482,9 @@ export default function AdminEvaluationDetailPage() {
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle>Evaluation assignments</CardTitle>
-                                <CardDescription>Existing evaluation rows for this schedule (if any).</CardDescription>
+                                <CardDescription>
+                                    Existing evaluation rows for this schedule (if any). Score summaries auto-load for quick admin viewing.
+                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 {scheduleDetail.evaluations?.length ? (
@@ -419,27 +494,48 @@ export default function AdminEvaluationDetailPage() {
                                                 <TableRow>
                                                     <TableHead className="w-80">Evaluator</TableHead>
                                                     <TableHead className="w-40">Status</TableHead>
+                                                    <TableHead className="w-40">Score avg</TableHead>
+                                                    <TableHead className="w-40">Scored</TableHead>
                                                     <TableHead className="w-56">Submitted</TableHead>
                                                     <TableHead className="w-56">Locked</TableHead>
                                                     <TableHead className="w-40 text-right">Action</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {scheduleDetail.evaluations.map((e) => (
-                                                    <TableRow key={e.id}>
-                                                        <TableCell className="align-top">
-                                                            <div className="font-medium">{personLabel(e.evaluator)}</div>
-                                                        </TableCell>
-                                                        <TableCell className="align-top">{statusBadge(e.status)}</TableCell>
-                                                        <TableCell className="align-top">{fmtDateTime(e.submittedAt) || "—"}</TableCell>
-                                                        <TableCell className="align-top">{fmtDateTime(e.lockedAt) || "—"}</TableCell>
-                                                        <TableCell className="align-top text-right">
-                                                            <Button asChild size="sm" variant="outline">
-                                                                <Link href={`/dashboard/admin/evaluation/${e.id}`}>View</Link>
-                                                            </Button>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ))}
+                                                {scheduleDetail.evaluations.map((e) => {
+                                                    const sum = evalSummaries[e.id]
+                                                    const isSumLoading = Boolean(evalSummariesLoading[e.id])
+
+                                                    const scoreAvg =
+                                                        sum && sum.scoredCount > 0 ? sum.weightedAverage.toFixed(2) : sum ? "—" : isSumLoading ? "" : "—"
+                                                    const scored =
+                                                        sum ? `${sum.scoredCount}/${sum.rows}` : isSumLoading ? "" : "—"
+
+                                                    return (
+                                                        <TableRow key={e.id}>
+                                                            <TableCell className="align-top">
+                                                                <div className="font-medium">{personLabel(e.evaluator)}</div>
+                                                            </TableCell>
+                                                            <TableCell className="align-top">{statusBadge(e.status)}</TableCell>
+
+                                                            <TableCell className="align-top">
+                                                                {isSumLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <span>{scoreAvg}</span>}
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">
+                                                                {isSumLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <span>{scored}</span>}
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">{fmtDateTime(e.submittedAt) || "—"}</TableCell>
+                                                            <TableCell className="align-top">{fmtDateTime(e.lockedAt) || "—"}</TableCell>
+                                                            <TableCell className="align-top text-right">
+                                                                <Button asChild size="sm" variant="outline">
+                                                                    <Link href={`/dashboard/admin/evaluation/${e.id}`}>View scores</Link>
+                                                                </Button>
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    )
+                                                })}
                                             </TableBody>
                                         </Table>
                                     </div>
@@ -558,7 +654,7 @@ export default function AdminEvaluationDetailPage() {
                                             {fmtDate(detail!.schedule.scheduledAt)} {fmtTime(detail!.schedule.scheduledAt)}
                                             {detail!.schedule.room ? <> · Room {detail!.schedule.room}</> : null}
                                         </div>
-                                        {(detail!.group.program || detail!.group.term) ? (
+                                        {detail!.group.program || detail!.group.term ? (
                                             <div className="mt-1 text-sm text-muted-foreground">
                                                 {[safeText(detail!.group.program, ""), safeText(detail!.group.term, "")]
                                                     .filter(Boolean)
@@ -580,8 +676,7 @@ export default function AdminEvaluationDetailPage() {
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Rubric</div>
                                         <div className="mt-1 font-medium">
-                                            {detail!.rubric.name} (v{detail!.rubric.version}){" "}
-                                            {detail!.rubric.active ? "" : "(inactive)"}
+                                            {detail!.rubric.name} (v{detail!.rubric.version}) {detail!.rubric.active ? "" : "(inactive)"}
                                         </div>
                                         {detail!.rubric.description ? (
                                             <div className="mt-1 text-sm text-muted-foreground">{detail!.rubric.description}</div>
