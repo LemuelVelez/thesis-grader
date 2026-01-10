@@ -16,6 +16,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
     AlertDialog,
     AlertDialogAction,
@@ -109,6 +111,13 @@ type EvalScoreSummary = {
     weightedAverage: number
 }
 
+type MemberScore = {
+    studentId: string
+    score: number | null
+    comment: string | null
+    raw?: any
+}
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -117,6 +126,10 @@ function safeText(v: any, fallback = "") {
 function toNumber(v: any, fallback = 0) {
     const n = Number(v)
     return Number.isFinite(n) ? n : fallback
+}
+
+function looksLikeUuid(v: string) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
 }
 
 function fmtDateTime(iso?: string | null) {
@@ -141,6 +154,12 @@ function fmtTime(iso?: string | null) {
     const dt = new Date(s)
     if (Number.isNaN(dt.getTime())) return s
     return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+}
+
+function fmtScore(v: number | null | undefined) {
+    if (typeof v !== "number" || !Number.isFinite(v)) return "—"
+    // show 2 decimals only when needed
+    return Number.isInteger(v) ? String(v) : v.toFixed(2)
 }
 
 function statusBadge(status?: string | null) {
@@ -191,6 +210,105 @@ function computeSummary(criteria: Array<{ weight: string; score: number | null }
     return { rows, scoredCount, weightedAverage: avg }
 }
 
+function pickMemberScore(value: any): { score: number | null; comment: string | null; raw?: any } | null {
+    if (typeof value === "number" && Number.isFinite(value)) return { score: value, comment: null, raw: value }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null
+
+    const scoreCandidate =
+        value.score ?? value.total ?? value.value ?? value.points ?? value.memberScore ?? value.finalScore ?? null
+    const score = typeof scoreCandidate === "number" ? scoreCandidate : toNumber(scoreCandidate, NaN)
+    const finalScore = Number.isFinite(score) ? score : null
+
+    const comment =
+        (typeof value.comment === "string" && value.comment) ||
+        (typeof value.feedback === "string" && value.feedback) ||
+        (typeof value.notes === "string" && value.notes) ||
+        null
+
+    if (finalScore === null && !comment) return null
+    return { score: finalScore, comment, raw: value }
+}
+
+function extractMemberScores(extras: any): Record<string, MemberScore> {
+    const out: Record<string, MemberScore> = {}
+    if (!extras || typeof extras !== "object") return out
+
+    const tryArray = (arr: any[]) => {
+        for (const row of arr ?? []) {
+            if (!row || typeof row !== "object") continue
+            const sid = safeText(row.studentId ?? row.id ?? row.memberId ?? row.userId ?? "", "")
+            if (!sid) continue
+
+            const scoreCandidate = row.score ?? row.total ?? row.value ?? row.points ?? row.memberScore ?? row.finalScore ?? null
+            const sc = typeof scoreCandidate === "number" ? scoreCandidate : toNumber(scoreCandidate, NaN)
+            const score = Number.isFinite(sc) ? sc : null
+
+            const comment =
+                (typeof row.comment === "string" && row.comment) ||
+                (typeof row.feedback === "string" && row.feedback) ||
+                (typeof row.notes === "string" && row.notes) ||
+                null
+
+            out[sid] = { studentId: sid, score, comment, raw: row }
+        }
+    }
+
+    // common shapes
+    if (Array.isArray(extras.memberScores)) tryArray(extras.memberScores)
+    if (Array.isArray(extras.members)) tryArray(extras.members)
+    if (Array.isArray(extras.individualScores)) tryArray(extras.individualScores)
+
+    const tryObjectMap = (obj: any) => {
+        if (!obj || typeof obj !== "object" || Array.isArray(obj)) return
+        for (const [k, v] of Object.entries(obj)) {
+            const sid = safeText(k, "")
+            if (!sid) continue
+            const picked = pickMemberScore(v)
+            if (!picked) continue
+            out[sid] = { studentId: sid, score: picked.score, comment: picked.comment, raw: picked.raw }
+        }
+    }
+
+    if (extras.scoresByMember) tryObjectMap(extras.scoresByMember)
+    if (extras.memberScoreById) tryObjectMap(extras.memberScoreById)
+    if (extras.memberScoresById) tryObjectMap(extras.memberScoresById)
+    if (extras.memberScoreMap) tryObjectMap(extras.memberScoreMap)
+
+    // heuristic: top-level uuid keys mapping -> values
+    for (const [k, v] of Object.entries(extras)) {
+        if (!looksLikeUuid(k)) continue
+        if (out[k]) continue
+        const picked = pickMemberScore(v)
+        if (!picked) continue
+        out[k] = { studentId: k, score: picked.score, comment: picked.comment, raw: picked.raw }
+    }
+
+    return out
+}
+
+function pickOverallComment(extras: any): string | null {
+    if (!extras || typeof extras !== "object") return null
+    const candidates = [
+        extras.overallComment,
+        extras.overallFeedback,
+        extras.overallNotes,
+        extras.comment,
+        extras.feedback,
+        extras.notes,
+        extras.system?.comment,
+        extras.system?.feedback,
+        extras.group?.comment,
+        extras.group?.feedback,
+        extras.summary?.comment,
+        extras.summary?.feedback,
+    ]
+    for (const c of candidates) {
+        const s = typeof c === "string" ? c.trim() : ""
+        if (s) return s
+    }
+    return null
+}
+
 export default function AdminEvaluationDetailPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
@@ -203,6 +321,12 @@ export default function AdminEvaluationDetailPage() {
 
     const [detail, setDetail] = React.useState<DetailPayload | null>(null)
     const [scheduleDetail, setScheduleDetail] = React.useState<ScheduleDetailPayload | null>(null)
+
+    // members + extras (for evaluation detail view)
+    const [membersLoading, setMembersLoading] = React.useState(false)
+    const [members, setMembers] = React.useState<Person[]>([])
+    const [extrasLoading, setExtrasLoading] = React.useState(false)
+    const [extras, setExtras] = React.useState<any>(null)
 
     // score summaries for scheduleDetail.evaluations (small N; safe to fetch)
     const [evalSummaries, setEvalSummaries] = React.useState<Record<string, EvalScoreSummary>>({})
@@ -221,21 +345,71 @@ export default function AdminEvaluationDetailPage() {
         setConfirmOpen(true)
     }
 
+    async function loadMembersAndExtras(evaluationId: string) {
+        setMembersLoading(true)
+        setExtrasLoading(true)
+        setMembers([])
+        setExtras(null)
+
+        try {
+            const [mRes, xRes] = await Promise.all([
+                apiJson<{ members: Person[] }>("GET", `/api/evaluations/members?evaluationId=${encodeURIComponent(evaluationId)}`),
+                apiJson<{ extras: any }>("GET", `/api/evaluations/extras?evaluationId=${encodeURIComponent(evaluationId)}`),
+            ])
+
+            if (mRes.ok) {
+                setMembers(Array.isArray((mRes as any).members) ? ((mRes as any).members as Person[]) : [])
+            } else {
+                // do not fail the page; just notify
+                toast.error(mRes.error ?? "Failed to load evaluation members")
+            }
+
+            if (xRes.ok) {
+                setExtras((xRes as any).extras ?? {})
+            } else {
+                toast.error(xRes.error ?? "Failed to load evaluation extras")
+            }
+        } finally {
+            setMembersLoading(false)
+            setExtrasLoading(false)
+        }
+    }
+
     async function loadOne() {
         if (!id) return
         setLoading(true)
+
+        // reset cross-view state
+        setEvalSummaries({})
+        setEvalSummariesLoading({})
+        setMembers([])
+        setExtras(null)
+
         try {
             // 1) Try evaluation detail (evaluationId)
-            const res = await apiJson<{ detail: DetailPayload }>("GET", `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`)
+            const res = await apiJson<{ detail: DetailPayload }>(
+                "GET",
+                `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`
+            )
             if (res.ok) {
                 const d = (res as any).detail as DetailPayload
                 setDetail(d)
                 setScheduleDetail(null)
+
+                // load member scores + extras (members group + system extras)
+                const evaluationId = safeText(d?.evaluation?.id, "")
+                if (evaluationId) {
+                    // do not block rendering; run after we set detail
+                    void loadMembersAndExtras(evaluationId)
+                }
                 return
             }
 
             // 2) Fallback: treat id as scheduleId and show schedule detail (even if evaluations not yet created)
-            const res2 = await apiJson<{ detail: ScheduleDetailPayload }>("GET", `/api/admin/schedules/detail?id=${encodeURIComponent(id)}`)
+            const res2 = await apiJson<{ detail: ScheduleDetailPayload }>(
+                "GET",
+                `/api/admin/schedules/detail?id=${encodeURIComponent(id)}`
+            )
             if (!res2.ok) throw new Error(res2.error ?? res.error ?? "Failed to load evaluation/schedule detail")
 
             const sd = (res2 as any).detail as ScheduleDetailPayload
@@ -336,6 +510,44 @@ export default function AdminEvaluationDetailPage() {
         return computeSummary(rows as any)
     }, [detail?.criteria])
 
+    const scheduleScoreSnapshot = React.useMemo(() => {
+        const sums = Object.values(evalSummaries ?? {})
+        const valid = sums.filter((s) => s && s.scoredCount > 0)
+        if (!valid.length) return { count: 0, avg: null as number | null, min: null as number | null, max: null as number | null }
+
+        const avg = valid.reduce((a, s) => a + s.weightedAverage, 0) / valid.length
+        const min = valid.reduce((a, s) => Math.min(a, s.weightedAverage), valid[0].weightedAverage)
+        const max = valid.reduce((a, s) => Math.max(a, s.weightedAverage), valid[0].weightedAverage)
+        return { count: valid.length, avg, min, max }
+    }, [evalSummaries])
+
+    const memberScoreMap = React.useMemo(() => extractMemberScores(extras), [extras])
+
+    const memberList = React.useMemo(() => {
+        // prefer /api/evaluations/members (actual group_members join), fallback to detail.group.students
+        const fromApi = Array.isArray(members) ? members : []
+        const fromDetail = Array.isArray(detail?.group?.students) ? (detail!.group.students as Person[]) : []
+        const base = fromApi.length ? fromApi : fromDetail
+        // stable sort by name/email
+        return [...base].sort((a, b) => personLabel(a).localeCompare(personLabel(b)))
+    }, [members, detail])
+
+    const memberScoreSummary = React.useMemo(() => {
+        const total = memberList.length
+        const scored = memberList.filter((m) => {
+            const ms = memberScoreMap[m.id]
+            return ms && typeof ms.score === "number" && Number.isFinite(ms.score)
+        })
+        const scoredCount = scored.length
+        const avg =
+            scoredCount > 0
+                ? scored.reduce((a, m) => a + (memberScoreMap[m.id]?.score ?? 0), 0) / scoredCount
+                : null
+        return { total, scoredCount, avg }
+    }, [memberList, memberScoreMap])
+
+    const overallComment = React.useMemo(() => pickOverallComment(extras), [extras])
+
     async function setLock(lock: boolean) {
         if (!detail?.evaluation?.id) return
 
@@ -378,7 +590,7 @@ export default function AdminEvaluationDetailPage() {
                             </div>
                             <p className="text-sm text-muted-foreground">
                                 {detail
-                                    ? "Schedule, group, evaluator, rubric, and scores (admin view)."
+                                    ? "Schedule, group, evaluator, and scores (system + member-level)."
                                     : scheduleDetail
                                         ? "Schedule, group, panelists, evaluation assignments, and score summaries."
                                         : "Admin view."}
@@ -462,10 +674,23 @@ export default function AdminEvaluationDetailPage() {
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Adviser</div>
                                         <div className="mt-1 font-medium">{personLabel(scheduleDetail.group.adviser)}</div>
+
                                         <div className="mt-3 text-xs text-muted-foreground">Counts</div>
                                         <div className="mt-1 text-sm">
-                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists: {scheduleDetail.panelists?.length ?? 0} ·
-                                            Evaluations: {scheduleDetail.evaluations?.length ?? 0}
+                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists:{" "}
+                                            {scheduleDetail.panelists?.length ?? 0} · Evaluations: {scheduleDetail.evaluations?.length ?? 0}
+                                        </div>
+
+                                        <div className="mt-3 text-xs text-muted-foreground">System score snapshot</div>
+                                        <div className="mt-1 text-sm">
+                                            {scheduleScoreSnapshot.count > 0 ? (
+                                                <>
+                                                    Avg: {fmtScore(scheduleScoreSnapshot.avg)} · Min: {fmtScore(scheduleScoreSnapshot.min)} · Max:{" "}
+                                                    {fmtScore(scheduleScoreSnapshot.max)} · Based on {scheduleScoreSnapshot.count} scored evaluation(s)
+                                                </>
+                                            ) : (
+                                                "—"
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -484,6 +709,8 @@ export default function AdminEvaluationDetailPage() {
                                 <CardTitle>Evaluation assignments</CardTitle>
                                 <CardDescription>
                                     Existing evaluation rows for this schedule (if any). Score summaries auto-load for quick admin viewing.
+                                    Open an evaluation to see <span className="font-medium">system</span> rubric scores and{" "}
+                                    <span className="font-medium">member</span> scores.
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
@@ -507,9 +734,14 @@ export default function AdminEvaluationDetailPage() {
                                                     const isSumLoading = Boolean(evalSummariesLoading[e.id])
 
                                                     const scoreAvg =
-                                                        sum && sum.scoredCount > 0 ? sum.weightedAverage.toFixed(2) : sum ? "—" : isSumLoading ? "" : "—"
-                                                    const scored =
-                                                        sum ? `${sum.scoredCount}/${sum.rows}` : isSumLoading ? "" : "—"
+                                                        sum && sum.scoredCount > 0
+                                                            ? fmtScore(sum.weightedAverage)
+                                                            : sum
+                                                                ? "—"
+                                                                : isSumLoading
+                                                                    ? ""
+                                                                    : "—"
+                                                    const scored = sum ? `${sum.scoredCount}/${sum.rows}` : isSumLoading ? "" : "—"
 
                                                     return (
                                                         <TableRow key={e.id}>
@@ -636,12 +868,8 @@ export default function AdminEvaluationDetailPage() {
                                 </CardTitle>
 
                                 <CardDescription className="space-y-1">
-                                    <div className="text-xs text-muted-foreground">
-                                        Submitted: {fmtDateTime(detail!.evaluation.submittedAt) || "—"}
-                                    </div>
-                                    <div className="text-xs text-muted-foreground">
-                                        Locked: {fmtDateTime(detail!.evaluation.lockedAt) || "—"}
-                                    </div>
+                                    <div className="text-xs text-muted-foreground">Submitted: {fmtDateTime(detail!.evaluation.submittedAt) || "—"}</div>
+                                    <div className="text-xs text-muted-foreground">Locked: {fmtDateTime(detail!.evaluation.lockedAt) || "—"}</div>
                                 </CardDescription>
                             </CardHeader>
 
@@ -747,62 +975,173 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
-                        {/* Scores */}
+                        {/* Scores (SYSTEM + MEMBERS) */}
                         <Card>
                             <CardHeader className="space-y-1">
-                                <CardTitle>Scores & comments</CardTitle>
+                                <CardTitle>Scores</CardTitle>
                                 <CardDescription>
-                                    Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
-                                    {scoreSummary.scoredCount > 0 ? <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</> : null}
+                                    System (rubric criteria) and member-level scores (from evaluation extras).
                                 </CardDescription>
                             </CardHeader>
 
                             <CardContent className="space-y-4">
-                                {Array.isArray(detail!.criteria) && detail!.criteria.length > 0 ? (
-                                    <div className="rounded-md border">
-                                        <Table>
-                                            <TableHeader>
-                                                <TableRow>
-                                                    <TableHead className="w-80">Criterion</TableHead>
-                                                    <TableHead className="w-24">Weight</TableHead>
-                                                    <TableHead className="w-28">Min–Max</TableHead>
-                                                    <TableHead className="w-24">Score</TableHead>
-                                                    <TableHead>Comment</TableHead>
-                                                </TableRow>
-                                            </TableHeader>
-                                            <TableBody>
-                                                {detail!.criteria.map((r) => {
-                                                    const w = toNumber(r.weight, 1)
-                                                    const sc = typeof r.score === "number" ? r.score : null
-                                                    return (
-                                                        <TableRow key={r.criterionId}>
-                                                            <TableCell className="align-top">
-                                                                <div className="space-y-1">
-                                                                    <div className="font-medium">{safeText(r.criterion, "—")}</div>
-                                                                    {r.description ? (
-                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
-                                                                    ) : null}
-                                                                </div>
-                                                            </TableCell>
-                                                            <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
-                                                            <TableCell className="align-top">
-                                                                {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
-                                                            </TableCell>
-                                                            <TableCell className="align-top">{sc ?? "—"}</TableCell>
-                                                            <TableCell className="align-top">
-                                                                <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
-                                                            </TableCell>
+                                <Tabs defaultValue="system">
+                                    <TabsList className="grid w-full grid-cols-3">
+                                        <TabsTrigger value="system">System</TabsTrigger>
+                                        <TabsTrigger value="members">Members</TabsTrigger>
+                                        <TabsTrigger value="raw">Raw</TabsTrigger>
+                                    </TabsList>
+
+                                    <TabsContent value="system" className="mt-4 space-y-4">
+                                        <div className="rounded-md border p-3">
+                                            <div className="text-sm font-semibold">System summary</div>
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
+                                                {scoreSummary.scoredCount > 0 ? (
+                                                    <> • Weighted avg: {fmtScore(scoreSummary.weightedAverage)}</>
+                                                ) : null}
+                                            </div>
+
+                                            {overallComment ? (
+                                                <div className="mt-3">
+                                                    <div className="text-xs text-muted-foreground">Overall comment</div>
+                                                    <div className="mt-1 whitespace-pre-wrap text-sm">{overallComment}</div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+
+                                        {Array.isArray(detail!.criteria) && detail!.criteria.length > 0 ? (
+                                            <div className="rounded-md border">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead className="w-80">Criterion</TableHead>
+                                                            <TableHead className="w-24">Weight</TableHead>
+                                                            <TableHead className="w-28">Min–Max</TableHead>
+                                                            <TableHead className="w-24">Score</TableHead>
+                                                            <TableHead>Comment</TableHead>
                                                         </TableRow>
-                                                    )
-                                                })}
-                                            </TableBody>
-                                        </Table>
-                                    </div>
-                                ) : (
-                                    <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                        No rubric criteria returned. (No active template and no scored template found.)
-                                    </div>
-                                )}
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {detail!.criteria.map((r) => {
+                                                            const w = toNumber(r.weight, 1)
+                                                            const sc = typeof r.score === "number" ? r.score : null
+                                                            return (
+                                                                <TableRow key={r.criterionId}>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="space-y-1">
+                                                                            <div className="font-medium">{safeText(r.criterion, "—")}</div>
+                                                                            {r.description ? (
+                                                                                <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
+                                                                            ) : null}
+                                                                        </div>
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">{fmtScore(sc)}</TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            )
+                                                        })}
+                                                    </TableBody>
+                                                </Table>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
+                                                No rubric criteria returned. (No active template and no scored template found.)
+                                            </div>
+                                        )}
+                                    </TabsContent>
+
+                                    <TabsContent value="members" className="mt-4 space-y-4">
+                                        <div className="rounded-md border p-3">
+                                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                                <div>
+                                                    <div className="text-sm font-semibold">Member scores</div>
+                                                    <div className="mt-1 text-sm text-muted-foreground">
+                                                        Scored: {memberScoreSummary.scoredCount}/{memberScoreSummary.total}
+                                                        {memberScoreSummary.scoredCount > 0 && memberScoreSummary.avg !== null ? (
+                                                            <> • Avg: {fmtScore(memberScoreSummary.avg)}</>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    {membersLoading || extrasLoading ? "Loading…" : " "}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {memberList.length ? (
+                                            <div className="rounded-md border">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead className="w-80">Member</TableHead>
+                                                            <TableHead className="w-64">Email</TableHead>
+                                                            <TableHead className="w-32">Score</TableHead>
+                                                            <TableHead>Comment</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {memberList.map((m) => {
+                                                            const ms = memberScoreMap[m.id]
+                                                            return (
+                                                                <TableRow key={m.id}>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="font-medium">{safeText(m.name, "—")}</div>
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="text-sm text-muted-foreground">{safeText(m.email, "—")}</div>
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">{fmtScore(ms?.score ?? null)}</TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="whitespace-pre-wrap text-sm">{safeText(ms?.comment ?? "", "—")}</div>
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            )
+                                                        })}
+                                                    </TableBody>
+                                                </Table>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
+                                                No members found for this evaluation.
+                                            </div>
+                                        )}
+
+                                        {!extrasLoading && extras && Object.keys(memberScoreMap).length === 0 ? (
+                                            <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                                                No member-level scores were found in <span className="font-medium">evaluation extras</span>.
+                                                If your staff UI saves member scores under a different key, open the <span className="font-medium">Raw</span>{" "}
+                                                tab to confirm the stored structure.
+                                            </div>
+                                        ) : null}
+                                    </TabsContent>
+
+                                    <TabsContent value="raw" className="mt-4 space-y-3">
+                                        <div className="rounded-md border p-3">
+                                            <div className="text-sm font-semibold">Evaluation extras (raw)</div>
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                Stored JSON for additional fields (member/system scoring, notes, etc).
+                                            </div>
+                                        </div>
+
+                                        {extrasLoading ? (
+                                            <div className="space-y-2">
+                                                <Skeleton className="h-6 w-full" />
+                                                <Skeleton className="h-64 w-full" />
+                                            </div>
+                                        ) : (
+                                            <ScrollArea className="h-80 rounded-md border">
+                                                <pre className="p-3 text-xs">{JSON.stringify(extras ?? {}, null, 2)}</pre>
+                                            </ScrollArea>
+                                        )}
+                                    </TabsContent>
+                                </Tabs>
                             </CardContent>
                         </Card>
                     </>
