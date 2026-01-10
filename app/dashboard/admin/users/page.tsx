@@ -154,12 +154,14 @@ function initialsFromName(name: string) {
 }
 
 function avatarCacheKey(userId: string, avatarKey: string | null) {
-    // still include avatarKey so we auto-refresh when list returns a new key,
-    // but we ALSO fetch even if it's null (API can return null url, which is fine).
+    // include avatarKey so a changed avatar busts cache automatically
     return `${userId}:${avatarKey ?? ""}`
 }
 
-const userAvatarUrlCache = new Map<string, string | null>()
+type AvatarCacheEntry = { url: string | null; exp: number }
+
+// ✅ TTL cache so null/failures don't stick forever
+const userAvatarUrlCache = new Map<string, AvatarCacheEntry>()
 const userAvatarInflight = new Map<string, Promise<string | null>>()
 
 function clearAvatarCacheForUser(userId: string) {
@@ -177,7 +179,7 @@ function AvatarCircle(props: { url?: string | null; fallback: string; alt: strin
     const { url, fallback, alt } = props
     return (
         <Avatar className="h-8 w-8 border">
-            <AvatarImage src={url ?? undefined} alt={alt} />
+            <AvatarImage src={url ?? undefined} alt={alt} className="object-cover" />
             <AvatarFallback className="text-xs font-medium text-muted-foreground">{fallback}</AvatarFallback>
         </Avatar>
     )
@@ -189,8 +191,10 @@ function UserAvatarCell(props: { user: UserRow }) {
     const cacheKey = avatarCacheKey(u.id, u.avatar_key)
 
     const [url, setUrl] = React.useState<string | null>(() => {
-        if (userAvatarUrlCache.has(cacheKey)) return userAvatarUrlCache.get(cacheKey) ?? null
-        return null
+        const e = userAvatarUrlCache.get(cacheKey)
+        if (!e) return null
+        if (Date.now() > e.exp) return null
+        return e.url
     })
 
     React.useEffect(() => {
@@ -198,31 +202,30 @@ function UserAvatarCell(props: { user: UserRow }) {
 
         async function run() {
             const cached = userAvatarUrlCache.get(cacheKey)
-            if (cached !== undefined) {
-                setUrl(cached)
+            if (cached && Date.now() <= cached.exp) {
+                setUrl(cached.url)
                 return
             }
 
             const inflight = userAvatarInflight.get(cacheKey)
             if (inflight) {
-                try {
-                    const next = await inflight
-                    userAvatarUrlCache.set(cacheKey, next)
-                    if (!cancelled) setUrl(next)
-                } catch {
-                    userAvatarUrlCache.set(cacheKey, null)
-                    if (!cancelled) setUrl(null)
-                }
+                const next = await inflight.catch(() => null)
+                if (!cancelled) setUrl(next)
                 return
             }
 
             const p = (async () => {
                 try {
-                    const res = await fetch(`/api/users/${encodeURIComponent(u.id)}/avatar`, {
-                        method: "GET",
-                        credentials: "include",
-                        headers: { Accept: "application/json" },
-                    })
+                    // ✅ Use admin avatar endpoint and return JSON { ok, url }
+                    const res = await fetch(
+                        `/api/admin/users/${encodeURIComponent(u.id)}/avatar?format=json`,
+                        {
+                            method: "GET",
+                            credentials: "include",
+                            headers: { Accept: "application/json" },
+                            cache: "no-store",
+                        }
+                    )
 
                     if (res.status === 401 || res.status === 403) return null
                     if (!res.ok) return null
@@ -238,7 +241,12 @@ function UserAvatarCell(props: { user: UserRow }) {
 
             try {
                 const nextUrl = await p
-                userAvatarUrlCache.set(cacheKey, nextUrl)
+
+                // ✅ presign is 300s; refresh earlier (240s).
+                // ✅ if null, retry soon (15s) so it can recover after backend fixes.
+                const exp = nextUrl ? Date.now() + 240_000 : Date.now() + 15_000
+                userAvatarUrlCache.set(cacheKey, { url: nextUrl, exp })
+
                 if (!cancelled) setUrl(nextUrl)
             } finally {
                 userAvatarInflight.delete(cacheKey)
@@ -267,6 +275,7 @@ function AdminMeAvatar() {
                     method: "GET",
                     credentials: "include",
                     headers: { Accept: "application/json" },
+                    cache: "no-store",
                 })
                 if (!res.ok) {
                     if (!cancelled) setUrl(null)
@@ -340,6 +349,7 @@ export default function AdminUsersPage() {
 
             const res = await fetch(`/api/admin/users?${params.toString()}`, {
                 credentials: "include",
+                cache: "no-store",
             })
 
             if (kickToLoginIfUnauthorized(res)) {
@@ -687,7 +697,6 @@ export default function AdminUsersPage() {
                 },
             },
         ]
-
     }, [updateUser, busy])
 
     async function onCreateUser(e: React.FormEvent) {
@@ -856,7 +865,12 @@ export default function AdminUsersPage() {
                                     Delete selected
                                 </Button>
 
-                                <Button variant="ghost" size="sm" disabled={!selected.length || busy} onClick={clearSelection}>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={!selected.length || busy}
+                                    onClick={clearSelection}
+                                >
                                     <X className="mr-2 h-4 w-4" />
                                     Clear selection
                                 </Button>
@@ -874,8 +888,6 @@ export default function AdminUsersPage() {
                     selectionResetKey={selectionReset}
                 />
 
-                {/* dialogs unchanged below ... */}
-                {/* (kept same as your existing code) */}
                 {/* Create User Dialog */}
                 <Dialog
                     open={createOpen}
@@ -959,7 +971,12 @@ export default function AdminUsersPage() {
                             </div>
 
                             <DialogFooter>
-                                <Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={busy}>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => setCreateOpen(false)}
+                                    disabled={busy}
+                                >
                                     Cancel
                                 </Button>
                                 <Button type="submit" disabled={busy}>
@@ -1036,7 +1053,12 @@ export default function AdminUsersPage() {
                             </div>
 
                             <DialogFooter>
-                                <Button type="button" variant="outline" onClick={() => setResetOpen(false)} disabled={busy}>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => setResetOpen(false)}
+                                    disabled={busy}
+                                >
                                     Cancel
                                 </Button>
                                 <Button type="submit" disabled={busy}>
@@ -1149,7 +1171,12 @@ export default function AdminUsersPage() {
                             </div>
 
                             <DialogFooter>
-                                <Button type="button" variant="outline" onClick={() => setBulkResetOpen(false)} disabled={busy}>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => setBulkResetOpen(false)}
+                                    disabled={busy}
+                                >
                                     Cancel
                                 </Button>
                                 <Button type="submit" disabled={!selected.length || busy}>

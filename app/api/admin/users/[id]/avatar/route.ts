@@ -1,4 +1,3 @@
-// app/api/users/[id]/avatar/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server"
 
@@ -62,6 +61,31 @@ function svgOk(svg: string) {
     })
 }
 
+function normalizeS3Key(raw: string): string {
+    let v = String(raw ?? "").trim()
+    if (!v) return ""
+
+    // s3://bucket/key -> key
+    if (/^s3:\/\//i.test(v)) {
+        v = v.replace(/^s3:\/\//i, "")
+        const idx = v.indexOf("/")
+        if (idx >= 0) v = v.slice(idx + 1)
+        return v.replace(/^\/+/, "")
+    }
+
+    // https://bucket.s3.../key -> key
+    if (/^https?:\/\//i.test(v)) {
+        try {
+            const u = new URL(v)
+            return (u.pathname || "").replace(/^\/+/, "")
+        } catch {
+            // fall through
+        }
+    }
+
+    return v.replace(/^\/+/, "")
+}
+
 function pickAvatarKey(row: any): string | null {
     if (!row) return null
     const candidates = [
@@ -77,7 +101,10 @@ function pickAvatarKey(row: any): string | null {
         row.profileAvatarKey,
     ]
     for (const v of candidates) {
-        if (typeof v === "string" && v.trim()) return v.trim()
+        if (typeof v === "string" && v.trim()) {
+            const norm = normalizeS3Key(v)
+            if (norm) return norm
+        }
     }
     return null
 }
@@ -86,7 +113,7 @@ function pickAvatarUrl(row: any): string | null {
     if (!row) return null
     const candidates = [row.avatar_url, row.avatarUrl, row.photo_url, row.photoUrl, row.image_url, row.imageUrl]
     for (const v of candidates) {
-        if (typeof v === "string" && /^https?:\/\//i.test(v)) return v
+        if (typeof v === "string" && /^https?:\/\//i.test(v.trim())) return v.trim()
     }
     return null
 }
@@ -109,11 +136,6 @@ async function requireAdmin(req: NextRequest) {
     }
 }
 
-/**
- * ✅ Your migrations only define: users, students, staff_profiles.
- * The old code tried querying tables like `profiles` / `user_profiles` (not in migrations),
- * which is wasted work per avatar request.
- */
 async function loadMergedUserRow(id: string) {
     let userRow: any | null = null
     try {
@@ -139,15 +161,17 @@ async function loadMergedUserRow(id: string) {
         staffRow = null
     }
 
-    return {
-        ...(userRow ?? {}),
-        ...(studentRow ?? {}),
-        ...(staffRow ?? {}),
-    }
+    return { ...(userRow ?? {}), ...(studentRow ?? {}), ...(staffRow ?? {}) }
 }
 
-export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
-    const id = String(ctx?.params?.id ?? "").trim()
+type Ctx = {
+    params: Promise<{ id: string }> | { id: string }
+}
+
+export async function GET(req: NextRequest, ctx: Ctx) {
+    // ✅ Next 16: params is a Promise
+    const params = await Promise.resolve(ctx?.params as any)
+    const id = String(params?.id ?? "").trim()
 
     if (!UUID_RE.test(id)) {
         if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null })
@@ -156,8 +180,6 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
 
     const actor = await requireAdmin(req)
     if (!actor) {
-        // IMPORTANT: return a placeholder SVG for non-json callers (e.g. <img> tags),
-        // but do not leak info via JSON.
         if (wantsJson(req)) return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 })
         return svgOk(placeholderSvg("U"))
     }
@@ -165,8 +187,8 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     const merged = await loadMergedUserRow(id)
 
     if (!merged?.id) {
-        // ✅ FIX: avatars should NEVER be a hard 404; just return fallback.
-        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=300")
+        // ✅ Never 404 avatars
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=60")
         return svgOk(placeholderSvg("U"))
     }
 
@@ -181,13 +203,12 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     const key = pickAvatarKey(merged)
     if (key) {
         try {
-            const url = await createPresignedGetUrl({ key, expiresInSeconds: 60 * 10 })
+            const url = await createPresignedGetUrl({ key, expiresInSeconds: 300 })
+
             if (wantsJson(req)) {
-                return jsonOk(
-                    { ok: true, avatar_key: key, url, expires_in_seconds: 60 * 10 },
-                    "private, max-age=300"
-                )
+                return jsonOk({ ok: true, avatar_key: key, url, expires_in_seconds: 300 }, "private, max-age=60")
             }
+
             const res = NextResponse.redirect(url, 302)
             res.headers.set("Cache-Control", "no-store")
             return res
@@ -206,6 +227,6 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
         ""
 
     const initials = safeInitials(String(nameOrEmail))
-    if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=300")
+    if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=60")
     return svgOk(placeholderSvg(initials))
 }

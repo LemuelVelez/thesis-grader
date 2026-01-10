@@ -18,6 +18,7 @@ export function getS3Client() {
                 secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
             }
             : undefined,
+        // forcePathStyle: false, // keep default virtual-host style (matches your example URL)
     })
 
     return client
@@ -42,13 +43,19 @@ export async function createPresignedPutUrl(opts: {
 export async function createPresignedGetUrl(opts: {
     key: string
     expiresInSeconds?: number
+    responseContentDisposition?: string
+    responseContentType?: string
 }) {
     const s3 = getS3Client()
+
     const cmd = new GetObjectCommand({
         Bucket: env.S3_BUCKET_NAME,
         Key: opts.key,
+        ResponseContentDisposition: opts.responseContentDisposition,
+        ResponseContentType: opts.responseContentType,
     })
 
-    const url = await getSignedUrl(s3, cmd, { expiresIn: opts.expiresInSeconds ?? 60 })
+    // ✅ default to 300 seconds (matches your example)
+    const url = await getSignedUrl(s3, cmd, { expiresIn: opts.expiresInSeconds ?? 300 })
     return url
 }

@@ -1,6 +1,5 @@
-// app/api/admin/users/[id]/avatar/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextResponse, type NextRequest } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 
 import { db } from "@/lib/db"
 import { getUserFromSession, SESSION_COOKIE } from "@/lib/auth"
@@ -45,14 +44,8 @@ function wantsJson(req: NextRequest) {
     return fmt === "json"
 }
 
-function jsonOk(url: string | null) {
-    return NextResponse.json(
-        { ok: true, url },
-        {
-            status: 200,
-            headers: { "Cache-Control": "no-store" },
-        }
-    )
+function jsonOk(payload: any, cacheControl = "no-store") {
+    return NextResponse.json(payload, { status: 200, headers: { "Cache-Control": cacheControl } })
 }
 
 function svgOk(svg: string) {
@@ -63,6 +56,29 @@ function svgOk(svg: string) {
             "Cache-Control": "public, max-age=3600",
         },
     })
+}
+
+function normalizeS3Key(raw: string): string {
+    let v = String(raw ?? "").trim()
+    if (!v) return ""
+
+    if (/^s3:\/\//i.test(v)) {
+        v = v.replace(/^s3:\/\//i, "")
+        const idx = v.indexOf("/")
+        if (idx >= 0) v = v.slice(idx + 1)
+        return v.replace(/^\/+/, "")
+    }
+
+    if (/^https?:\/\//i.test(v)) {
+        try {
+            const u = new URL(v)
+            return (u.pathname || "").replace(/^\/+/, "")
+        } catch {
+            // fall through
+        }
+    }
+
+    return v.replace(/^\/+/, "")
 }
 
 function pickAvatarKey(row: any): string | null {
@@ -80,7 +96,10 @@ function pickAvatarKey(row: any): string | null {
         row.profileAvatarKey,
     ]
     for (const v of candidates) {
-        if (typeof v === "string" && v.trim()) return v.trim()
+        if (typeof v === "string" && v.trim()) {
+            const norm = normalizeS3Key(v)
+            if (norm) return norm
+        }
     }
     return null
 }
@@ -89,25 +108,19 @@ function pickAvatarUrl(row: any): string | null {
     if (!row) return null
     const candidates = [row.avatar_url, row.avatarUrl, row.photo_url, row.photoUrl, row.image_url, row.imageUrl]
     for (const v of candidates) {
-        if (typeof v === "string" && /^https?:\/\//i.test(v)) return v
+        if (typeof v === "string" && /^https?:\/\//i.test(v.trim())) return v.trim()
     }
     return null
 }
 
-async function getAdminActor(req: NextRequest) {
+async function getActor(req: NextRequest) {
     const cookieToken = req.cookies.get(SESSION_COOKIE)?.value
     const authHeader = req.headers.get("authorization") || ""
     const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : ""
     const token = cookieToken || bearerToken
-
     if (!token) return null
-
     try {
-        const actor = await getUserFromSession(token)
-        if (!actor) return null
-        const role = String((actor as any)?.role ?? "").toLowerCase()
-        if (role !== "admin") return null
-        return actor
+        return await getUserFromSession(token)
     } catch {
         return null
     }
@@ -138,38 +151,47 @@ async function loadMergedUserRow(id: string) {
         staffRow = null
     }
 
-    return {
-        ...(userRow ?? {}),
-        ...(studentRow ?? {}),
-        ...(staffRow ?? {}),
-    }
+    return { ...(userRow ?? {}), ...(studentRow ?? {}), ...(staffRow ?? {}) }
 }
 
-export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
-    const id = String(ctx?.params?.id ?? "").trim()
+type Ctx = {
+    params: Promise<{ id: string }> | { id: string }
+}
+
+export async function GET(req: NextRequest, ctx: Ctx) {
+    const params = await Promise.resolve(ctx?.params as any)
+    const id = String(params?.id ?? "").trim()
 
     if (!UUID_RE.test(id)) {
-        if (wantsJson(req)) return jsonOk(null)
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null })
         return svgOk(placeholderSvg("U"))
     }
 
-    const actor = await getAdminActor(req)
+    const actor = await getActor(req)
     if (!actor) {
         if (wantsJson(req)) return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 })
         return svgOk(placeholderSvg("U"))
     }
 
-    const merged = await loadMergedUserRow(id)
+    // allow admin OR self
+    const actorId = String((actor as any)?.id ?? "")
+    const role = String((actor as any)?.role ?? "").toLowerCase()
+    const canRead = role === "admin" || actorId === id
 
+    if (!canRead) {
+        if (wantsJson(req)) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+        return svgOk(placeholderSvg("U"))
+    }
+
+    const merged = await loadMergedUserRow(id)
     if (!merged?.id) {
-        // ✅ FIX: do not return 404 for avatar endpoints.
-        if (wantsJson(req)) return jsonOk(null)
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=60")
         return svgOk(placeholderSvg("U"))
     }
 
     const directUrl = pickAvatarUrl(merged)
     if (directUrl) {
-        if (wantsJson(req)) return jsonOk(directUrl)
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: directUrl }, "no-store")
         const res = NextResponse.redirect(directUrl, 302)
         res.headers.set("Cache-Control", "no-store")
         return res
@@ -178,8 +200,8 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     const key = pickAvatarKey(merged)
     if (key) {
         try {
-            const url = await createPresignedGetUrl({ key, expiresInSeconds: 60 * 10 })
-            if (wantsJson(req)) return jsonOk(url)
+            const url = await createPresignedGetUrl({ key, expiresInSeconds: 300 })
+            if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: key, url, expires_in_seconds: 300 }, "private, max-age=60")
             const res = NextResponse.redirect(url, 302)
             res.headers.set("Cache-Control", "no-store")
             return res
@@ -198,6 +220,6 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
         ""
 
     const initials = safeInitials(String(nameOrEmail))
-    if (wantsJson(req)) return jsonOk(null)
+    if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=60")
     return svgOk(placeholderSvg(initials))
 }
