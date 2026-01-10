@@ -5,7 +5,7 @@ import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowLeft, Save, Lock } from "lucide-react"
+import { ArrowLeft, Save, Lock, Users } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -78,6 +78,23 @@ type DbEvaluationScore = {
     comment: string | null
 }
 
+type Member = {
+    id: string
+    name: string
+    email: string
+}
+
+type Cell = { score?: number | null; comment?: string | null }
+
+type EvaluationExtras = {
+    overall?: Cell
+    system?: Cell
+    // per-member per-criterion
+    membersCriteria?: Record<string, Record<string, Cell>>
+    // optional (backward compat / derived)
+    membersOverall?: Record<string, Cell>
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const res = await fetch(url, {
         ...init,
@@ -135,13 +152,22 @@ function toNumberOrNull(v: string) {
     return n
 }
 
+const EXTRA_MIN = 0
+const EXTRA_MAX = 100
+
+function inRange(n: number, min: number, max: number) {
+    return n >= min && n <= max
+}
+
 export default function StaffEvaluationDetailPage() {
     const router = useRouter()
-    const params = useParams() as any
+    const params = useParams() as { id?: string | string[] }
     const { user, isLoading } = useAuth() as any
 
-    // ✅ FIX: useParams() instead of props.params
-    const evaluationId = String((Array.isArray(params?.id) ? params?.id?.[0] : params?.id) ?? "").trim()
+    const evaluationId = React.useMemo(() => {
+        const raw = Array.isArray(params?.id) ? params?.id?.[0] : params?.id
+        return String(raw ?? "").trim()
+    }, [params?.id])
 
     const role = String(user?.role ?? "").toLowerCase()
     const isStaff = role === "staff"
@@ -161,8 +187,20 @@ export default function StaffEvaluationDetailPage() {
     const [templateId, setTemplateId] = React.useState<string>("")
     const [criteria, setCriteria] = React.useState<DbRubricCriterion[]>([])
 
-    // form state keyed by criterionId
+    // rubric form keyed by criterionId
     const [form, setForm] = React.useState<Record<string, { score: string; comment: string }>>({})
+
+    // members + per-member per-criterion rubric scoring
+    const [members, setMembers] = React.useState<Member[]>([])
+    const [memberCriteriaForm, setMemberCriteriaForm] = React.useState<
+        Record<string, Record<string, { score: string; comment: string }>>
+    >({})
+
+    // overall + system (0-100)
+    const [overallScore, setOverallScore] = React.useState("")
+    const [overallComment, setOverallComment] = React.useState("")
+    const [systemScore, setSystemScore] = React.useState("")
+    const [systemComment, setSystemComment] = React.useState("")
 
     const locked =
         String(evaluation?.status ?? "").toLowerCase() === "locked" ||
@@ -196,6 +234,12 @@ export default function StaffEvaluationDetailPage() {
                 setTemplateId("")
                 setCriteria([])
                 setForm({})
+                setMembers([])
+                setMemberCriteriaForm({})
+                setOverallScore("")
+                setOverallComment("")
+                setSystemScore("")
+                setSystemComment("")
                 return
             }
 
@@ -222,7 +266,7 @@ export default function StaffEvaluationDetailPage() {
                 setGroup(null)
             }
 
-            // templates (staff can view; admin manages)
+            // templates
             const tRes = await fetchJson<ApiOk<any>>(`/api/evaluation?resource=rubricTemplates&limit=100&offset=0`)
             const tpls: DbRubricTemplate[] = Array.isArray(tRes?.templates)
                 ? tRes.templates
@@ -243,18 +287,14 @@ export default function StaffEvaluationDetailPage() {
             const chosenId = pick?.id ?? ""
             setTemplateId(chosenId)
 
+            let crit: DbRubricCriterion[] = []
             if (chosenId && ev?.id) {
                 const cRes = await fetchJson<ApiOk<any>>(
                     `/api/evaluation?resource=rubricCriteria&templateId=${encodeURIComponent(chosenId)}`
                 )
-                const crit: DbRubricCriterion[] = Array.isArray(cRes?.criteria)
-                    ? cRes.criteria
-                    : Array.isArray(cRes?.items)
-                        ? cRes.items
-                        : []
+                crit = Array.isArray(cRes?.criteria) ? cRes.criteria : Array.isArray(cRes?.items) ? cRes.items : []
                 setCriteria(crit)
 
-                // scores
                 const sRes = await fetchJson<ApiOk<any>>(
                     `/api/evaluation?resource=evaluationScores&evaluationId=${encodeURIComponent(ev.id)}`
                 )
@@ -277,6 +317,41 @@ export default function StaffEvaluationDetailPage() {
                 setCriteria([])
                 setForm({})
             }
+
+            // Members + Extras
+            const [mRes, xRes] = await Promise.allSettled([
+                fetchJson<ApiOk<{ members: Member[] }>>(`/api/evaluations/members?evaluationId=${encodeURIComponent(ev.id)}`),
+                fetchJson<ApiOk<{ extras: EvaluationExtras }>>(`/api/evaluations/extras?evaluationId=${encodeURIComponent(ev.id)}`),
+            ])
+
+            const loadedMembers =
+                mRes.status === "fulfilled" && Array.isArray((mRes.value as any)?.members) ? (mRes.value as any).members : []
+            setMembers(loadedMembers)
+
+            const extras: EvaluationExtras =
+                xRes.status === "fulfilled" && (xRes.value as any)?.extras ? (xRes.value as any).extras : {}
+
+            setOverallScore(extras?.overall?.score != null ? String(extras.overall.score) : "")
+            setOverallComment(extras?.overall?.comment ? String(extras.overall.comment) : "")
+            setSystemScore(extras?.system?.score != null ? String(extras.system.score) : "")
+            setSystemComment(extras?.system?.comment ? String(extras.system.comment) : "")
+
+            const membersCriteria = extras?.membersCriteria ?? {}
+            const nextMemberCriteriaForm: Record<string, Record<string, { score: string; comment: string }>> = {}
+
+            for (const m of loadedMembers) {
+                const perCrit = membersCriteria?.[m.id] ?? {}
+                const row: Record<string, { score: string; comment: string }> = {}
+                for (const c of crit) {
+                    const cell = perCrit?.[c.id]
+                    row[c.id] = {
+                        score: cell?.score != null ? String(cell.score) : "",
+                        comment: cell?.comment ? String(cell.comment) : "",
+                    }
+                }
+                nextMemberCriteriaForm[m.id] = row
+            }
+            setMemberCriteriaForm(nextMemberCriteriaForm)
         } catch (err: any) {
             toast.error("Failed to load evaluation", { description: err?.message ?? "Please try again." })
         } finally {
@@ -293,7 +368,7 @@ export default function StaffEvaluationDetailPage() {
         load()
     }, [isLoading, canRoleView, load])
 
-    const computed = React.useMemo(() => {
+    const computedRubric = React.useMemo(() => {
         let totalWeight = 0
         let sum = 0
         let filled = 0
@@ -311,40 +386,132 @@ export default function StaffEvaluationDetailPage() {
         return { totalWeight, avg, filled, total: criteria.length }
     }, [criteria, form])
 
+    const computedMemberRubric = React.useMemo(() => {
+        // average across all (member, criterion) cells (not weighted)
+        let filled = 0
+        let sum = 0
+        let total = 0
+
+        for (const m of members) {
+            for (const c of criteria) {
+                total += 1
+                const v = memberCriteriaForm[m.id]?.[c.id]
+                const n = toNumberOrNull(v?.score ?? "")
+                if (n === null) continue
+                filled += 1
+                sum += n
+            }
+        }
+
+        const avg = filled > 0 ? sum / filled : 0
+        return { avg, filled, total }
+    }, [members, criteria, memberCriteriaForm])
+
+    const buildExtrasPayload = React.useCallback((): EvaluationExtras => {
+        const os = toNumberOrNull(overallScore)
+        const ss = toNumberOrNull(systemScore)
+        const oc = overallComment.trim()
+        const sc = systemComment.trim()
+
+        const membersCriteria: Record<string, Record<string, Cell>> = {}
+        const membersOverall: Record<string, Cell> = {}
+
+        for (const m of members) {
+            const perCrit: Record<string, Cell> = {}
+            let sum = 0
+            let cnt = 0
+
+            for (const c of criteria) {
+                const v = memberCriteriaForm[m.id]?.[c.id]
+                const s = toNumberOrNull(v?.score ?? "")
+                const cm = (v?.comment ?? "").trim()
+
+                perCrit[c.id] = {
+                    score: s,
+                    comment: cm ? cm : null,
+                }
+
+                if (s != null) {
+                    sum += s
+                    cnt += 1
+                }
+            }
+
+            membersCriteria[m.id] = perCrit
+            membersOverall[m.id] = {
+                score: cnt > 0 ? sum / cnt : null,
+                comment: null,
+            }
+        }
+
+        return {
+            overall: { score: os, comment: oc ? oc : null },
+            system: { score: ss, comment: sc ? sc : null },
+            membersCriteria,
+            membersOverall,
+        }
+    }, [overallScore, overallComment, systemScore, systemComment, members, criteria, memberCriteriaForm])
+
+    const extrasHasAny = React.useMemo(() => {
+        if (overallScore.trim() || overallComment.trim() || systemScore.trim() || systemComment.trim()) return true
+        for (const m of members) {
+            for (const c of criteria) {
+                const v = memberCriteriaForm[m.id]?.[c.id]
+                if (!v) continue
+                if (v.score.trim() || v.comment.trim()) return true
+            }
+        }
+        return false
+    }, [overallScore, overallComment, systemScore, systemComment, members, criteria, memberCriteriaForm])
+
+    const saveExtras = React.useCallback(
+        async (finalPayload?: EvaluationExtras) => {
+            if (!evaluation?.id) return
+            const payload = finalPayload ?? buildExtrasPayload()
+            await fetchJson<ApiOk<{ extras: EvaluationExtras }>>(`/api/evaluations/extras`, {
+                method: "POST",
+                body: JSON.stringify({ evaluationId: evaluation.id, extras: payload }),
+            })
+        },
+        [evaluation?.id, buildExtrasPayload]
+    )
+
     const saveDraft = React.useCallback(async () => {
         if (!evaluation?.id) return
         if (!canEdit) {
             toast.error("Forbidden", { description: "You can only edit evaluations assigned to you." })
             return
         }
-        if (!criteria.length) {
-            toast.error("No rubric criteria", { description: "Ask Admin to set an active rubric template." })
+
+        const rubricItems = criteria
+            .map((c) => {
+                const n = toNumberOrNull(form[c.id]?.score ?? "")
+                if (n === null) return null
+                return {
+                    criterionId: c.id,
+                    score: n,
+                    comment: (form[c.id]?.comment ?? "").trim() || null,
+                }
+            })
+            .filter(Boolean) as Array<{ criterionId: string; score: number; comment: string | null }>
+
+        if (rubricItems.length === 0 && !extrasHasAny) {
+            toast.error("Nothing to save", { description: "Enter at least one score/comment first." })
             return
         }
 
         setSaving(true)
         try {
-            const items = criteria
-                .map((c) => {
-                    const n = toNumberOrNull(form[c.id]?.score ?? "")
-                    if (n === null) return null
-                    return {
-                        criterionId: c.id,
-                        score: n,
-                        comment: (form[c.id]?.comment ?? "").trim() || null,
-                    }
+            if (rubricItems.length) {
+                await fetchJson<ApiOk<{ scores: DbEvaluationScore[] }>>(`/api/evaluation?resource=evaluationScoresBulk`, {
+                    method: "POST",
+                    body: JSON.stringify({ evaluationId: evaluation.id, items: rubricItems }),
                 })
-                .filter(Boolean) as Array<{ criterionId: string; score: number; comment: string | null }>
-
-            if (items.length === 0) {
-                toast.error("Nothing to save", { description: "Enter at least one score first." })
-                return
             }
 
-            await fetchJson<ApiOk<{ scores: DbEvaluationScore[] }>>(`/api/evaluation?resource=evaluationScoresBulk`, {
-                method: "POST",
-                body: JSON.stringify({ evaluationId: evaluation.id, items }),
-            })
+            if (extrasHasAny) {
+                await saveExtras()
+            }
 
             toast.success("Draft saved")
         } catch (err: any) {
@@ -352,7 +519,7 @@ export default function StaffEvaluationDetailPage() {
         } finally {
             setSaving(false)
         }
-    }, [evaluation?.id, criteria, form, canEdit])
+    }, [evaluation?.id, criteria, form, canEdit, extrasHasAny, saveExtras])
 
     const finalize = React.useCallback(async () => {
         if (!evaluation?.id) return
@@ -367,10 +534,11 @@ export default function StaffEvaluationDetailPage() {
             return
         }
 
+        // rubric: all required + range
         for (const c of criteria) {
             const n = toNumberOrNull(form[c.id]?.score ?? "")
             if (n === null) {
-                toast.error("Incomplete scores", { description: "Fill in all criterion scores before finalizing." })
+                toast.error("Incomplete rubric scores", { description: "Fill in all rubric criterion scores before finalizing." })
                 return
             }
             if (n < c.minScore || n > c.maxScore) {
@@ -381,9 +549,41 @@ export default function StaffEvaluationDetailPage() {
             }
         }
 
+        // overall + system required (0-100)
+        const os = toNumberOrNull(overallScore)
+        const ss = toNumberOrNull(systemScore)
+        if (os === null || !inRange(os, EXTRA_MIN, EXTRA_MAX)) {
+            toast.error("Overall score required", { description: `Overall score must be ${EXTRA_MIN}–${EXTRA_MAX}.` })
+            return
+        }
+        if (ss === null || !inRange(ss, EXTRA_MIN, EXTRA_MAX)) {
+            toast.error("System score required", { description: `System score must be ${EXTRA_MIN}–${EXTRA_MAX}.` })
+            return
+        }
+
+        // member x criterion required + range (same as rubric criterion)
+        for (const m of members) {
+            for (const c of criteria) {
+                const v = memberCriteriaForm[m.id]?.[c.id]
+                const n = toNumberOrNull(v?.score ?? "")
+                if (n === null) {
+                    toast.error("Incomplete member scores", {
+                        description: `Enter a score for ${m.name} under “${c.criterion}”.`,
+                    })
+                    return
+                }
+                if (n < c.minScore || n > c.maxScore) {
+                    toast.error("Invalid member score", {
+                        description: `${m.name} — “${c.criterion}” must be between ${c.minScore} and ${c.maxScore}.`,
+                    })
+                    return
+                }
+            }
+        }
+
         setSaving(true)
         try {
-            const items = criteria.map((c) => ({
+            const rubricItems = criteria.map((c) => ({
                 criterionId: c.id,
                 score: Number(form[c.id]?.score ?? 0),
                 comment: (form[c.id]?.comment ?? "").trim() || null,
@@ -391,8 +591,11 @@ export default function StaffEvaluationDetailPage() {
 
             await fetchJson<ApiOk<{ scores: DbEvaluationScore[] }>>(`/api/evaluation?resource=evaluationScoresBulk`, {
                 method: "POST",
-                body: JSON.stringify({ evaluationId: evaluation.id, items }),
+                body: JSON.stringify({ evaluationId: evaluation.id, items: rubricItems }),
             })
+
+            const extrasPayload = buildExtrasPayload()
+            await saveExtras(extrasPayload)
 
             const now = new Date().toISOString()
             const patched = await fetchJson<ApiOk<{ evaluation: DbEvaluation }>>(
@@ -415,7 +618,19 @@ export default function StaffEvaluationDetailPage() {
         } finally {
             setSaving(false)
         }
-    }, [criteria, evaluation?.id, form, locked, canEdit])
+    }, [
+        evaluation?.id,
+        locked,
+        canEdit,
+        criteria,
+        form,
+        overallScore,
+        systemScore,
+        members,
+        memberCriteriaForm,
+        buildExtrasPayload,
+        saveExtras,
+    ])
 
     if (!canRoleView) {
         return (
@@ -493,7 +708,7 @@ export default function StaffEvaluationDetailPage() {
 
                         <h1 className="text-2xl font-semibold">Evaluation</h1>
                         <p className="text-sm text-muted-foreground">
-                            Score each rubric criterion and provide comments. Finalize to lock the evaluation.
+                            Score the rubric + score each member per rubric criterion. Finalize to lock.
                         </p>
                     </div>
 
@@ -571,6 +786,183 @@ export default function StaffEvaluationDetailPage() {
 
                         <Card>
                             <CardHeader className="space-y-2">
+                                <CardTitle>Overall & System Scoring</CardTitle>
+                                <CardDescription>
+                                    Overall and System scores are required for finalization ({EXTRA_MIN}–{EXTRA_MAX}).
+                                </CardDescription>
+                                {!canEdit ? (
+                                    <div className="text-xs text-muted-foreground">
+                                        You can view this evaluation, but you cannot edit it (not assigned to you).
+                                    </div>
+                                ) : null}
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="grid gap-4 sm:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <div className="text-sm font-medium">Overall Score</div>
+                                        <Input
+                                            value={overallScore}
+                                            onChange={(e) => setOverallScore(e.target.value)}
+                                            inputMode="numeric"
+                                            placeholder={`${EXTRA_MIN} - ${EXTRA_MAX}`}
+                                            disabled={locked || !canEdit}
+                                        />
+                                        <div className="text-xs text-muted-foreground">Overall Comment</div>
+                                        <Textarea
+                                            value={overallComment}
+                                            onChange={(e) => setOverallComment(e.target.value)}
+                                            placeholder="Overall feedback..."
+                                            disabled={locked || !canEdit}
+                                            className="min-h-24"
+                                        />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <div className="text-sm font-medium">System Score</div>
+                                        <Input
+                                            value={systemScore}
+                                            onChange={(e) => setSystemScore(e.target.value)}
+                                            inputMode="numeric"
+                                            placeholder={`${EXTRA_MIN} - ${EXTRA_MAX}`}
+                                            disabled={locked || !canEdit}
+                                        />
+                                        <div className="text-xs text-muted-foreground">System Comment</div>
+                                        <Textarea
+                                            value={systemComment}
+                                            onChange={(e) => setSystemComment(e.target.value)}
+                                            placeholder="System feedback..."
+                                            disabled={locked || !canEdit}
+                                            className="min-h-24"
+                                        />
+                                    </div>
+                                </div>
+
+                                <Separator />
+
+                                <div className="text-sm">
+                                    <span className="text-muted-foreground">Rubric Weighted Avg:</span>{" "}
+                                    <span className="font-medium">{computedRubric.avg.toFixed(2)}</span>{" "}
+                                    <span className="text-muted-foreground">
+                                        ({computedRubric.filled}/{computedRubric.total})
+                                    </span>
+                                    {" • "}
+                                    <span className="text-muted-foreground">Member Rubric Avg:</span>{" "}
+                                    <span className="font-medium">{computedMemberRubric.avg.toFixed(2)}</span>{" "}
+                                    <span className="text-muted-foreground">
+                                        ({computedMemberRubric.filled}/{computedMemberRubric.total})
+                                    </span>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader className="space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Users className="h-5 w-5" />
+                                            Member Scoring per Rubric Criterion
+                                        </CardTitle>
+                                        <CardDescription>
+                                            Score each member under every rubric criterion (same range as the criterion).
+                                        </CardDescription>
+                                    </div>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                {criteria.length === 0 ? (
+                                    <div className="text-sm text-muted-foreground">
+                                        No rubric criteria found. Ask Admin to create/activate a rubric template.
+                                    </div>
+                                ) : members.length === 0 ? (
+                                    <div className="text-sm text-muted-foreground">No group members found.</div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {members.map((m) => (
+                                            <div key={m.id} className="rounded-lg border p-4">
+                                                <div className="space-y-1">
+                                                    <div className="font-medium">{m.name}</div>
+                                                    <div className="text-xs text-muted-foreground">{m.email}</div>
+                                                </div>
+
+                                                <Separator className="my-4" />
+
+                                                <div className="space-y-4">
+                                                    {criteria.map((c) => {
+                                                        const v =
+                                                            memberCriteriaForm[m.id]?.[c.id] ?? { score: "", comment: "" }
+                                                        return (
+                                                            <div key={c.id} className="rounded-lg border p-4">
+                                                                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                                                    <div className="space-y-1">
+                                                                        <div className="font-medium">{c.criterion}</div>
+                                                                        {c.description ? (
+                                                                            <div className="text-sm text-muted-foreground">
+                                                                                {c.description}
+                                                                            </div>
+                                                                        ) : null}
+                                                                        <div className="text-xs text-muted-foreground">
+                                                                            Range: {c.minScore}–{c.maxScore}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div className="w-full sm:w-56">
+                                                                        <div className="text-xs text-muted-foreground">Score</div>
+                                                                        <Input
+                                                                            value={v.score}
+                                                                            onChange={(e) =>
+                                                                                setMemberCriteriaForm((prev) => ({
+                                                                                    ...prev,
+                                                                                    [m.id]: {
+                                                                                        ...(prev[m.id] ?? {}),
+                                                                                        [c.id]: {
+                                                                                            score: e.target.value,
+                                                                                            comment: prev[m.id]?.[c.id]?.comment ?? "",
+                                                                                        },
+                                                                                    },
+                                                                                }))
+                                                                            }
+                                                                            inputMode="numeric"
+                                                                            placeholder={`${c.minScore} - ${c.maxScore}`}
+                                                                            disabled={locked || !canEdit}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="mt-3">
+                                                                    <div className="text-xs text-muted-foreground">Comment</div>
+                                                                    <Textarea
+                                                                        value={v.comment}
+                                                                        onChange={(e) =>
+                                                                            setMemberCriteriaForm((prev) => ({
+                                                                                ...prev,
+                                                                                [m.id]: {
+                                                                                    ...(prev[m.id] ?? {}),
+                                                                                    [c.id]: {
+                                                                                        score: prev[m.id]?.[c.id]?.score ?? "",
+                                                                                        comment: e.target.value,
+                                                                                    },
+                                                                                },
+                                                                            }))
+                                                                        }
+                                                                        placeholder="Member feedback for this criterion..."
+                                                                        disabled={locked || !canEdit}
+                                                                        className="min-h-24"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader className="space-y-2">
                                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
                                         <CardTitle>Rubric Scoring</CardTitle>
@@ -580,9 +972,9 @@ export default function StaffEvaluationDetailPage() {
                                     </div>
                                     <div className="text-sm">
                                         <span className="text-muted-foreground">Weighted Avg:</span>{" "}
-                                        <span className="font-medium">{computed.avg.toFixed(2)}</span>{" "}
+                                        <span className="font-medium">{computedRubric.avg.toFixed(2)}</span>{" "}
                                         <span className="text-muted-foreground">
-                                            ({computed.filled}/{computed.total} filled)
+                                            ({computedRubric.filled}/{computedRubric.total} filled)
                                         </span>
                                     </div>
                                 </div>
@@ -635,7 +1027,10 @@ export default function StaffEvaluationDetailPage() {
                                                                 onChange={(e) =>
                                                                     setForm((prev) => ({
                                                                         ...prev,
-                                                                        [c.id]: { ...prev[c.id], score: e.target.value },
+                                                                        [c.id]: {
+                                                                            score: e.target.value,
+                                                                            comment: prev[c.id]?.comment ?? "",
+                                                                        },
                                                                     }))
                                                                 }
                                                                 inputMode="numeric"
@@ -652,7 +1047,10 @@ export default function StaffEvaluationDetailPage() {
                                                             onChange={(e) =>
                                                                 setForm((prev) => ({
                                                                     ...prev,
-                                                                    [c.id]: { ...prev[c.id], comment: e.target.value },
+                                                                    [c.id]: {
+                                                                        score: prev[c.id]?.score ?? "",
+                                                                        comment: e.target.value,
+                                                                    },
                                                                 }))
                                                             }
                                                             placeholder="Write feedback for this criterion..."

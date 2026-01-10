@@ -312,20 +312,20 @@ export default function StaffSchedulesPage() {
         if (!missing.length) return
 
         let cancelled = false
-        ;(async () => {
-            try {
-                const fetched = await Promise.all(missing.map((gid) => fetchThesisGroupById(gid)))
-                const items = fetched.filter(Boolean) as ThesisGroupOption[]
-                if (cancelled || !items.length) return
-                setGroupMetaById((prev) => {
-                    const next = { ...prev }
-                    for (const g of items) next[g.id] = g
-                    return next
-                })
-            } catch {
-                // silent
-            }
-        })()
+            ; (async () => {
+                try {
+                    const fetched = await Promise.all(missing.map((gid) => fetchThesisGroupById(gid)))
+                    const items = fetched.filter(Boolean) as ThesisGroupOption[]
+                    if (cancelled || !items.length) return
+                    setGroupMetaById((prev) => {
+                        const next = { ...prev }
+                        for (const g of items) next[g.id] = g
+                        return next
+                    })
+                } catch {
+                    // silent
+                }
+            })()
 
         return () => {
             cancelled = true
@@ -572,7 +572,7 @@ export default function StaffSchedulesPage() {
                                         <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
                                             Cancel
                                         </Button>
-                                        <Button onClick={onCreate} disabled={creating || !selectedGroup || !newScheduledAt.trim()}>
+                                        <Button onClick={onCreate} disabled={creating || !selectedGroup || !newScheduledAt.trim()} className="mx-2">
                                             {creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                             Create
                                         </Button>
