@@ -2,26 +2,69 @@
 "use client"
 
 import * as React from "react"
-import { Calendar, RefreshCw, Search, Users, Save, Trash2, UserPlus } from "lucide-react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import {
+    ArrowLeft,
+    Calendar,
+    Clock,
+    Eye,
+    Filter,
+    Loader2,
+    Pencil,
+    Plus,
+    RefreshCw,
+    Search,
+    ShieldCheck,
+    Trash2,
+    Users,
+    X,
+} from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
+
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Separator } from "@/components/ui/separator"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
-type DefenseSchedule = {
+type ApiOk<T> = { ok: true } & T
+type ApiErr = { ok: false; error?: string; message?: string }
+
+type DbUser = {
+    id: string
+    name: string | null
+    email: string
+    role?: string | null
+    status?: "active" | "disabled" | string | null
+}
+
+type DbGroup = {
+    id: string
+    title?: string | null
+    name?: string | null
+    program?: string | null
+    term?: string | null
+}
+
+type DbSchedule = {
     id: string
     groupId: string
     scheduledAt: string
@@ -30,812 +73,904 @@ type DefenseSchedule = {
     createdBy: string | null
     createdAt: string
     updatedAt: string
+    groupTitle: string | null
+    program: string | null
+    term: string | null
 }
 
-type SchedulePanelist = {
+type DbPanelist = {
     scheduleId: string
     staffId: string
-    staffName: string
-    staffEmail: string
+    staffName: string | null
+    staffEmail: string | null
 }
 
-type UserPublic = {
-    id: string
-    name: string
-    email: string
-    role?: string
-}
-
-type ThesisGroup = {
-    id: string
-    title: string
-}
-
-function fmtDate(v: string | null | undefined) {
-    if (!v) return "—"
-    const d = new Date(v)
-    if (Number.isNaN(d.getTime())) return v
-    return d.toLocaleString()
-}
-
-function toDatetimeLocalValue(iso: string | null | undefined) {
-    if (!iso) return ""
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return ""
-    const pad = (n: number) => String(n).padStart(2, "0")
-    const yyyy = d.getFullYear()
-    const mm = pad(d.getMonth() + 1)
-    const dd = pad(d.getDate())
-    const hh = pad(d.getHours())
-    const mi = pad(d.getMinutes())
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`
-}
-
-function fromDatetimeLocalValue(v: string) {
+function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
-    if (!s) return null
-    const d = new Date(s)
-    if (Number.isNaN(d.getTime())) return null
-    return d.toISOString()
+    return s ? s : fallback
 }
 
-function buildUrl(path: string, params: Record<string, string | undefined | null>) {
-    const sp = new URLSearchParams()
-    Object.entries(params).forEach(([k, v]) => {
-        const val = String(v ?? "").trim()
-        if (val) sp.set(k, val)
-    })
-    const qs = sp.toString()
-    return qs ? `${path}?${qs}` : path
+function normalizeRole(role?: string | null) {
+    return safeText(role, "").toLowerCase()
 }
 
-async function apiGet<T>(path: string, params: Record<string, string | undefined | null>) {
-    const url = buildUrl(path, params)
+function userLabel(u?: DbUser | null) {
+    if (!u) return ""
+    const name = safeText(u.name, "")
+    const email = safeText(u.email, "")
+    if (name && email) return `${name} (${email})`
+    return name || email
+}
+
+function groupLabel(g?: DbGroup | null, fallback = "") {
+    if (!g) return fallback
+    return safeText(g.title, safeText(g.name, fallback))
+}
+
+function fmtDateTime(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return s
+    return dt.toLocaleString()
+}
+
+function fmtDate(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return s
+    return dt.toLocaleDateString()
+}
+
+function fmtTime(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return s
+    return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+}
+
+function toLocalDateInput(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return ""
+    const y = dt.getFullYear()
+    const m = String(dt.getMonth() + 1).padStart(2, "0")
+    const d = String(dt.getDate()).padStart(2, "0")
+    return `${y}-${m}-${d}`
+}
+
+function toLocalTimeInput(iso?: string | null) {
+    const s = safeText(iso, "")
+    if (!s) return ""
+    const dt = new Date(s)
+    if (Number.isNaN(dt.getTime())) return ""
+    const hh = String(dt.getHours()).padStart(2, "0")
+    const mm = String(dt.getMinutes()).padStart(2, "0")
+    return `${hh}:${mm}`
+}
+
+function statusBadge(status?: string | null) {
+    const s = safeText(status, "").toLowerCase()
+    if (!s) return <Badge variant="secondary">Unknown</Badge>
+    if (s === "scheduled") return <Badge>Scheduled</Badge>
+    if (s === "ongoing") return <Badge>Ongoing</Badge>
+    if (s === "done" || s === "completed") return <Badge>Completed</Badge>
+    if (s === "cancelled" || s === "canceled") return <Badge variant="destructive">Cancelled</Badge>
+    if (s === "archived") return <Badge variant="outline">Archived</Badge>
+    return <Badge variant="secondary">{safeText(status, "Unknown")}</Badge>
+}
+
+// Select.Item cannot use empty string values.
+const CLEAR_SELECT_VALUE = "__clear__"
+
+async function apiGet<T>(url: string): Promise<ApiOk<T> | ApiErr> {
     const res = await fetch(url, { method: "GET" })
-    const json = await res.json().catch(() => ({} as any))
-
-    if (!res.ok || !json?.ok) throw new Error(json?.message || "Request failed")
-    return json as T
+    const data = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) return { ok: false, error: data?.error ?? data?.message ?? `HTTP ${res.status}` }
+    return data
 }
 
-async function apiPost<T>(path: string, params: Record<string, string | undefined | null>, body: any) {
-    const url = buildUrl(path, params)
+async function apiPost<T>(url: string, body: any): Promise<ApiOk<T> | ApiErr> {
     const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body ?? {}),
+        body: JSON.stringify(body),
     })
-    const json = await res.json().catch(() => ({} as any))
-    if (!res.ok || !json?.ok) throw new Error(json?.message || "Request failed")
-    return json as T
+    const data = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) return { ok: false, error: data?.error ?? data?.message ?? `HTTP ${res.status}` }
+    return data
 }
 
-async function apiPatch<T>(path: string, params: Record<string, string | undefined | null>, body: any) {
-    const url = buildUrl(path, params)
+async function apiPatch<T>(url: string, body: any): Promise<ApiOk<T> | ApiErr> {
     const res = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body ?? {}),
+        body: JSON.stringify(body),
     })
-    const json = await res.json().catch(() => ({} as any))
-    if (!res.ok || !json?.ok) throw new Error(json?.message || "Request failed")
-    return json as T
+    const data = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) return { ok: false, error: data?.error ?? data?.message ?? `HTTP ${res.status}` }
+    return data
 }
 
-async function apiDelete<T>(path: string, params: Record<string, string | undefined | null>) {
-    const url = buildUrl(path, params)
+async function apiDelete<T>(url: string): Promise<ApiOk<T> | ApiErr> {
     const res = await fetch(url, { method: "DELETE" })
-    const json = await res.json().catch(() => ({} as any))
-    if (!res.ok || !json?.ok) throw new Error(json?.message || "Request failed")
-    return json as T
+    const data = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) return { ok: false, error: data?.error ?? data?.message ?? `HTTP ${res.status}` }
+    return data
 }
 
-function uniq(ids: Array<string | null | undefined>) {
-    return Array.from(new Set(ids.filter(Boolean).map((x) => String(x))))
+function buildScheduledAtISO(dateStr: string, timeStr: string) {
+    // local time -> ISO
+    const d = safeText(dateStr, "")
+    const t = safeText(timeStr, "")
+    if (!d || !t) return ""
+    const dt = new Date(`${d}T${t}:00`)
+    if (Number.isNaN(dt.getTime())) return ""
+    return dt.toISOString()
 }
 
 export default function AdminSchedulesPage() {
-    const { loading, user } = useAuth()
-    const isAdmin = String(user?.role ?? "").toLowerCase() === "admin"
+    const router = useRouter()
+    const { user, loading: authLoading } = useAuth()
 
-    const [showIds, setShowIds] = React.useState(false)
+    const [loading, setLoading] = React.useState(true)
+    const [refreshing, setRefreshing] = React.useState(false)
 
-    // Filters
+    const [schedules, setSchedules] = React.useState<DbSchedule[]>([])
+    const [users, setUsers] = React.useState<DbUser[]>([])
+    const [groups, setGroups] = React.useState<DbGroup[]>([])
+
+    // filters (client-side)
     const [q, setQ] = React.useState("")
-    const [groupId, setGroupId] = React.useState("")
-    const [status, setStatus] = React.useState("")
-    const [fromLocal, setFromLocal] = React.useState("")
-    const [toLocal, setToLocal] = React.useState("")
+    const [statusFilter, setStatusFilter] = React.useState<string>("")
+    const [groupFilter, setGroupFilter] = React.useState<string>("")
+    const [fromDate, setFromDate] = React.useState<string>("")
+    const [toDate, setToDate] = React.useState<string>("")
 
-    // Data
-    const [listLoading, setListLoading] = React.useState(false)
-    const [schedules, setSchedules] = React.useState<DefenseSchedule[]>([])
-    const [selectedId, setSelectedId] = React.useState<string | null>(null)
+    // upsert modal
+    const [openUpsert, setOpenUpsert] = React.useState(false)
+    const [saving, setSaving] = React.useState(false)
+    const [editing, setEditing] = React.useState<DbSchedule | null>(null)
 
-    // Lookups (names/titles)
-    const [userMap, setUserMap] = React.useState<Record<string, UserPublic>>({})
-    const [groupMap, setGroupMap] = React.useState<Record<string, ThesisGroup>>({})
-    const inFlightUsers = React.useRef(new Set<string>())
-    const inFlightGroups = React.useRef(new Set<string>())
+    // editor fields
+    const [edGroupId, setEdGroupId] = React.useState<string>("")
+    const [edDate, setEdDate] = React.useState<string>("")
+    const [edTime, setEdTime] = React.useState<string>("")
+    const [edRoom, setEdRoom] = React.useState<string>("")
+    const [edStatus, setEdStatus] = React.useState<string>("scheduled")
 
-    // Options
-    const [groupOptions, setGroupOptions] = React.useState<ThesisGroup[]>([])
-    const [staffOptions, setStaffOptions] = React.useState<UserPublic[]>([])
-    const [optionsLoading, setOptionsLoading] = React.useState(false)
+    // panelists modal
+    const [openPanel, setOpenPanel] = React.useState(false)
+    const [panelSchedule, setPanelSchedule] = React.useState<DbSchedule | null>(null)
+    const [panelLoading, setPanelLoading] = React.useState(false)
+    const [panelists, setPanelists] = React.useState<DbPanelist[]>([])
+    const [panelAddStaffId, setPanelAddStaffId] = React.useState<string>("")
+    const [panelBusyId, setPanelBusyId] = React.useState<string>("") // staffId while removing
+    const [panelAdding, setPanelAdding] = React.useState(false)
 
-    // Panelists
-    const [panelistsLoading, setPanelistsLoading] = React.useState(false)
-    const [panelists, setPanelists] = React.useState<SchedulePanelist[]>([])
-    const [panelistActionLoading, setPanelistActionLoading] = React.useState(false)
+    const usersById = React.useMemo(() => {
+        const m = new Map<string, DbUser>()
+        for (const u of users) m.set(u.id, u)
+        return m
+    }, [users])
 
-    // Edit form
-    const selected = React.useMemo(() => schedules.find((s) => s.id === selectedId) ?? null, [schedules, selectedId])
-    const [editScheduledAtLocal, setEditScheduledAtLocal] = React.useState("")
-    const [editRoom, setEditRoom] = React.useState("")
-    const [editStatus, setEditStatus] = React.useState("")
-    const [saveLoading, setSaveLoading] = React.useState(false)
-    const [deleteLoading, setDeleteLoading] = React.useState(false)
+    const groupsById = React.useMemo(() => {
+        const m = new Map<string, DbGroup>()
+        for (const g of groups) m.set(g.id, g)
+        return m
+    }, [groups])
 
-    // Add panelist (by dropdown)
-    const [addStaffId, setAddStaffId] = React.useState("")
+    const staffUsers = React.useMemo(() => {
+        return users
+            .filter((u) => normalizeRole(u.role) === "staff" && String(u.status ?? "active").toLowerCase() !== "disabled")
+            .sort((a, b) => userLabel(a).localeCompare(userLabel(b)))
+    }, [users])
 
-    // Bulk panelist selection
-    const [bulkQuery, setBulkQuery] = React.useState("")
-    const [bulkStaffIds, setBulkStaffIds] = React.useState<string[]>([])
+    const groupOptions = React.useMemo(() => {
+        return groups
+            .slice()
+            .sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)))
+    }, [groups])
 
-    const ensureUsers = React.useCallback(
-        async (ids: string[]) => {
-            const missing = ids.filter((id) => id && !userMap[id] && !inFlightUsers.current.has(id))
-            if (!missing.length) return
+    const distinctStatuses = React.useMemo(() => {
+        const set = new Set<string>()
+        for (const sc of schedules) {
+            const s = safeText(sc.status, "")
+            if (s) set.add(s)
+        }
+        return Array.from(set).sort((a, b) => a.localeCompare(b))
+    }, [schedules])
 
-            missing.forEach((id) => inFlightUsers.current.add(id))
-            try {
-                const results = await Promise.all(
-                    missing.map(async (id) => {
-                        try {
-                            const data = await apiGet<{ ok: true; user: UserPublic }>("/api/profiles", {
-                                resource: "users",
-                                id,
-                            })
-                            return data.user
-                        } catch {
-                            return null
-                        }
-                    })
-                )
+    const filtered = React.useMemo(() => {
+        const qq = safeText(q, "").toLowerCase()
 
-                setUserMap((prev) => {
-                    const next = { ...prev }
-                    for (const u of results) {
-                        if (u?.id) next[u.id] = u
-                    }
-                    return next
-                })
-            } finally {
-                missing.forEach((id) => inFlightUsers.current.delete(id))
+        return schedules.filter((sc) => {
+            if (statusFilter && safeText(sc.status, "").toLowerCase() !== statusFilter.toLowerCase()) return false
+            if (groupFilter && safeText(sc.groupId, "") !== groupFilter) return false
+
+            if (fromDate) {
+                const fromIso = new Date(`${fromDate}T00:00:00`)
+                const scDt = new Date(sc.scheduledAt)
+                if (!Number.isNaN(fromIso.getTime()) && !Number.isNaN(scDt.getTime()) && scDt < fromIso) return false
             }
-        },
-        [userMap]
-    )
-
-    const ensureGroups = React.useCallback(
-        async (ids: string[]) => {
-            const missing = ids.filter((id) => id && !groupMap[id] && !inFlightGroups.current.has(id))
-            if (!missing.length) return
-
-            missing.forEach((id) => inFlightGroups.current.add(id))
-            try {
-                const results = await Promise.all(
-                    missing.map(async (id) => {
-                        try {
-                            const data = await apiGet<{ ok: true; group: ThesisGroup }>("/api/thesis", {
-                                resource: "groups",
-                                id,
-                            })
-                            return data.group
-                        } catch {
-                            return null
-                        }
-                    })
-                )
-
-                setGroupMap((prev) => {
-                    const next = { ...prev }
-                    for (const g of results) {
-                        if (g?.id) next[g.id] = g
-                    }
-                    return next
-                })
-            } finally {
-                missing.forEach((id) => inFlightGroups.current.delete(id))
+            if (toDate) {
+                const toIsoExclusive = new Date(`${toDate}T00:00:00`)
+                toIsoExclusive.setDate(toIsoExclusive.getDate() + 1)
+                const scDt = new Date(sc.scheduledAt)
+                if (!Number.isNaN(toIsoExclusive.getTime()) && !Number.isNaN(scDt.getTime()) && scDt >= toIsoExclusive)
+                    return false
             }
-        },
-        [groupMap]
-    )
 
-    const loadOptions = React.useCallback(async () => {
-        if (!isAdmin) return
-        setOptionsLoading(true)
+            if (!qq) return true
+
+            const g = groupsById.get(sc.groupId)
+            const gName = safeText(sc.groupTitle, groupLabel(g, ""))
+            const createdByName = sc.createdBy ? userLabel(usersById.get(sc.createdBy)) : ""
+            const base = [
+                gName,
+                safeText(sc.room, ""),
+                safeText(sc.status, ""),
+                safeText(sc.program, ""),
+                safeText(sc.term, ""),
+                fmtDateTime(sc.scheduledAt),
+                createdByName,
+            ]
+                .filter(Boolean)
+                .join(" · ")
+                .toLowerCase()
+
+            return base.includes(qq)
+        })
+    }, [schedules, q, statusFilter, groupFilter, fromDate, toDate, groupsById, usersById])
+
+    function resetEditor() {
+        setEditing(null)
+        setEdGroupId("")
+        setEdDate("")
+        setEdTime("")
+        setEdRoom("")
+        setEdStatus("scheduled")
+    }
+
+    function openCreate() {
+        resetEditor()
+        setOpenUpsert(true)
+    }
+
+    function openEdit(sc: DbSchedule) {
+        setEditing(sc)
+        setEdGroupId(safeText(sc.groupId, ""))
+        setEdDate(toLocalDateInput(sc.scheduledAt))
+        setEdTime(toLocalTimeInput(sc.scheduledAt))
+        setEdRoom(safeText(sc.room, ""))
+        setEdStatus(safeText(sc.status, "scheduled") || "scheduled")
+        setOpenUpsert(true)
+    }
+
+    async function loadAll() {
+        setLoading(true)
         try {
-            const [groupsRes, staffRes] = await Promise.all([
-                apiGet<{ ok: true; groups: ThesisGroup[]; total: number }>("/api/thesis", {
-                    resource: "groups",
-                    limit: "200",
-                    offset: "0",
-                }),
-                apiGet<{ ok: true; users: UserPublic[]; total: number }>("/api/profiles", {
-                    resource: "users",
-                    role: "staff",
-                    limit: "200",
-                    offset: "0",
-                }),
+            const [scRes, usRes, grRes] = await Promise.all([
+                apiGet<{ schedules: DbSchedule[] }>(`/api/schedule?resource=schedules&limit=200&offset=0`),
+                apiGet<{ users: DbUser[] }>("/api/admin/users?limit=500&offset=0"),
+                apiGet<{ groups: DbGroup[] }>("/api/groups?resource=all"),
             ])
 
-            const groups = (groupsRes.groups ?? []).slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""))
-            setGroupOptions(groups)
-            setGroupMap((prev) => {
-                const next = { ...prev }
-                for (const g of groups) next[g.id] = g
-                return next
-            })
+            if (!scRes.ok) throw new Error(scRes.error ?? "Failed to load schedules")
+            if (!usRes.ok) throw new Error(usRes.error ?? "Failed to load users")
+            if (!grRes.ok) throw new Error(grRes.error ?? "Failed to load groups")
 
-            const staff = (staffRes.users ?? []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-            setStaffOptions(staff)
-            setUserMap((prev) => {
-                const next = { ...prev }
-                for (const u of staff) next[u.id] = u
-                return next
-            })
+            setSchedules(Array.isArray((scRes as any).schedules) ? (scRes as any).schedules : [])
+            setUsers(Array.isArray((usRes as any).users) ? (usRes as any).users : [])
+            setGroups(Array.isArray((grRes as any).groups) ? (grRes as any).groups : [])
         } catch (e: any) {
-            toast.error("Failed to load dropdown options", { description: e?.message || "Please try again." })
+            toast.error(e?.message ?? "Failed to load schedules")
         } finally {
-            setOptionsLoading(false)
+            setLoading(false)
         }
-    }, [isAdmin])
+    }
 
-    const userLabel = React.useCallback(
-        (id: string | null | undefined) => {
-            const key = String(id ?? "")
-            if (!key) return "—"
-            const u = userMap[key]
-            return u?.name ? u.name : "Unknown user"
-        },
-        [userMap]
-    )
-
-    const groupLabel = React.useCallback(
-        (id: string | null | undefined) => {
-            const key = String(id ?? "")
-            if (!key) return "—"
-            const g = groupMap[key]
-            return g?.title ? g.title : "Unknown group"
-        },
-        [groupMap]
-    )
-
-    const loadSchedules = React.useCallback(async () => {
-        setListLoading(true)
+    async function refresh() {
+        setRefreshing(true)
         try {
-            const fromIso = fromDatetimeLocalValue(fromLocal)
-            const toIso = fromDatetimeLocalValue(toLocal)
-
-            const data = await apiGet<{ ok: true; schedules: DefenseSchedule[]; total: number }>(
-                "/api/schedule",
-                {
-                    resource: "schedules",
-                    q: q || null,
-                    groupId: groupId || null,
-                    status: status || null,
-                    from: fromIso || null,
-                    to: toIso || null,
-                    limit: "50",
-                    offset: "0",
-                }
-            )
-            const items = data.schedules ?? []
-            setSchedules(items)
-
-            const groupIds = uniq(items.map((s) => s.groupId))
-            const createdByIds = uniq(items.map((s) => s.createdBy))
-            await Promise.all([ensureGroups(groupIds), ensureUsers(createdByIds)])
-        } catch (e: any) {
-            toast.error("Failed to load schedules", { description: e?.message || "Please try again." })
+            await loadAll()
         } finally {
-            setListLoading(false)
+            setRefreshing(false)
         }
-    }, [q, groupId, status, fromLocal, toLocal, ensureGroups, ensureUsers])
-
-    const loadPanelists = React.useCallback(async (scheduleId: string) => {
-        setPanelistsLoading(true)
-        try {
-            const data = await apiGet<{ ok: true; panelists: SchedulePanelist[] }>(
-                "/api/schedule",
-                { resource: "panelists", scheduleId }
-            )
-            const list = data.panelists ?? []
-            setPanelists(list)
-            setBulkStaffIds(list.map((p) => p.staffId))
-        } catch (e: any) {
-            toast.error("Failed to load panelists", { description: e?.message || "Please try again." })
-        } finally {
-            setPanelistsLoading(false)
-        }
-    }, [])
+    }
 
     React.useEffect(() => {
-        if (!isAdmin) return
-        void loadOptions()
-        void loadSchedules()
+        if (authLoading) return
+        if (!user) return
+        if (String(user.role ?? "").toLowerCase() !== "admin") {
+            toast.error("Unauthorized")
+            router.push("/dashboard")
+            return
+        }
+        loadAll()
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isAdmin])
+    }, [authLoading, user?.id])
 
-    React.useEffect(() => {
-        if (!selected) return
-        setEditScheduledAtLocal(toDatetimeLocalValue(selected.scheduledAt))
-        setEditRoom(selected.room ?? "")
-        setEditStatus(selected.status ?? "")
-        void loadPanelists(selected.id)
+    async function handleSave() {
+        const groupId = safeText(edGroupId, "")
+        if (!editing && !groupId) {
+            toast.error("Please select a group.")
+            return
+        }
 
-        void ensureGroups(uniq([selected.groupId]))
-        void ensureUsers(uniq([selected.createdBy]))
-    }, [selected, loadPanelists, ensureGroups, ensureUsers])
+        const scheduledAt = buildScheduledAtISO(edDate, edTime)
+        if (!scheduledAt) {
+            toast.error("Please set a valid date and time.")
+            return
+        }
 
-    const onSelect = async (id: string) => {
-        setSelectedId((prev) => (prev === id ? null : id))
-    }
-
-    const onSave = async () => {
-        if (!selected) return
-        setSaveLoading(true)
+        setSaving(true)
         try {
-            const scheduledAtIso = fromDatetimeLocalValue(editScheduledAtLocal)
+            if (editing?.id) {
+                const res = await apiPatch(`/api/schedule?resource=schedules&id=${encodeURIComponent(editing.id)}`, {
+                    scheduledAt,
+                    room: safeText(edRoom, "") || null,
+                    status: safeText(edStatus, "scheduled") || "scheduled",
+                })
+                if (!res.ok) throw new Error(res.error ?? "Failed to update schedule")
+                toast.success("Schedule updated")
+            } else {
+                const res = await apiPost(`/api/schedule?resource=schedules`, {
+                    groupId,
+                    scheduledAt,
+                    room: safeText(edRoom, "") || null,
+                    status: safeText(edStatus, "scheduled") || "scheduled",
+                })
+                if (!res.ok) throw new Error(res.error ?? "Failed to create schedule")
+                toast.success("Schedule created")
+            }
 
-            await apiPatch(
-                "/api/schedule",
-                { resource: "schedules", id: selected.id },
-                {
-                    id: selected.id,
-                    scheduledAt: scheduledAtIso ?? selected.scheduledAt,
-                    room: editRoom ? editRoom : null,
-                    status: editStatus ? editStatus : selected.status,
-                }
-            )
-
-            toast.success("Schedule updated")
-            await loadSchedules()
-            await loadPanelists(selected.id)
+            setOpenUpsert(false)
+            resetEditor()
+            await loadAll()
         } catch (e: any) {
-            toast.error("Failed to update schedule", { description: e?.message || "Please try again." })
+            toast.error(e?.message ?? "Failed to save schedule")
         } finally {
-            setSaveLoading(false)
+            setSaving(false)
         }
     }
 
-    const onDelete = async () => {
-        if (!selected) return
-        setDeleteLoading(true)
+    async function handleDelete(sc: DbSchedule) {
+        const ok = window.confirm("Delete this schedule?")
+        if (!ok) return
         try {
-            await apiDelete("/api/schedule", { resource: "schedules", id: selected.id })
+            const res = await apiDelete(`/api/schedule?resource=schedules&id=${encodeURIComponent(sc.id)}`)
+            if (!res.ok) throw new Error(res.error ?? "Failed to delete schedule")
             toast.success("Schedule deleted")
-            setSelectedId(null)
-            setPanelists([])
-            await loadSchedules()
+            await loadAll()
         } catch (e: any) {
-            toast.error("Failed to delete schedule", { description: e?.message || "Please try again." })
-        } finally {
-            setDeleteLoading(false)
+            toast.error(e?.message ?? "Failed to delete schedule")
         }
     }
 
-    const onAddPanelist = async () => {
-        if (!selected) return
-        const sid = String(addStaffId ?? "").trim()
-        if (!sid) return toast.error("Please select a staff member")
-
-        setPanelistActionLoading(true)
+    async function openPanelists(sc: DbSchedule) {
+        setPanelSchedule(sc)
+        setOpenPanel(true)
+        setPanelAddStaffId("")
+        setPanelists([])
+        setPanelLoading(true)
         try {
-            await apiPost("/api/schedule", { resource: "panelists" }, { scheduleId: selected.id, staffId: sid })
+            const res = await apiGet<{ panelists: DbPanelist[] }>(
+                `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}`
+            )
+            if (!res.ok) throw new Error(res.error ?? "Failed to load panelists")
+            setPanelists(Array.isArray((res as any).panelists) ? (res as any).panelists : [])
+        } catch (e: any) {
+            toast.error(e?.message ?? "Failed to load panelists")
+        } finally {
+            setPanelLoading(false)
+        }
+    }
+
+    async function addPanelist() {
+        const sc = panelSchedule
+        if (!sc) return
+        const staffId = safeText(panelAddStaffId, "")
+        if (!staffId || staffId === CLEAR_SELECT_VALUE) {
+            toast.error("Please select a staff panelist to add.")
+            return
+        }
+
+        setPanelAdding(true)
+        try {
+            const res = await apiPost(`/api/schedule?resource=panelists`, { scheduleId: sc.id, staffId })
+            if (!res.ok) throw new Error(res.error ?? "Failed to add panelist")
+
+            // refresh list
+            const rr = await apiGet<{ panelists: DbPanelist[] }>(
+                `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}`
+            )
+            if (!rr.ok) throw new Error(rr.error ?? "Failed to refresh panelists")
+            setPanelists(Array.isArray((rr as any).panelists) ? (rr as any).panelists : [])
+            setPanelAddStaffId("")
             toast.success("Panelist added")
-            setAddStaffId("")
-            await loadPanelists(selected.id)
         } catch (e: any) {
-            toast.error("Failed to add panelist", { description: e?.message || "Please try again." })
+            toast.error(e?.message ?? "Failed to add panelist")
         } finally {
-            setPanelistActionLoading(false)
+            setPanelAdding(false)
         }
     }
 
-    const onRemovePanelist = async (staffId: string) => {
-        if (!selected) return
-        setPanelistActionLoading(true)
+    async function removePanelist(staffId: string) {
+        const sc = panelSchedule
+        if (!sc) return
+
+        setPanelBusyId(staffId)
         try {
-            await apiDelete("/api/schedule", { resource: "panelists", scheduleId: selected.id, staffId })
+            const res = await apiDelete(
+                `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}&staffId=${encodeURIComponent(staffId)}`
+            )
+            if (!res.ok) throw new Error(res.error ?? "Failed to remove panelist")
+
+            setPanelists((prev) => prev.filter((p) => p.staffId !== staffId))
             toast.success("Panelist removed")
-            await loadPanelists(selected.id)
         } catch (e: any) {
-            toast.error("Failed to remove panelist", { description: e?.message || "Please try again." })
+            toast.error(e?.message ?? "Failed to remove panelist")
         } finally {
-            setPanelistActionLoading(false)
+            setPanelBusyId("")
         }
-    }
-
-    const onApplyBulkPanelists = async () => {
-        if (!selected) return
-        setPanelistActionLoading(true)
-        try {
-            await apiPatch("/api/schedule", { resource: "panelists" }, { scheduleId: selected.id, staffIds: bulkStaffIds })
-            toast.success("Panelists updated")
-            await loadPanelists(selected.id)
-        } catch (e: any) {
-            toast.error("Failed to set panelists", { description: e?.message || "Please try again." })
-        } finally {
-            setPanelistActionLoading(false)
-        }
-    }
-
-    const filteredStaff = React.useMemo(() => {
-        const qq = bulkQuery.trim().toLowerCase()
-        if (!qq) return staffOptions
-        return staffOptions.filter((s) => (s.name || "").toLowerCase().includes(qq) || (s.email || "").toLowerCase().includes(qq))
-    }, [staffOptions, bulkQuery])
-
-    const toggleBulk = (id: string) => {
-        setBulkStaffIds((prev) => {
-            const has = prev.includes(id)
-            if (has) return prev.filter((x) => x !== id)
-            return [...prev, id]
-        })
     }
 
     return (
-        <DashboardLayout
-            title="Schedules"
-            description="Search schedules, view panelists, and update schedule fields."
-            mainClassName="space-y-6"
-        >
-            {loading ? (
-                <div className="space-y-4">
-                    <div className="h-8 w-52 rounded-md bg-muted/40" />
-                    <div className="h-40 rounded-md bg-muted/30" />
-                </div>
-            ) : !isAdmin ? (
-                <Card>
-                    <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                            <Calendar className="h-5 w-5" />
-                            Schedules
-                            <Badge variant="outline">Admin</Badge>
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm text-muted-foreground">
-                        Forbidden. This page is available to Admin only.
-                    </CardContent>
-                </Card>
-            ) : (
-                <>
-                    <div className="flex justify-end">
-                        <Button variant="outline" size="sm" onClick={() => setShowIds((v) => !v)} disabled={optionsLoading}>
-                            {showIds ? "Hide IDs" : "Show IDs"}
+        <DashboardLayout>
+            <div className="space-y-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-3">
+                        <Button variant="outline" size="icon" onClick={() => router.push("/dashboard/admin")}>
+                            <ArrowLeft className="h-4 w-4" />
                         </Button>
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <ShieldCheck className="h-5 w-5" />
+                                <h1 className="text-xl font-semibold">Schedules</h1>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                                Create schedules, set date/time, manage room/status, and assign panelists.
+                            </p>
+                        </div>
                     </div>
 
-                    <Card>
-                        <CardHeader className="space-y-2">
-                            <CardTitle className="flex items-center justify-between">
-                                <span className="flex items-center gap-2">
-                                    <Search className="h-4 w-4" />
-                                    Filters
-                                </span>
-                                <Button variant="outline" size="sm" onClick={loadSchedules} disabled={listLoading} className="gap-2">
-                                    <RefreshCw className="h-4 w-4" />
-                                    Refresh
-                                </Button>
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">
-                                <div className="sm:col-span-2 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">Search</div>
-                                    <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="room / status" />
-                                </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
+                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            Refresh
+                        </Button>
 
-                                <div className="sm:col-span-2 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">Group</div>
-                                    <Select value={groupId} onValueChange={setGroupId}>
+                        <Button onClick={openCreate}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            New schedule
+                        </Button>
+                    </div>
+                </div>
+
+                <Card>
+                    <CardHeader className="space-y-1">
+                        <CardTitle className="flex items-center gap-2">
+                            <Calendar className="h-5 w-5" />
+                            Schedule list
+                        </CardTitle>
+                        <CardDescription>Search and filter schedules by group, status, and date range.</CardDescription>
+                    </CardHeader>
+
+                    <CardContent className="space-y-4">
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
+                            <div className="space-y-2 lg:col-span-2">
+                                <Label className="text-xs text-muted-foreground">Search</Label>
+                                <div className="relative">
+                                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        value={q}
+                                        onChange={(e) => setQ(e.target.value)}
+                                        className="pl-8"
+                                        placeholder="group, room, status, program..."
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">Status</Label>
+                                <Select
+                                    value={statusFilter || CLEAR_SELECT_VALUE}
+                                    onValueChange={(v) => setStatusFilter(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All statuses" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value={CLEAR_SELECT_VALUE}>All statuses</SelectItem>
+                                        {distinctStatuses.map((s) => (
+                                            <SelectItem key={s} value={s}>
+                                                {s}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">Group</Label>
+                                <Select
+                                    value={groupFilter || CLEAR_SELECT_VALUE}
+                                    onValueChange={(v) => setGroupFilter(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All groups" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value={CLEAR_SELECT_VALUE}>All groups</SelectItem>
+                                        {groupOptions.map((g) => (
+                                            <SelectItem key={g.id} value={g.id}>
+                                                {groupLabel(g, "Group")}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">From</Label>
+                                <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">To</Label>
+                                <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+                            </div>
+
+                            <div className="flex items-end md:col-span-2 lg:col-span-6">
+                                <Button
+                                    variant="outline"
+                                    className="w-full"
+                                    onClick={() => {
+                                        setQ("")
+                                        setStatusFilter("")
+                                        setGroupFilter("")
+                                        setFromDate("")
+                                        setToDate("")
+                                    }}
+                                >
+                                    <Filter className="mr-2 h-4 w-4" />
+                                    Clear filters
+                                </Button>
+                            </div>
+                        </div>
+
+                        <Separator />
+
+                        {loading ? (
+                            <div className="space-y-2">
+                                <Skeleton className="h-10 w-full" />
+                                <Skeleton className="h-10 w-full" />
+                                <Skeleton className="h-10 w-full" />
+                                <Skeleton className="h-10 w-full" />
+                            </div>
+                        ) : (
+                            <div className="rounded-md border">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead className="w-[320px]">Group</TableHead>
+                                            <TableHead className="w-35">Status</TableHead>
+                                            <TableHead className="w-45">Date</TableHead>
+                                            <TableHead className="w-40">Time</TableHead>
+                                            <TableHead>Room</TableHead>
+                                            <TableHead className="w-60">Panel</TableHead>
+                                            <TableHead className="w-60">Updated</TableHead>
+                                            <TableHead className="w-60 text-right">Actions</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+
+                                    <TableBody>
+                                        {filtered.length === 0 ? (
+                                            <TableRow>
+                                                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                                                    No schedules found.
+                                                </TableCell>
+                                            </TableRow>
+                                        ) : (
+                                            filtered.map((sc) => {
+                                                const g = groupsById.get(sc.groupId)
+                                                const gName = safeText(sc.groupTitle, groupLabel(g, "Group"))
+                                                const sub = [safeText(sc.program, ""), safeText(sc.term, "")]
+                                                    .filter(Boolean)
+                                                    .join(" · ")
+
+                                                return (
+                                                    <TableRow key={sc.id}>
+                                                        <TableCell className="align-top">
+                                                            <div className="space-y-1">
+                                                                <div className="font-medium">{gName}</div>
+                                                                {sub ? <div className="text-xs text-muted-foreground">{sub}</div> : null}
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell className="align-top">{statusBadge(sc.status)}</TableCell>
+
+                                                        <TableCell className="align-top">
+                                                            <div className="flex items-center gap-2">
+                                                                <Calendar className="h-4 w-4 text-muted-foreground" />
+                                                                <span>{fmtDate(sc.scheduledAt) || "—"}</span>
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell className="align-top">
+                                                            <div className="flex items-center gap-2">
+                                                                <Clock className="h-4 w-4 text-muted-foreground" />
+                                                                <span>{fmtTime(sc.scheduledAt) || "—"}</span>
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell className="align-top">{safeText(sc.room, "—")}</TableCell>
+
+                                                        <TableCell className="align-top">
+                                                            <Button size="sm" variant="outline" onClick={() => openPanelists(sc)}>
+                                                                <Users className="mr-2 h-4 w-4" />
+                                                                Manage
+                                                            </Button>
+                                                        </TableCell>
+
+                                                        <TableCell className="align-top">{fmtDateTime(sc.updatedAt) || "—"}</TableCell>
+
+                                                        <TableCell className="align-top text-right">
+                                                            <div className="flex justify-end gap-2">
+                                                                <TooltipProvider>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <Button asChild size="sm" variant="outline">
+                                                                                <Link href={`/dashboard/admin/schedules/${sc.id}`}>
+                                                                                    <Eye className="mr-2 h-4 w-4" />
+                                                                                    View
+                                                                                </Link>
+                                                                            </Button>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent>Open schedule details</TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+
+                                                                <Button size="sm" variant="outline" onClick={() => openEdit(sc)}>
+                                                                    <Pencil className="mr-2 h-4 w-4" />
+                                                                    Edit
+                                                                </Button>
+
+                                                                <Button size="sm" variant="destructive" onClick={() => handleDelete(sc)}>
+                                                                    <Trash2 className="mr-2 h-4 w-4" />
+                                                                    Delete
+                                                                </Button>
+                                                            </div>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                )
+                                            })
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
+
+                {/* Create/Edit Schedule */}
+                <Dialog
+                    open={openUpsert}
+                    onOpenChange={(v) => {
+                        if (v) setOpenUpsert(true)
+                        else {
+                            setOpenUpsert(false)
+                            resetEditor()
+                        }
+                    }}
+                >
+                    <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle>{editing ? "Edit schedule" : "Create schedule"}</DialogTitle>
+                            <DialogDescription>
+                                Set date/time, room, and status. Group is selected on create.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>Group</Label>
+                                <Select
+                                    value={edGroupId || CLEAR_SELECT_VALUE}
+                                    onValueChange={(v) => setEdGroupId(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                >
+                                    <SelectTrigger disabled={Boolean(editing)}>
+                                        <SelectValue placeholder="Select group" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value={CLEAR_SELECT_VALUE}>Select group</SelectItem>
+                                        {groupOptions.map((g) => (
+                                            <SelectItem key={g.id} value={g.id}>
+                                                {groupLabel(g, "Group")}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                {editing ? (
+                                    <p className="text-xs text-muted-foreground">Group cannot be changed here.</p>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground">Required</p>
+                                )}
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Date</Label>
+                                <Input type="date" value={edDate} onChange={(e) => setEdDate(e.target.value)} />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Time</Label>
+                                <Input type="time" value={edTime} onChange={(e) => setEdTime(e.target.value)} />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Room</Label>
+                                <Input value={edRoom} onChange={(e) => setEdRoom(e.target.value)} placeholder="e.g., ICT Lab 1" />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Status</Label>
+                                <Select value={edStatus || "scheduled"} onValueChange={setEdStatus}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select status" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="scheduled">scheduled</SelectItem>
+                                        <SelectItem value="ongoing">ongoing</SelectItem>
+                                        <SelectItem value="completed">completed</SelectItem>
+                                        <SelectItem value="cancelled">cancelled</SelectItem>
+                                        <SelectItem value="archived">archived</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+
+                        <DialogFooter className="gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={() => {
+                                    setOpenUpsert(false)
+                                    resetEditor()
+                                }}
+                                disabled={saving}
+                            >
+                                Cancel
+                            </Button>
+                            <Button onClick={handleSave} disabled={saving}>
+                                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                Save
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+
+                {/* Panelists Manager */}
+                <Dialog
+                    open={openPanel}
+                    onOpenChange={(v) => {
+                        if (v) setOpenPanel(true)
+                        else {
+                            setOpenPanel(false)
+                            setPanelSchedule(null)
+                            setPanelists([])
+                            setPanelAddStaffId("")
+                        }
+                    }}
+                >
+                    <DialogContent className="max-w-2xl">
+                        <DialogHeader className="space-y-1">
+                            <DialogTitle className="flex items-center justify-between gap-3">
+                                <span>Panelists</span>
+                                <Button variant="ghost" size="icon" onClick={() => setOpenPanel(false)}>
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </DialogTitle>
+                            <DialogDescription>
+                                Assign staff panelists for this schedule. Only Staff accounts can be added as panelists.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="space-y-4">
+                            <div className="rounded-md border p-3">
+                                <div className="text-sm font-medium">
+                                    {panelSchedule
+                                        ? safeText(panelSchedule.groupTitle, groupLabel(groupsById.get(panelSchedule.groupId), "Group"))
+                                        : "Schedule"}
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                    {panelSchedule ? fmtDateTime(panelSchedule.scheduledAt) : ""}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                <div className="space-y-2 md:col-span-2">
+                                    <Label>Add panelist (Staff)</Label>
+                                    <Select
+                                        value={panelAddStaffId || CLEAR_SELECT_VALUE}
+                                        onValueChange={(v) => setPanelAddStaffId(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                    >
                                         <SelectTrigger>
-                                            <SelectValue placeholder={optionsLoading ? "Loading…" : "All groups"} />
+                                            <SelectValue placeholder="Select staff" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="">All groups</SelectItem>
-                                            {groupOptions.map((g) => (
-                                                <SelectItem key={g.id} value={g.id}>
-                                                    {g.title}
+                                            <SelectItem value={CLEAR_SELECT_VALUE}>Select staff</SelectItem>
+                                            {staffUsers.map((u) => (
+                                                <SelectItem key={u.id} value={u.id}>
+                                                    {userLabel(u)}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
                                 </div>
 
-                                <div className="sm:col-span-2 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">Status</div>
-                                    <Input value={status} onChange={(e) => setStatus(e.target.value)} placeholder="scheduled / completed / ..." />
-                                </div>
-
-                                <div className="sm:col-span-3 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">From</div>
-                                    <Input type="datetime-local" value={fromLocal} onChange={(e) => setFromLocal(e.target.value)} />
-                                </div>
-
-                                <div className="sm:col-span-3 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">To</div>
-                                    <Input type="datetime-local" value={toLocal} onChange={(e) => setToLocal(e.target.value)} />
+                                <div className="flex items-end">
+                                    <Button className="w-full" onClick={addPanelist} disabled={panelAdding || panelLoading}>
+                                        {panelAdding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Users className="mr-2 h-4 w-4" />}
+                                        Add
+                                    </Button>
                                 </div>
                             </div>
 
-                            <div className="mt-3">
-                                <Button onClick={loadSchedules} disabled={listLoading} className="gap-2">
-                                    <Search className="h-4 w-4" />
-                                    Apply
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
+                            <Separator />
 
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                        {/* Results */}
-                        <Card className="lg:col-span-6">
-                            <CardHeader>
-                                <CardTitle className="flex items-center justify-between">
-                                    <span>Results</span>
-                                    <Badge variant="outline">{schedules.length} items</Badge>
-                                </CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-2">
-                                {listLoading ? (
-                                    <div className="text-sm text-muted-foreground">Loading…</div>
-                                ) : schedules.length === 0 ? (
-                                    <div className="text-sm text-muted-foreground">No schedules found.</div>
-                                ) : (
-                                    <ScrollArea className="h-130 rounded-md border">
-                                        <div className="space-y-2 p-3">
-                                            {schedules.map((s) => {
-                                                const active = selectedId === s.id
-                                                return (
-                                                    <button
-                                                        key={s.id}
-                                                        type="button"
-                                                        onClick={() => void onSelect(s.id)}
-                                                        className={[
-                                                            "w-full rounded-md border p-3 text-left transition",
-                                                            active ? "bg-muted/40" : "hover:bg-muted/20",
-                                                        ].join(" ")}
-                                                    >
-                                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                                            <div className="truncate text-sm font-semibold">
-                                                                {groupLabel(s.groupId)} • {fmtDate(s.scheduledAt)}
-                                                            </div>
-                                                            <Badge variant="secondary">{s.status}</Badge>
-                                                        </div>
-
-                                                        <div className="mt-1 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                                                            <div className="truncate">Room: {s.room ?? "—"}</div>
-                                                            <div className="truncate">Created by: {s.createdBy ? userLabel(s.createdBy) : "—"}</div>
-                                                            {showIds ? (
-                                                                <>
-                                                                    <div className="truncate">Schedule ID: {s.id}</div>
-                                                                    <div className="truncate">Group ID: {s.groupId}</div>
-                                                                </>
-                                                            ) : null}
-                                                        </div>
-                                                    </button>
-                                                )
-                                            })}
-                                        </div>
-                                    </ScrollArea>
-                                )}
-                            </CardContent>
-                        </Card>
-
-                        {/* Details */}
-                        <Card className="lg:col-span-6">
-                            <CardHeader>
-                                <CardTitle className="flex items-center justify-between">
-                                    <span>Details</span>
-                                    {selected ? <Badge variant="outline">{selected.status}</Badge> : <Badge variant="outline">None selected</Badge>}
-                                </CardTitle>
-                            </CardHeader>
-
-                            <CardContent className="space-y-4">
-                                {!selected ? (
-                                    <div className="text-sm text-muted-foreground">
-                                        Select a schedule to view panelists and edit fields.
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="space-y-1 text-xs text-muted-foreground">
-                                            <div><span className="font-medium">Group:</span> {groupLabel(selected.groupId)}</div>
-                                            <div><span className="font-medium">Created by:</span> {selected.createdBy ? userLabel(selected.createdBy) : "—"}</div>
-                                            <div><span className="font-medium">Created:</span> {fmtDate(selected.createdAt)}</div>
-                                            <div><span className="font-medium">Updated:</span> {fmtDate(selected.updatedAt)}</div>
-                                            {showIds ? <div className="truncate"><span className="font-medium">Schedule ID:</span> {selected.id}</div> : null}
-                                        </div>
-
-                                        <Separator />
-
-                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                                            <div className="sm:col-span-2 space-y-1">
-                                                <div className="text-xs font-medium text-muted-foreground">Scheduled at</div>
-                                                <Input
-                                                    type="datetime-local"
-                                                    value={editScheduledAtLocal}
-                                                    onChange={(e) => setEditScheduledAtLocal(e.target.value)}
-                                                />
+                            {panelLoading ? (
+                                <div className="space-y-2">
+                                    <Skeleton className="h-10 w-full" />
+                                    <Skeleton className="h-10 w-full" />
+                                </div>
+                            ) : panelists.length === 0 ? (
+                                <div className="rounded-md border p-6 text-center text-sm text-muted-foreground">
+                                    No panelists assigned yet.
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {panelists.map((p) => (
+                                        <div
+                                            key={p.staffId}
+                                            className={cn("flex items-center gap-3 rounded-md border px-3 py-2")}
+                                        >
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-sm font-medium">
+                                                    {safeText(p.staffName, safeText(p.staffEmail, "Staff"))}
+                                                </div>
+                                                {p.staffEmail ? (
+                                                    <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
+                                                ) : null}
                                             </div>
-
-                                            <div className="space-y-1">
-                                                <div className="text-xs font-medium text-muted-foreground">Status</div>
-                                                <Input value={editStatus} onChange={(e) => setEditStatus(e.target.value)} />
-                                            </div>
-
-                                            <div className="sm:col-span-3 space-y-1">
-                                                <div className="text-xs font-medium text-muted-foreground">Room</div>
-                                                <Input value={editRoom} onChange={(e) => setEditRoom(e.target.value)} placeholder="e.g. Room 301" />
-                                            </div>
-                                        </div>
-
-                                        <div className="flex flex-wrap gap-2">
-                                            <Button onClick={() => void onSave()} disabled={saveLoading} className="gap-2">
-                                                <Save className="h-4 w-4" />
-                                                Save changes
-                                            </Button>
-
                                             <Button
-                                                variant="outline"
-                                                onClick={() => {
-                                                    setEditScheduledAtLocal(toDatetimeLocalValue(selected.scheduledAt))
-                                                    setEditRoom(selected.room ?? "")
-                                                    setEditStatus(selected.status ?? "")
-                                                }}
-                                                disabled={saveLoading}
-                                            >
-                                                Reset
-                                            </Button>
-
-                                            <Button
+                                                size="sm"
                                                 variant="destructive"
-                                                onClick={() => void onDelete()}
-                                                disabled={deleteLoading}
-                                                className="gap-2"
+                                                onClick={() => removePanelist(p.staffId)}
+                                                disabled={panelBusyId === p.staffId}
                                             >
-                                                <Trash2 className="h-4 w-4" />
-                                                Delete
+                                                {panelBusyId === p.staffId ? (
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                ) : null}
+                                                Remove
                                             </Button>
                                         </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
 
-                                        <Separator />
-
-                                        <div className="space-y-2">
-                                            <div className="flex items-center justify-between">
-                                                <div className="flex items-center gap-2 text-sm font-semibold">
-                                                    <Users className="h-4 w-4" />
-                                                    Panelists
-                                                </div>
-                                                {panelistsLoading ? (
-                                                    <Badge variant="outline">Loading…</Badge>
-                                                ) : (
-                                                    <Badge variant="outline">{panelists.length} panelists</Badge>
-                                                )}
-                                            </div>
-
-                                            {panelistsLoading ? (
-                                                <div className="text-sm text-muted-foreground">Loading panelists…</div>
-                                            ) : panelists.length === 0 ? (
-                                                <div className="text-sm text-muted-foreground">No panelists assigned.</div>
-                                            ) : (
-                                                <div className="space-y-2">
-                                                    {panelists.map((p) => (
-                                                        <div key={p.staffId} className="flex items-start justify-between gap-3 rounded-md border p-3">
-                                                            <div className="min-w-0">
-                                                                <div className="text-sm font-medium truncate">{p.staffName}</div>
-                                                                <div className="text-xs text-muted-foreground truncate">{p.staffEmail}</div>
-                                                                {showIds ? (
-                                                                    <div className="text-xs text-muted-foreground truncate">ID: {p.staffId}</div>
-                                                                ) : null}
-                                                            </div>
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                onClick={() => void onRemovePanelist(p.staffId)}
-                                                                disabled={panelistActionLoading}
-                                                            >
-                                                                Remove
-                                                            </Button>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-
-                                            <Separator />
-
-                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                                                <div className="sm:col-span-2 space-y-1">
-                                                    <div className="text-xs font-medium text-muted-foreground">Add panelist</div>
-                                                    <Select value={addStaffId} onValueChange={setAddStaffId}>
-                                                        <SelectTrigger>
-                                                            <SelectValue placeholder={optionsLoading ? "Loading…" : "Select staff"} />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {staffOptions.map((u) => (
-                                                                <SelectItem key={u.id} value={u.id}>
-                                                                    {u.name}{u.email ? ` (${u.email})` : ""}
-                                                                </SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
-                                                <div className="flex items-end">
-                                                    <Button
-                                                        onClick={() => void onAddPanelist()}
-                                                        disabled={panelistActionLoading}
-                                                        className="w-full gap-2"
-                                                    >
-                                                        <UserPlus className="h-4 w-4" />
-                                                        Add
-                                                    </Button>
-                                                </div>
-                                            </div>
-
-                                            <Separator />
-
-                                            <div className="space-y-2">
-                                                <div className="text-sm font-semibold">Bulk set panelists (no UUID typing)</div>
-                                                <Input
-                                                    value={bulkQuery}
-                                                    onChange={(e) => setBulkQuery(e.target.value)}
-                                                    placeholder="Search staff name/email…"
-                                                />
-                                                <ScrollArea className="h-56 rounded-md border">
-                                                    <div className="space-y-2 p-3">
-                                                        {filteredStaff.map((u) => {
-                                                            const checked = bulkStaffIds.includes(u.id)
-                                                            return (
-                                                                <label key={u.id} className="flex items-start gap-3 rounded-md border p-2 cursor-pointer">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={checked}
-                                                                        onChange={() => toggleBulk(u.id)}
-                                                                        className="mt-1"
-                                                                    />
-                                                                    <div className="min-w-0">
-                                                                        <div className="text-sm font-medium truncate">{u.name}</div>
-                                                                        <div className="text-xs text-muted-foreground truncate">{u.email}</div>
-                                                                        {showIds ? <div className="text-xs text-muted-foreground truncate">ID: {u.id}</div> : null}
-                                                                    </div>
-                                                                </label>
-                                                            )
-                                                        })}
-                                                        {filteredStaff.length === 0 ? (
-                                                            <div className="text-sm text-muted-foreground">No staff match your search.</div>
-                                                        ) : null}
-                                                    </div>
-                                                </ScrollArea>
-
-                                                <Button
-                                                    variant="secondary"
-                                                    onClick={() => void onApplyBulkPanelists()}
-                                                    disabled={panelistActionLoading}
-                                                >
-                                                    Apply selected panelists
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </>
-                                )}
-                            </CardContent>
-                        </Card>
-                    </div>
-                </>
-            )}
+                        <DialogFooter>
+                            <Button variant="outline" onClick={() => setOpenPanel(false)}>
+                                Close
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            </div>
         </DashboardLayout>
     )
 }

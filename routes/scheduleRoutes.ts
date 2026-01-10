@@ -116,9 +116,9 @@ export async function GET(req: NextRequest) {
 
             if (q) {
                 where.push(`(
-                    s.room ilike $${idx} or
-                    s.status ilike $${idx} or
-                    g.title ilike $${idx}
+                    coalesce(s.room,'') ilike $${idx} or
+                    coalesce(s.status,'') ilike $${idx} or
+                    coalesce(g.title,'') ilike $${idx}
                 )`)
                 args.push(`%${q}%`)
                 idx++
@@ -175,14 +175,16 @@ export async function GET(req: NextRequest) {
                 return NextResponse.json({ ok: false, message: "scheduleId is required" }, { status: 400 })
             }
 
+            // NOTE:
+            // Your migration creates "schedule_panelists" (NOT "defense_schedule_panelists")
             const r = await db.query(
                 `
                 select
                   p.schedule_id as "scheduleId",
                   p.staff_id as "staffId",
-                  coalesce(u.name, concat_ws(' ', u.first_name, u.last_name), u.email) as "staffName",
+                  coalesce(u.name, u.email) as "staffName",
                   u.email as "staffEmail"
-                from defense_schedule_panelists p
+                from schedule_panelists p
                 join users u on u.id = p.staff_id
                 where p.schedule_id = $1
                 order by "staffName" asc
@@ -247,7 +249,7 @@ export async function POST(req: NextRequest) {
 
             await db.query(
                 `
-                insert into defense_schedule_panelists (schedule_id, staff_id)
+                insert into schedule_panelists (schedule_id, staff_id)
                 values ($1, $2)
                 on conflict do nothing
                 `,
@@ -315,7 +317,7 @@ export async function DELETE(req: NextRequest) {
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 
             // remove panelists first
-            await db.query(`delete from defense_schedule_panelists where schedule_id = $1`, [id])
+            await db.query(`delete from schedule_panelists where schedule_id = $1`, [id])
             await db.query(`delete from defense_schedules where id = $1`, [id])
 
             return NextResponse.json({ ok: true })
@@ -328,7 +330,7 @@ export async function DELETE(req: NextRequest) {
                 return NextResponse.json({ ok: false, message: "scheduleId and staffId are required" }, { status: 400 })
             }
 
-            await db.query(`delete from defense_schedule_panelists where schedule_id = $1 and staff_id = $2`, [
+            await db.query(`delete from schedule_panelists where schedule_id = $1 and staff_id = $2`, [
                 scheduleId,
                 staffId,
             ])
