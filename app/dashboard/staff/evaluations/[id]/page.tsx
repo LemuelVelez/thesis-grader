@@ -141,11 +141,16 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
 
     const evaluationId = params?.id
 
-    const canView =
-        String(user?.role ?? "").toLowerCase() === "staff" || String(user?.role ?? "").toLowerCase() === "admin"
+    const role = String(user?.role ?? "").toLowerCase()
+    const isStaff = role === "staff"
+    const isAdmin = role === "admin"
+    const canRoleView = isStaff || isAdmin
+    const actorId = String(user?.id ?? "")
 
     const [loading, setLoading] = React.useState(true)
     const [saving, setSaving] = React.useState(false)
+
+    const [forbidden, setForbidden] = React.useState(false)
 
     const [evaluation, setEvaluation] = React.useState<DbEvaluation | null>(null)
     const [schedule, setSchedule] = React.useState<DbDefenseSchedule | null>(null)
@@ -158,16 +163,41 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
     // form state keyed by criterionId
     const [form, setForm] = React.useState<Record<string, { score: string; comment: string }>>({})
 
-    const locked = String(evaluation?.status ?? "").toLowerCase() === "locked" || String(evaluation?.status ?? "").toLowerCase() === "finalized"
+    const locked =
+        String(evaluation?.status ?? "").toLowerCase() === "locked" ||
+        String(evaluation?.status ?? "").toLowerCase() === "finalized"
+
+    const isAssignedToMe = React.useMemo(() => {
+        if (!evaluation) return false
+        return String(evaluation.evaluatorId ?? "") === actorId
+    }, [evaluation, actorId])
+
+    const canEdit = isAdmin || (isStaff && isAssignedToMe)
 
     const load = React.useCallback(async () => {
         if (!evaluationId) return
         setLoading(true)
+        setForbidden(false)
+
         try {
             const evRes = await fetchJson<ApiOk<{ evaluation: DbEvaluation }>>(
                 `/api/evaluation?resource=evaluations&id=${encodeURIComponent(evaluationId)}`
             )
             const ev = evRes.evaluation ?? null
+
+            // Staff must only access their own assigned evaluation
+            if (isStaff && ev && actorId && String(ev.evaluatorId) !== actorId) {
+                setForbidden(true)
+                setEvaluation(null)
+                setSchedule(null)
+                setGroup(null)
+                setTemplates([])
+                setTemplateId("")
+                setCriteria([])
+                setForm({})
+                return
+            }
+
             setEvaluation(ev)
 
             if (!ev?.scheduleId) {
@@ -192,10 +222,12 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
             }
 
             // templates (staff can view; admin manages)
-            const tRes = await fetchJson<ApiOk<{ templates: DbRubricTemplate[]; total: number }>>(
-                `/api/evaluation?resource=rubricTemplates&limit=100&offset=0`
-            )
-            const tpls = Array.isArray(tRes.templates) ? tRes.templates : []
+            const tRes = await fetchJson<ApiOk<any>>(`/api/evaluation?resource=rubricTemplates&limit=100&offset=0`)
+            const tpls: DbRubricTemplate[] = Array.isArray(tRes?.templates)
+                ? tRes.templates
+                : Array.isArray(tRes?.items)
+                    ? tRes.items
+                    : []
             setTemplates(tpls)
 
             const active = tpls.filter((t) => !!t.active)
@@ -210,18 +242,26 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
             const chosenId = pick?.id ?? ""
             setTemplateId(chosenId)
 
-            if (chosenId) {
-                const cRes = await fetchJson<ApiOk<{ criteria: DbRubricCriterion[] }>>(
+            if (chosenId && ev?.id) {
+                const cRes = await fetchJson<ApiOk<any>>(
                     `/api/evaluation?resource=rubricCriteria&templateId=${encodeURIComponent(chosenId)}`
                 )
-                const crit = Array.isArray(cRes.criteria) ? cRes.criteria : []
+                const crit: DbRubricCriterion[] = Array.isArray(cRes?.criteria)
+                    ? cRes.criteria
+                    : Array.isArray(cRes?.items)
+                        ? cRes.items
+                        : []
                 setCriteria(crit)
 
                 // scores
-                const sRes = await fetchJson<ApiOk<{ scores: DbEvaluationScore[] }>>(
+                const sRes = await fetchJson<ApiOk<any>>(
                     `/api/evaluation?resource=evaluationScores&evaluationId=${encodeURIComponent(ev.id)}`
                 )
-                const scores = Array.isArray(sRes.scores) ? sRes.scores : []
+                const scores: DbEvaluationScore[] = Array.isArray(sRes?.scores)
+                    ? sRes.scores
+                    : Array.isArray(sRes?.items)
+                        ? sRes.items
+                        : []
 
                 const next: Record<string, { score: string; comment: string }> = {}
                 for (const c of crit) {
@@ -241,16 +281,16 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
         } finally {
             setLoading(false)
         }
-    }, [evaluationId])
+    }, [evaluationId, isStaff, actorId])
 
     React.useEffect(() => {
         if (isLoading) return
-        if (!canView) {
+        if (!canRoleView) {
             setLoading(false)
             return
         }
         load()
-    }, [isLoading, canView, load])
+    }, [isLoading, canRoleView, load])
 
     const computed = React.useMemo(() => {
         let totalWeight = 0
@@ -272,6 +312,10 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
 
     const saveDraft = React.useCallback(async () => {
         if (!evaluation?.id) return
+        if (!canEdit) {
+            toast.error("Forbidden", { description: "You can only edit evaluations assigned to you." })
+            return
+        }
         if (!criteria.length) {
             toast.error("No rubric criteria", { description: "Ask Admin to set an active rubric template." })
             return
@@ -307,11 +351,15 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
         } finally {
             setSaving(false)
         }
-    }, [evaluation?.id, criteria, form])
+    }, [evaluation?.id, criteria, form, canEdit])
 
     const finalize = React.useCallback(async () => {
         if (!evaluation?.id) return
         if (locked) return
+        if (!canEdit) {
+            toast.error("Forbidden", { description: "You can only finalize evaluations assigned to you." })
+            return
+        }
 
         if (!criteria.length) {
             toast.error("No rubric criteria", { description: "Ask Admin to set an active rubric template." })
@@ -367,9 +415,9 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
         } finally {
             setSaving(false)
         }
-    }, [criteria, evaluation?.id, form, locked])
+    }, [criteria, evaluation?.id, form, locked, canEdit])
 
-    if (!canView) {
+    if (!canRoleView) {
         return (
             <DashboardLayout>
                 <Card>
@@ -378,6 +426,34 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                         <CardDescription>This page is for Staff/Admin only.</CardDescription>
                     </CardHeader>
                 </Card>
+            </DashboardLayout>
+        )
+    }
+
+    if (forbidden) {
+        return (
+            <DashboardLayout>
+                <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                        <Link href="/dashboard/staff/evaluations">
+                            <Button variant="ghost" size="sm">
+                                <ArrowLeft className="mr-2 h-4 w-4" />
+                                Back
+                            </Button>
+                        </Link>
+                    </div>
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Forbidden</CardTitle>
+                            <CardDescription>You do not have access to this evaluation.</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <Button variant="outline" onClick={() => router.push("/dashboard/staff/evaluations")}>
+                                Go back
+                            </Button>
+                        </CardContent>
+                    </Card>
+                </div>
             </DashboardLayout>
         )
     }
@@ -404,11 +480,11 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" onClick={saveDraft} disabled={loading || saving || locked}>
+                        <Button variant="outline" onClick={saveDraft} disabled={loading || saving || locked || !canEdit}>
                             <Save className="mr-2 h-4 w-4" />
                             Save Draft
                         </Button>
-                        <Button onClick={finalize} disabled={loading || saving || locked}>
+                        <Button onClick={finalize} disabled={loading || saving || locked || !canEdit}>
                             <Lock className="mr-2 h-4 w-4" />
                             Finalize & Lock
                         </Button>
@@ -495,9 +571,7 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
 
                                 <div className="text-xs text-muted-foreground">
                                     Template:{" "}
-                                    <span className="font-medium">
-                                        {templates.find((t) => t.id === templateId)?.name ?? "—"}
-                                    </span>
+                                    <span className="font-medium">{templates.find((t) => t.id === templateId)?.name ?? "—"}</span>
                                     {templates.find((t) => t.id === templateId)?.version != null ? (
                                         <>
                                             {" "}
@@ -505,6 +579,12 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                                         </>
                                     ) : null}
                                 </div>
+
+                                {!canEdit ? (
+                                    <div className="text-xs text-muted-foreground">
+                                        You can view this evaluation, but you cannot edit it (not assigned to you).
+                                    </div>
+                                ) : null}
                             </CardHeader>
 
                             <CardContent className="space-y-5">
@@ -542,7 +622,7 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                                                                 }
                                                                 inputMode="numeric"
                                                                 placeholder={`${c.minScore} - ${c.maxScore}`}
-                                                                disabled={locked}
+                                                                disabled={locked || !canEdit}
                                                             />
                                                         </div>
                                                     </div>
@@ -558,7 +638,7 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                                                                 }))
                                                             }
                                                             placeholder="Write feedback for this criterion..."
-                                                            disabled={locked}
+                                                            disabled={locked || !canEdit}
                                                             className="min-h-24"
                                                         />
                                                     </div>

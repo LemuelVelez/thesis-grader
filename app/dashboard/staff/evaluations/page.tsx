@@ -18,6 +18,7 @@ type ApiOk<T> = { ok: true } & T
 
 type EvaluationStatus = "pending" | "submitted" | "locked"
 type StatusFilter = "all" | EvaluationStatus
+type ScopeFilter = "mine" | "all" // for Admin viewing inside staff area
 
 type DbEvaluation = {
     id: string
@@ -118,25 +119,53 @@ function StatusBadge({ status }: { status: string }) {
 export default function StaffEvaluationsPage() {
     const { user, isLoading } = useAuth() as any
 
+    const role = String(user?.role ?? "").toLowerCase()
+    const isStaff = role === "staff"
+    const isAdmin = role === "admin"
+    const canView = isStaff || isAdmin
+    const actorId = String(user?.id ?? "")
+
     const [loading, setLoading] = React.useState(false)
     const [rows, setRows] = React.useState<Row[]>([])
     const [q, setQ] = React.useState("")
     const [status, setStatus] = React.useState<StatusFilter>("all")
 
-    const canView =
-        String(user?.role ?? "").toLowerCase() === "staff" || String(user?.role ?? "").toLowerCase() === "admin"
+    // If an admin is viewing the staff area, optionally allow "Mine" view
+    const [scope, setScope] = React.useState<ScopeFilter>("mine")
+    const scopeInitRef = React.useRef(false)
+
+    React.useEffect(() => {
+        if (!canView) return
+        if (scopeInitRef.current) return
+        // default: staff -> mine, admin -> all (since admin has full visibility anyway)
+        setScope(isAdmin ? "all" : "mine")
+        scopeInitRef.current = true
+    }, [canView, isAdmin])
 
     const load = React.useCallback(async () => {
-        if (!user?.id) return
+        if (!actorId) return
         setLoading(true)
         try {
-            const evUrl =
-                status === "all"
-                    ? `/api/evaluation?resource=evaluations&limit=200&offset=0`
-                    : `/api/evaluation?resource=evaluations&status=${encodeURIComponent(status)}&limit=200&offset=0`
+            const sp = new URLSearchParams()
+            sp.set("resource", "evaluations")
+            sp.set("limit", "200")
+            sp.set("offset", "0")
+            if (status !== "all") sp.set("status", status)
 
+            // Staff should only see their assignments
+            if (isStaff) sp.set("evaluatorId", actorId)
+
+            // Admin can see all, but can also choose "mine"
+            if (isAdmin && scope === "mine") sp.set("evaluatorId", actorId)
+
+            const evUrl = `/api/evaluation?${sp.toString()}`
             const evRes = await fetchJson<ApiOk<{ evaluations: DbEvaluation[] }>>(evUrl)
-            const evaluations = Array.isArray(evRes.evaluations) ? evRes.evaluations : []
+
+            const raw = Array.isArray(evRes.evaluations) ? evRes.evaluations : []
+
+            // Safety-net client filter (in case backend params are ignored/misconfigured)
+            const evaluations =
+                isStaff || (isAdmin && scope === "mine") ? raw.filter((e) => String(e.evaluatorId) === actorId) : raw
 
             // Fetch schedules for each evaluation
             const scheduleMap = new Map<string, DbDefenseSchedule | null>()
@@ -202,7 +231,7 @@ export default function StaffEvaluationsPage() {
         } finally {
             setLoading(false)
         }
-    }, [user?.id, status])
+    }, [actorId, status, isStaff, isAdmin, scope])
 
     React.useEffect(() => {
         if (isLoading) return
@@ -228,9 +257,7 @@ export default function StaffEvaluationsPage() {
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <h1 className="text-2xl font-semibold">Evaluations</h1>
-                        <p className="text-sm text-muted-foreground">
-                            View your assigned evaluation history and continue scoring.
-                        </p>
+                        <p className="text-sm text-muted-foreground">View your assigned evaluation history and continue scoring.</p>
                     </div>
 
                     <Button onClick={load} disabled={loading || isLoading || !canView}>
@@ -296,6 +323,30 @@ export default function StaffEvaluationsPage() {
                                     </Button>
                                 </div>
                             </div>
+
+                            {isAdmin ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="text-xs text-muted-foreground">
+                                        Admin view: choose whether to see all evaluators or only your own records.
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <Button
+                                            type="button"
+                                            variant={scope === "all" ? "default" : "outline"}
+                                            onClick={() => setScope("all")}
+                                        >
+                                            All evaluators
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant={scope === "mine" ? "default" : "outline"}
+                                            onClick={() => setScope("mine")}
+                                        >
+                                            Only me
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : null}
                         </CardHeader>
 
                         <CardContent>

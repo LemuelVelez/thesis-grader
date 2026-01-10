@@ -13,6 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 
 type DefenseSchedule = {
     id: string
@@ -32,6 +39,18 @@ type SchedulePanelist = {
     staffEmail: string
 }
 
+type UserPublic = {
+    id: string
+    name: string
+    email: string
+    role?: string
+}
+
+type ThesisGroup = {
+    id: string
+    title: string
+}
+
 function fmtDate(v: string | null | undefined) {
     if (!v) return "—"
     const d = new Date(v)
@@ -43,7 +62,6 @@ function toDatetimeLocalValue(iso: string | null | undefined) {
     if (!iso) return ""
     const d = new Date(iso)
     if (Number.isNaN(d.getTime())) return ""
-
     const pad = (n: number) => String(n).padStart(2, "0")
     const yyyy = d.getFullYear()
     const mm = pad(d.getMonth() + 1)
@@ -112,9 +130,15 @@ async function apiDelete<T>(path: string, params: Record<string, string | undefi
     return json as T
 }
 
+function uniq(ids: Array<string | null | undefined>) {
+    return Array.from(new Set(ids.filter(Boolean).map((x) => String(x))))
+}
+
 export default function AdminSchedulesPage() {
     const { loading, user } = useAuth()
     const isAdmin = String(user?.role ?? "").toLowerCase() === "admin"
+
+    const [showIds, setShowIds] = React.useState(false)
 
     // Filters
     const [q, setQ] = React.useState("")
@@ -128,9 +152,21 @@ export default function AdminSchedulesPage() {
     const [schedules, setSchedules] = React.useState<DefenseSchedule[]>([])
     const [selectedId, setSelectedId] = React.useState<string | null>(null)
 
+    // Lookups (names/titles)
+    const [userMap, setUserMap] = React.useState<Record<string, UserPublic>>({})
+    const [groupMap, setGroupMap] = React.useState<Record<string, ThesisGroup>>({})
+    const inFlightUsers = React.useRef(new Set<string>())
+    const inFlightGroups = React.useRef(new Set<string>())
+
+    // Options
+    const [groupOptions, setGroupOptions] = React.useState<ThesisGroup[]>([])
+    const [staffOptions, setStaffOptions] = React.useState<UserPublic[]>([])
+    const [optionsLoading, setOptionsLoading] = React.useState(false)
+
     // Panelists
     const [panelistsLoading, setPanelistsLoading] = React.useState(false)
     const [panelists, setPanelists] = React.useState<SchedulePanelist[]>([])
+    const [panelistActionLoading, setPanelistActionLoading] = React.useState(false)
 
     // Edit form
     const selected = React.useMemo(() => schedules.find((s) => s.id === selectedId) ?? null, [schedules, selectedId])
@@ -140,10 +176,142 @@ export default function AdminSchedulesPage() {
     const [saveLoading, setSaveLoading] = React.useState(false)
     const [deleteLoading, setDeleteLoading] = React.useState(false)
 
-    // Panelist actions
+    // Add panelist (by dropdown)
     const [addStaffId, setAddStaffId] = React.useState("")
-    const [panelistActionLoading, setPanelistActionLoading] = React.useState(false)
-    const [setStaffIdsText, setSetStaffIdsText] = React.useState("")
+
+    // Bulk panelist selection
+    const [bulkQuery, setBulkQuery] = React.useState("")
+    const [bulkStaffIds, setBulkStaffIds] = React.useState<string[]>([])
+
+    const ensureUsers = React.useCallback(
+        async (ids: string[]) => {
+            const missing = ids.filter((id) => id && !userMap[id] && !inFlightUsers.current.has(id))
+            if (!missing.length) return
+
+            missing.forEach((id) => inFlightUsers.current.add(id))
+            try {
+                const results = await Promise.all(
+                    missing.map(async (id) => {
+                        try {
+                            const data = await apiGet<{ ok: true; user: UserPublic }>("/api/profiles", {
+                                resource: "users",
+                                id,
+                            })
+                            return data.user
+                        } catch {
+                            return null
+                        }
+                    })
+                )
+
+                setUserMap((prev) => {
+                    const next = { ...prev }
+                    for (const u of results) {
+                        if (u?.id) next[u.id] = u
+                    }
+                    return next
+                })
+            } finally {
+                missing.forEach((id) => inFlightUsers.current.delete(id))
+            }
+        },
+        [userMap]
+    )
+
+    const ensureGroups = React.useCallback(
+        async (ids: string[]) => {
+            const missing = ids.filter((id) => id && !groupMap[id] && !inFlightGroups.current.has(id))
+            if (!missing.length) return
+
+            missing.forEach((id) => inFlightGroups.current.add(id))
+            try {
+                const results = await Promise.all(
+                    missing.map(async (id) => {
+                        try {
+                            const data = await apiGet<{ ok: true; group: ThesisGroup }>("/api/thesis", {
+                                resource: "groups",
+                                id,
+                            })
+                            return data.group
+                        } catch {
+                            return null
+                        }
+                    })
+                )
+
+                setGroupMap((prev) => {
+                    const next = { ...prev }
+                    for (const g of results) {
+                        if (g?.id) next[g.id] = g
+                    }
+                    return next
+                })
+            } finally {
+                missing.forEach((id) => inFlightGroups.current.delete(id))
+            }
+        },
+        [groupMap]
+    )
+
+    const loadOptions = React.useCallback(async () => {
+        if (!isAdmin) return
+        setOptionsLoading(true)
+        try {
+            const [groupsRes, staffRes] = await Promise.all([
+                apiGet<{ ok: true; groups: ThesisGroup[]; total: number }>("/api/thesis", {
+                    resource: "groups",
+                    limit: "200",
+                    offset: "0",
+                }),
+                apiGet<{ ok: true; users: UserPublic[]; total: number }>("/api/profiles", {
+                    resource: "users",
+                    role: "staff",
+                    limit: "200",
+                    offset: "0",
+                }),
+            ])
+
+            const groups = (groupsRes.groups ?? []).slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""))
+            setGroupOptions(groups)
+            setGroupMap((prev) => {
+                const next = { ...prev }
+                for (const g of groups) next[g.id] = g
+                return next
+            })
+
+            const staff = (staffRes.users ?? []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+            setStaffOptions(staff)
+            setUserMap((prev) => {
+                const next = { ...prev }
+                for (const u of staff) next[u.id] = u
+                return next
+            })
+        } catch (e: any) {
+            toast.error("Failed to load dropdown options", { description: e?.message || "Please try again." })
+        } finally {
+            setOptionsLoading(false)
+        }
+    }, [isAdmin])
+
+    const userLabel = React.useCallback(
+        (id: string | null | undefined) => {
+            const key = String(id ?? "")
+            if (!key) return "—"
+            const u = userMap[key]
+            return u?.name ? u.name : "Unknown user"
+        },
+        [userMap]
+    )
+
+    const groupLabel = React.useCallback(
+        (id: string | null | undefined) => {
+            const key = String(id ?? "")
+            if (!key) return "—"
+            const g = groupMap[key]
+            return g?.title ? g.title : "Unknown group"
+        },
+        [groupMap]
+    )
 
     const loadSchedules = React.useCallback(async () => {
         setListLoading(true)
@@ -164,13 +332,18 @@ export default function AdminSchedulesPage() {
                     offset: "0",
                 }
             )
-            setSchedules(data.schedules ?? [])
+            const items = data.schedules ?? []
+            setSchedules(items)
+
+            const groupIds = uniq(items.map((s) => s.groupId))
+            const createdByIds = uniq(items.map((s) => s.createdBy))
+            await Promise.all([ensureGroups(groupIds), ensureUsers(createdByIds)])
         } catch (e: any) {
             toast.error("Failed to load schedules", { description: e?.message || "Please try again." })
         } finally {
             setListLoading(false)
         }
-    }, [q, groupId, status, fromLocal, toLocal])
+    }, [q, groupId, status, fromLocal, toLocal, ensureGroups, ensureUsers])
 
     const loadPanelists = React.useCallback(async (scheduleId: string) => {
         setPanelistsLoading(true)
@@ -179,8 +352,9 @@ export default function AdminSchedulesPage() {
                 "/api/schedule",
                 { resource: "panelists", scheduleId }
             )
-            setPanelists(data.panelists ?? [])
-            setSetStaffIdsText((data.panelists ?? []).map((p) => p.staffId).join(", "))
+            const list = data.panelists ?? []
+            setPanelists(list)
+            setBulkStaffIds(list.map((p) => p.staffId))
         } catch (e: any) {
             toast.error("Failed to load panelists", { description: e?.message || "Please try again." })
         } finally {
@@ -190,6 +364,7 @@ export default function AdminSchedulesPage() {
 
     React.useEffect(() => {
         if (!isAdmin) return
+        void loadOptions()
         void loadSchedules()
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isAdmin])
@@ -200,7 +375,10 @@ export default function AdminSchedulesPage() {
         setEditRoom(selected.room ?? "")
         setEditStatus(selected.status ?? "")
         void loadPanelists(selected.id)
-    }, [selected, loadPanelists])
+
+        void ensureGroups(uniq([selected.groupId]))
+        void ensureUsers(uniq([selected.createdBy]))
+    }, [selected, loadPanelists, ensureGroups, ensureUsers])
 
     const onSelect = async (id: string) => {
         setSelectedId((prev) => (prev === id ? null : id))
@@ -252,7 +430,7 @@ export default function AdminSchedulesPage() {
     const onAddPanelist = async () => {
         if (!selected) return
         const sid = String(addStaffId ?? "").trim()
-        if (!sid) return toast.error("Staff ID is required")
+        if (!sid) return toast.error("Please select a staff member")
 
         setPanelistActionLoading(true)
         try {
@@ -281,16 +459,11 @@ export default function AdminSchedulesPage() {
         }
     }
 
-    const onSetPanelists = async () => {
+    const onApplyBulkPanelists = async () => {
         if (!selected) return
-        const ids = String(setStaffIdsText ?? "")
-            .split(",")
-            .map((x) => x.trim())
-            .filter(Boolean)
-
         setPanelistActionLoading(true)
         try {
-            await apiPatch("/api/schedule", { resource: "panelists" }, { scheduleId: selected.id, staffIds: ids })
+            await apiPatch("/api/schedule", { resource: "panelists" }, { scheduleId: selected.id, staffIds: bulkStaffIds })
             toast.success("Panelists updated")
             await loadPanelists(selected.id)
         } catch (e: any) {
@@ -298,6 +471,20 @@ export default function AdminSchedulesPage() {
         } finally {
             setPanelistActionLoading(false)
         }
+    }
+
+    const filteredStaff = React.useMemo(() => {
+        const qq = bulkQuery.trim().toLowerCase()
+        if (!qq) return staffOptions
+        return staffOptions.filter((s) => (s.name || "").toLowerCase().includes(qq) || (s.email || "").toLowerCase().includes(qq))
+    }, [staffOptions, bulkQuery])
+
+    const toggleBulk = (id: string) => {
+        setBulkStaffIds((prev) => {
+            const has = prev.includes(id)
+            if (has) return prev.filter((x) => x !== id)
+            return [...prev, id]
+        })
     }
 
     return (
@@ -326,6 +513,12 @@ export default function AdminSchedulesPage() {
                 </Card>
             ) : (
                 <>
+                    <div className="flex justify-end">
+                        <Button variant="outline" size="sm" onClick={() => setShowIds((v) => !v)} disabled={optionsLoading}>
+                            {showIds ? "Hide IDs" : "Show IDs"}
+                        </Button>
+                    </div>
+
                     <Card>
                         <CardHeader className="space-y-2">
                             <CardTitle className="flex items-center justify-between">
@@ -333,13 +526,7 @@ export default function AdminSchedulesPage() {
                                     <Search className="h-4 w-4" />
                                     Filters
                                 </span>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={loadSchedules}
-                                    disabled={listLoading}
-                                    className="gap-2"
-                                >
+                                <Button variant="outline" size="sm" onClick={loadSchedules} disabled={listLoading} className="gap-2">
                                     <RefreshCw className="h-4 w-4" />
                                     Refresh
                                 </Button>
@@ -353,13 +540,25 @@ export default function AdminSchedulesPage() {
                                 </div>
 
                                 <div className="sm:col-span-2 space-y-1">
-                                    <div className="text-xs font-medium text-muted-foreground">Group ID</div>
-                                    <Input value={groupId} onChange={(e) => setGroupId(e.target.value)} placeholder="group uuid" />
+                                    <div className="text-xs font-medium text-muted-foreground">Group</div>
+                                    <Select value={groupId} onValueChange={setGroupId}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder={optionsLoading ? "Loading…" : "All groups"} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="">All groups</SelectItem>
+                                            {groupOptions.map((g) => (
+                                                <SelectItem key={g.id} value={g.id}>
+                                                    {g.title}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
                                 </div>
 
                                 <div className="sm:col-span-2 space-y-1">
                                     <div className="text-xs font-medium text-muted-foreground">Status</div>
-                                    <Input value={status} onChange={(e) => setStatus(e.target.value)} placeholder="scheduled / ..." />
+                                    <Input value={status} onChange={(e) => setStatus(e.target.value)} placeholder="scheduled / completed / ..." />
                                 </div>
 
                                 <div className="sm:col-span-3 space-y-1">
@@ -411,15 +610,22 @@ export default function AdminSchedulesPage() {
                                                             active ? "bg-muted/40" : "hover:bg-muted/20",
                                                         ].join(" ")}
                                                     >
-                                                        <div className="flex flex-wrap items-center gap-2">
-                                                            <div className="truncate text-sm font-semibold">Schedule: {s.id}</div>
+                                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                                            <div className="truncate text-sm font-semibold">
+                                                                {groupLabel(s.groupId)} • {fmtDate(s.scheduledAt)}
+                                                            </div>
                                                             <Badge variant="secondary">{s.status}</Badge>
                                                         </div>
+
                                                         <div className="mt-1 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                                                            <div className="truncate">Group: {s.groupId}</div>
-                                                            <div>When: {fmtDate(s.scheduledAt)}</div>
                                                             <div className="truncate">Room: {s.room ?? "—"}</div>
-                                                            <div className="truncate">Created by: {s.createdBy ?? "—"}</div>
+                                                            <div className="truncate">Created by: {s.createdBy ? userLabel(s.createdBy) : "—"}</div>
+                                                            {showIds ? (
+                                                                <>
+                                                                    <div className="truncate">Schedule ID: {s.id}</div>
+                                                                    <div className="truncate">Group ID: {s.groupId}</div>
+                                                                </>
+                                                            ) : null}
                                                         </div>
                                                     </button>
                                                 )
@@ -447,10 +653,11 @@ export default function AdminSchedulesPage() {
                                 ) : (
                                     <>
                                         <div className="space-y-1 text-xs text-muted-foreground">
-                                            <div><span className="font-medium">Schedule ID:</span> {selected.id}</div>
-                                            <div><span className="font-medium">Group ID:</span> {selected.groupId}</div>
+                                            <div><span className="font-medium">Group:</span> {groupLabel(selected.groupId)}</div>
+                                            <div><span className="font-medium">Created by:</span> {selected.createdBy ? userLabel(selected.createdBy) : "—"}</div>
                                             <div><span className="font-medium">Created:</span> {fmtDate(selected.createdAt)}</div>
                                             <div><span className="font-medium">Updated:</span> {fmtDate(selected.updatedAt)}</div>
+                                            {showIds ? <div className="truncate"><span className="font-medium">Schedule ID:</span> {selected.id}</div> : null}
                                         </div>
 
                                         <Separator />
@@ -531,7 +738,9 @@ export default function AdminSchedulesPage() {
                                                             <div className="min-w-0">
                                                                 <div className="text-sm font-medium truncate">{p.staffName}</div>
                                                                 <div className="text-xs text-muted-foreground truncate">{p.staffEmail}</div>
-                                                                <div className="text-xs text-muted-foreground truncate">ID: {p.staffId}</div>
+                                                                {showIds ? (
+                                                                    <div className="text-xs text-muted-foreground truncate">ID: {p.staffId}</div>
+                                                                ) : null}
                                                             </div>
                                                             <Button
                                                                 size="sm"
@@ -550,12 +759,19 @@ export default function AdminSchedulesPage() {
 
                                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                                 <div className="sm:col-span-2 space-y-1">
-                                                    <div className="text-xs font-medium text-muted-foreground">Add panelist (Staff ID)</div>
-                                                    <Input
-                                                        value={addStaffId}
-                                                        onChange={(e) => setAddStaffId(e.target.value)}
-                                                        placeholder="staff uuid"
-                                                    />
+                                                    <div className="text-xs font-medium text-muted-foreground">Add panelist</div>
+                                                    <Select value={addStaffId} onValueChange={setAddStaffId}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder={optionsLoading ? "Loading…" : "Select staff"} />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {staffOptions.map((u) => (
+                                                                <SelectItem key={u.id} value={u.id}>
+                                                                    {u.name}{u.email ? ` (${u.email})` : ""}
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
                                                 </div>
                                                 <div className="flex items-end">
                                                     <Button
@@ -569,22 +785,47 @@ export default function AdminSchedulesPage() {
                                                 </div>
                                             </div>
 
-                                            <div className="space-y-1">
-                                                <div className="text-xs font-medium text-muted-foreground">
-                                                    Set panelists (comma-separated Staff IDs)
-                                                </div>
+                                            <Separator />
+
+                                            <div className="space-y-2">
+                                                <div className="text-sm font-semibold">Bulk set panelists (no UUID typing)</div>
                                                 <Input
-                                                    value={setStaffIdsText}
-                                                    onChange={(e) => setSetStaffIdsText(e.target.value)}
-                                                    placeholder="id1, id2, id3"
+                                                    value={bulkQuery}
+                                                    onChange={(e) => setBulkQuery(e.target.value)}
+                                                    placeholder="Search staff name/email…"
                                                 />
+                                                <ScrollArea className="h-56 rounded-md border">
+                                                    <div className="space-y-2 p-3">
+                                                        {filteredStaff.map((u) => {
+                                                            const checked = bulkStaffIds.includes(u.id)
+                                                            return (
+                                                                <label key={u.id} className="flex items-start gap-3 rounded-md border p-2 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={() => toggleBulk(u.id)}
+                                                                        className="mt-1"
+                                                                    />
+                                                                    <div className="min-w-0">
+                                                                        <div className="text-sm font-medium truncate">{u.name}</div>
+                                                                        <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                                                                        {showIds ? <div className="text-xs text-muted-foreground truncate">ID: {u.id}</div> : null}
+                                                                    </div>
+                                                                </label>
+                                                            )
+                                                        })}
+                                                        {filteredStaff.length === 0 ? (
+                                                            <div className="text-sm text-muted-foreground">No staff match your search.</div>
+                                                        ) : null}
+                                                    </div>
+                                                </ScrollArea>
+
                                                 <Button
                                                     variant="secondary"
-                                                    onClick={() => void onSetPanelists()}
+                                                    onClick={() => void onApplyBulkPanelists()}
                                                     disabled={panelistActionLoading}
-                                                    className="mt-2"
                                                 >
-                                                    Apply panelist list
+                                                    Apply selected panelists
                                                 </Button>
                                             </div>
                                         </div>
