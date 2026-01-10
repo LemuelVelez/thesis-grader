@@ -37,6 +37,16 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -243,6 +253,12 @@ export default function AdminSchedulesPage() {
     const [edStatus, setEdStatus] = React.useState<string>("scheduled")
     const [edReason, setEdReason] = React.useState<string>("")
 
+    // delete alert dialog
+    const [openDelete, setOpenDelete] = React.useState(false)
+    const [deleteTarget, setDeleteTarget] = React.useState<DbSchedule | null>(null)
+    const [deleteReason, setDeleteReason] = React.useState("")
+    const [deleting, setDeleting] = React.useState(false)
+
     // panelists modal
     const [openPanel, setOpenPanel] = React.useState(false)
     const [panelSchedule, setPanelSchedule] = React.useState<DbSchedule | null>(null)
@@ -448,25 +464,31 @@ export default function AdminSchedulesPage() {
         }
     }
 
-    async function handleDelete(sc: DbSchedule) {
-        const ok = window.confirm("Delete this schedule?")
-        if (!ok) return
+    async function confirmDelete() {
+        const sc = deleteTarget
+        if (!sc) return
 
-        const reason = safeText(window.prompt("Reason (required for admin override):") ?? "", "")
+        const reason = safeText(deleteReason, "")
         if (!reason) {
             toast.error("Reason is required.")
             return
         }
 
+        setDeleting(true)
         try {
             const res = await apiDelete(
                 `/api/schedule?resource=schedules&id=${encodeURIComponent(sc.id)}&reason=${encodeURIComponent(reason)}`
             )
             if (!res.ok) throw new Error(res.error ?? "Failed to delete schedule")
             toast.success("Schedule deleted")
+            setOpenDelete(false)
+            setDeleteTarget(null)
+            setDeleteReason("")
             await loadAll()
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to delete schedule")
+        } finally {
+            setDeleting(false)
         }
     }
 
@@ -778,7 +800,15 @@ export default function AdminSchedulesPage() {
                                                                     Edit
                                                                 </Button>
 
-                                                                <Button size="sm" variant="destructive" onClick={() => handleDelete(sc)}>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="destructive"
+                                                                    onClick={() => {
+                                                                        setDeleteTarget(sc)
+                                                                        setDeleteReason("")
+                                                                        setOpenDelete(true)
+                                                                    }}
+                                                                >
                                                                     <Trash2 className="mr-2 h-4 w-4" />
                                                                     Delete
                                                                 </Button>
@@ -794,6 +824,66 @@ export default function AdminSchedulesPage() {
                         )}
                     </CardContent>
                 </Card>
+
+                {/* Delete schedule (AlertDialog) */}
+                <AlertDialog
+                    open={openDelete}
+                    onOpenChange={(v) => {
+                        if (!v && deleting) return
+                        setOpenDelete(v)
+                        if (!v) {
+                            setDeleteTarget(null)
+                            setDeleteReason("")
+                        }
+                    }}
+                >
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Delete this schedule?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                                This action cannot be undone. The schedule and its panel assignments will be removed.
+                            </AlertDialogDescription>
+                        </AlertDialogHeader>
+
+                        <div className="space-y-4">
+                            {deleteTarget ? (
+                                <div className="rounded-md border p-3 text-sm">
+                                    <div className="font-medium">{safeText(deleteTarget.groupTitle, "Group")}</div>
+                                    <div className="text-muted-foreground">
+                                        {fmtDateTime(deleteTarget.scheduledAt) || "—"} · {safeText(deleteTarget.room, "No room")}
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            <div className="space-y-2">
+                                <Label>Reason (required)</Label>
+                                <Textarea
+                                    value={deleteReason}
+                                    onChange={(e) => setDeleteReason(e.target.value)}
+                                    placeholder="Why are you deleting this schedule?"
+                                />
+                            </div>
+                        </div>
+
+                        <AlertDialogFooter>
+                            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                            <AlertDialogAction asChild>
+                                <Button
+                                    variant="destructive"
+                                    onClick={(e) => {
+                                        e.preventDefault()
+                                        void confirmDelete()
+                                    }}
+                                    disabled={deleting || !safeText(deleteReason, "") || !deleteTarget}
+                                    className="text-white"
+                                >
+                                    {deleting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                    Delete
+                                </Button>
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
 
                 {/* Create/Edit Schedule */}
                 <Dialog

@@ -869,11 +869,6 @@ export default function StaffScheduleDetailsPage() {
                                         Manage panelists
                                     </Button>
 
-                                    <Button className="w-full" variant="outline" onClick={() => setTab("details")}>
-                                        <Save className="mr-2 h-4 w-4" />
-                                        Edit details
-                                    </Button>
-
                                     <Button className="w-full" variant="outline" onClick={() => copy(schedule.groupId)}>
                                         <ClipboardCopy className="mr-2 h-4 w-4" />
                                         Copy group id

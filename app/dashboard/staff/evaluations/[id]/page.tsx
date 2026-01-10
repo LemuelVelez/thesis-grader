@@ -3,7 +3,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { ArrowLeft, Save, Lock } from "lucide-react"
 
@@ -135,11 +135,13 @@ function toNumberOrNull(v: string) {
     return n
 }
 
-export default function StaffEvaluationDetailPage({ params }: { params: { id: string } }) {
+export default function StaffEvaluationDetailPage() {
     const router = useRouter()
+    const params = useParams() as any
     const { user, isLoading } = useAuth() as any
 
-    const evaluationId = params?.id
+    // ✅ FIX: useParams() instead of props.params
+    const evaluationId = String((Array.isArray(params?.id) ? params?.id?.[0] : params?.id) ?? "").trim()
 
     const role = String(user?.role ?? "").toLowerCase()
     const isStaff = role === "staff"
@@ -149,7 +151,6 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
 
     const [loading, setLoading] = React.useState(true)
     const [saving, setSaving] = React.useState(false)
-
     const [forbidden, setForbidden] = React.useState(false)
 
     const [evaluation, setEvaluation] = React.useState<DbEvaluation | null>(null)
@@ -366,7 +367,6 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
             return
         }
 
-        // validate all criteria filled + within range
         for (const c of criteria) {
             const n = toNumberOrNull(form[c.id]?.score ?? "")
             if (n === null) {
@@ -425,6 +425,24 @@ export default function StaffEvaluationDetailPage({ params }: { params: { id: st
                         <CardTitle>Forbidden</CardTitle>
                         <CardDescription>This page is for Staff/Admin only.</CardDescription>
                     </CardHeader>
+                </Card>
+            </DashboardLayout>
+        )
+    }
+
+    if (!evaluationId) {
+        return (
+            <DashboardLayout>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Not found</CardTitle>
+                        <CardDescription>Missing evaluation id.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Link href="/dashboard/staff/evaluations">
+                            <Button variant="outline">Go back</Button>
+                        </Link>
+                    </CardContent>
                 </Card>
             </DashboardLayout>
         )
