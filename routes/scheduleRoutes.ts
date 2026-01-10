@@ -86,9 +86,8 @@ async function canStaffManageSchedule(scheduleId: string, staffId: string) {
  * Student visibility scope:
  * - Student can ONLY view schedules for thesis group(s) they belong to.
  *
- * NOTE: This assumes a membership table exists:
- *   thesis_group_members(group_id, user_id)
- * If your actual table/columns differ, update the SQL here.
+ * ✅ Your actual membership table is:
+ *   group_members(group_id, student_id)
  */
 async function canStudentViewSchedule(scheduleId: string, studentId: string) {
     const r = await db.query(
@@ -96,8 +95,8 @@ async function canStudentViewSchedule(scheduleId: string, studentId: string) {
     select exists(
       select 1
       from defense_schedules ds
-      join thesis_group_members gm on gm.group_id = ds.group_id
-      where ds.id = $1 and gm.user_id = $2
+      join group_members gm on gm.group_id = ds.group_id
+      where ds.id = $1 and gm.student_id = $2
     ) as ok
     `,
         [scheduleId, studentId]
@@ -136,14 +135,14 @@ export async function GET(req: NextRequest) {
           `
                 }
 
-                // Student visibility is scoped: must belong to the schedule's group.
+                // ✅ Student visibility is scoped: must belong to the schedule's group.
                 if (role === "student") {
                     args.push(auth.user!.id)
                     whereExtra = `
             and exists (
               select 1
-              from thesis_group_members gm
-              where gm.group_id = s.group_id and gm.user_id = $2
+              from group_members gm
+              where gm.group_id = s.group_id and gm.student_id = $2
             )
           `
                 }
@@ -228,8 +227,8 @@ export async function GET(req: NextRequest) {
             if (role === "student") {
                 where.push(`exists (
           select 1
-          from thesis_group_members gm
-          where gm.group_id = s.group_id and gm.user_id = $${idx}
+          from group_members gm
+          where gm.group_id = s.group_id and gm.student_id = $${idx}
         )`)
                 args.push(auth.user!.id)
                 idx++

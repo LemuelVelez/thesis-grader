@@ -15,112 +15,166 @@ function actorIdOf(actor: any) {
     return String(actor?.id ?? "")
 }
 
-function toFiniteNumber(v: any): number | null {
+function clampInt(v: string | null, def: number, min: number, max: number) {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return def
+    return Math.max(min, Math.min(max, Math.trunc(n)))
+}
+
+function toNumber(v: any): number | null {
     if (typeof v === "number" && Number.isFinite(v)) return v
-    if (typeof v === "string" && v.trim()) {
-        const n = Number(v)
-        return Number.isFinite(n) ? n : null
+    if (typeof v === "string") {
+        const x = Number(v)
+        return Number.isFinite(x) ? x : null
     }
     return null
 }
 
-function pickScoreFromAny(value: any): number | null {
-    const direct = toFiniteNumber(value)
-    if (direct !== null) return direct
+function toStr(v: any): string | null {
+    if (typeof v === "string") return v
+    if (v === null || v === undefined) return null
+    const s = String(v)
+    return s.trim() ? s : null
+}
 
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null
+function asObj(v: any): any {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {}
+    return v
+}
 
-    const candidates = [
-        value.score,
-        value.total,
-        value.value,
-        value.points,
-        value.memberScore,
-        value.finalScore,
-        value.overallScore,
-        value.groupScore,
-        value.systemScore,
-    ]
-
-    for (const c of candidates) {
-        const n = toFiniteNumber(c)
+function pickNumberFrom(obj: any, paths: Array<string[]>) {
+    const o = asObj(obj)
+    for (const path of paths) {
+        let cur: any = o
+        for (const k of path) {
+            cur = cur?.[k]
+        }
+        const n = toNumber(cur)
         if (n !== null) return n
     }
     return null
 }
 
-function pickCommentFromAny(value: any): string | null {
-    if (typeof value === "string" && value.trim()) return value.trim()
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null
-
-    const candidates = [value.comment, value.comments, value.note, value.notes, value.feedback, value.reason]
-    for (const c of candidates) {
-        if (typeof c === "string" && c.trim()) return c.trim()
+function pickStringFrom(obj: any, paths: Array<string[]>) {
+    const o = asObj(obj)
+    for (const path of paths) {
+        let cur: any = o
+        for (const k of path) {
+            cur = cur?.[k]
+        }
+        const s = toStr(cur)
+        if (s) return s
     }
     return null
 }
 
-function pickStudentScore(extras: any, studentId: string): { score: number | null; comment: string | null } {
-    if (!extras || typeof extras !== "object") return { score: null, comment: null }
+function extractMemberEntry(extras: any, studentId: string): { score: number | null; comment: string | null } | null {
+    const ex = asObj(extras)
 
     const containers = [
-        extras.members,
-        extras.memberScores,
-        extras.perMember,
-        extras.individuals,
-        extras.students,
-        extras.studentScores,
-    ]
+        ex.members,
+        ex.memberScores,
+        ex.individualScores,
+        ex.personalScores,
+        ex.students,
+        ex.studentScores,
+        ex.perMember,
+        ex.perStudent,
+    ].filter(Boolean)
 
-    // object map: { [studentId]: {...} }
+    // map-like: { [studentId]: {score, comment} } or { [studentId]: number }
     for (const c of containers) {
         if (c && typeof c === "object" && !Array.isArray(c)) {
-            const raw = (c as any)[studentId]
-            if (raw !== undefined) {
-                return { score: pickScoreFromAny(raw), comment: pickCommentFromAny(raw) }
+            const hit = (c as any)[studentId] ?? (c as any)[String(studentId)]
+            if (hit !== undefined) {
+                if (typeof hit === "number" || typeof hit === "string") {
+                    return { score: toNumber(hit), comment: null }
+                }
+                if (hit && typeof hit === "object" && !Array.isArray(hit)) {
+                    const score =
+                        pickNumberFrom(hit, [
+                            ["score"],
+                            ["total"],
+                            ["value"],
+                            ["points"],
+                            ["memberScore"],
+                            ["finalScore"],
+                        ]) ?? null
+                    const comment =
+                        pickStringFrom(hit, [
+                            ["comment"],
+                            ["remarks"],
+                            ["note"],
+                            ["text"],
+                            ["message"],
+                        ]) ?? null
+                    return { score, comment }
+                }
             }
         }
     }
 
-    // array: [{ id/studentId, score, comment }]
+    // array-like: [{studentId, score, comment}] etc
     for (const c of containers) {
         if (Array.isArray(c)) {
-            const hit = c.find((x: any) => String(x?.id ?? x?.studentId ?? x?.userId ?? "") === studentId)
-            if (hit) return { score: pickScoreFromAny(hit), comment: pickCommentFromAny(hit) }
+            const found = c.find((x: any) => {
+                const sid = String(x?.studentId ?? x?.memberId ?? x?.userId ?? x?.id ?? "")
+                return sid && sid === studentId
+            })
+            if (found) {
+                const score =
+                    pickNumberFrom(found, [
+                        ["score"],
+                        ["total"],
+                        ["value"],
+                        ["points"],
+                        ["memberScore"],
+                        ["finalScore"],
+                    ]) ?? null
+                const comment =
+                    pickStringFrom(found, [
+                        ["comment"],
+                        ["remarks"],
+                        ["note"],
+                        ["text"],
+                        ["message"],
+                    ]) ?? null
+                return { score, comment }
+            }
         }
     }
 
-    return { score: null, comment: null }
+    // sometimes stored as extras.personal or extras.member (single) but still keyed differently
+    const fallback = ex.personal ?? ex.member ?? null
+    if (fallback && typeof fallback === "object" && !Array.isArray(fallback)) {
+        // If it’s already “for the current student” in your design
+        const score =
+            pickNumberFrom(fallback, [
+                ["score"],
+                ["total"],
+                ["value"],
+                ["points"],
+                ["memberScore"],
+                ["finalScore"],
+            ]) ?? null
+        const comment =
+            pickStringFrom(fallback, [
+                ["comment"],
+                ["remarks"],
+                ["note"],
+                ["text"],
+                ["message"],
+            ]) ?? null
+        if (score !== null || comment) return { score, comment }
+    }
+
+    return null
 }
 
-function pickGroupScore(extras: any): { score: number | null; comment: string | null } {
-    if (!extras || typeof extras !== "object") return { score: null, comment: null }
-
-    const raw =
-        extras.group ??
-        extras.groupScore ??
-        extras.overall ??
-        extras.overallScore ??
-        extras.total ??
-        extras.final ??
-        extras.summary ??
-        null
-
-    return { score: pickScoreFromAny(raw), comment: pickCommentFromAny(raw) }
-}
-
-function pickSystemScore(extras: any): { score: number | null; comment: string | null } {
-    if (!extras || typeof extras !== "object") return { score: null, comment: null }
-
-    const raw = extras.system ?? extras.systemScore ?? extras.systemTotal ?? extras.systemResult ?? null
-    return { score: pickScoreFromAny(raw), comment: pickCommentFromAny(raw) }
-}
-
-function avg(nums: Array<number | null | undefined>): number | null {
-    const xs = nums.filter((n): n is number => typeof n === "number" && Number.isFinite(n))
-    if (!xs.length) return null
-    const s = xs.reduce((a, b) => a + b, 0)
-    return s / xs.length
+function avg(nums: Array<number | null>) {
+    const x = nums.filter((n) => typeof n === "number" && Number.isFinite(n)) as number[]
+    if (!x.length) return null
+    return x.reduce((a, b) => a + b, 0) / x.length
 }
 
 export async function GET(req: NextRequest) {
@@ -133,114 +187,210 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
         }
 
-        const limitRaw = req.nextUrl.searchParams.get("limit")
-        const limit = Math.min(20, Math.max(1, Number(limitRaw ?? 10) || 10))
+        const url = new URL(req.url)
+        const limit = clampInt(url.searchParams.get("limit"), 10, 1, 50)
+        const offset = clampInt(url.searchParams.get("offset"), 0, 0, 10_000)
 
-        // schedules for the student's group(s)
+        // 1) schedules visible to student (via group_members)
         const { rows: schedRows } = await db.query(
             `
             select
               ds.id as "scheduleId",
               ds.scheduled_at as "scheduledAt",
-              ds.room as room,
-              ds.status as status,
-              tg.id as "groupId",
-              tg.title as "groupTitle",
-              tg.program as program,
-              tg.term as term
-            from group_members gm
-            join defense_schedules ds on ds.group_id = gm.group_id
-            join thesis_groups tg on tg.id = gm.group_id
+              ds.room,
+              ds.status,
+              g.id as "groupId",
+              g.title as "groupTitle",
+              g.program as "program",
+              g.term as "term"
+            from defense_schedules ds
+            join thesis_groups g on g.id = ds.group_id
+            join group_members gm on gm.group_id = ds.group_id
             where gm.student_id = $1
             order by ds.scheduled_at desc
-            limit $2
+            limit $2 offset $3
             `,
-            [studentId, limit]
+            [studentId, limit, offset]
         )
 
-        const items: any[] = []
+        const scheduleIds = (schedRows ?? []).map((r: any) => String(r.scheduleId)).filter(Boolean)
+        if (!scheduleIds.length) {
+            return NextResponse.json({ ok: true, items: [] })
+        }
 
-        for (const s of schedRows ?? []) {
-            const scheduleId = String(s.scheduleId)
+        // 2) evaluations + evaluator + extras (per schedule)
+        const { rows: evalRows } = await db.query(
+            `
+            select
+              e.id as "evaluationId",
+              e.schedule_id as "scheduleId",
+              e.status,
+              e.submitted_at as "submittedAt",
+              e.locked_at as "lockedAt",
+              u.id as "evaluatorId",
+              coalesce(u.name, u.email) as "evaluatorName",
+              u.email as "evaluatorEmail",
+              ex.data as "extras"
+            from evaluations e
+            join users u on u.id = e.evaluator_id
+            left join evaluation_extras ex on ex.evaluation_id = e.id
+            where e.schedule_id = any($1::uuid[])
+            order by u.name asc
+            `,
+            [scheduleIds]
+        )
 
-            const { rows: evalRows } = await db.query(
+        // 3) rubric weighted average fallback for groupScore (if extras doesn’t provide)
+        const evaluationIds = (evalRows ?? []).map((r: any) => String(r.evaluationId)).filter(Boolean)
+        const rubricAvgByEval = new Map<string, number>()
+        if (evaluationIds.length) {
+            const { rows: avgRows } = await db.query(
                 `
                 select
-                  e.id as "evaluationId",
-                  e.status as status,
-                  e.submitted_at as "submittedAt",
-                  e.locked_at as "lockedAt",
-                  u.id as "evaluatorId",
-                  u.name as "evaluatorName",
-                  u.email as "evaluatorEmail",
-                  ex.data as extras
-                from evaluations e
-                join users u on u.id = e.evaluator_id
-                left join evaluation_extras ex on ex.evaluation_id = e.id
-                where e.schedule_id = $1
-                order by u.name asc
+                  es.evaluation_id as "evaluationId",
+                  (sum(es.score * rc.weight) / nullif(sum(rc.weight), 0))::float as "avg"
+                from evaluation_scores es
+                join rubric_criteria rc on rc.id = es.criterion_id
+                where es.evaluation_id = any($1::uuid[])
+                group by es.evaluation_id
                 `,
-                [scheduleId]
+                [evaluationIds]
             )
+            for (const r of avgRows ?? []) {
+                const id = String((r as any).evaluationId ?? "")
+                const a = toNumber((r as any).avg)
+                if (id && a !== null) rubricAvgByEval.set(id, a)
+            }
+        }
 
-            const panelistEvaluations = (evalRows ?? []).map((r: any) => {
-                const extras = (r.extras ?? {}) as any
+        // 4) student feedback row per schedule
+        const { rows: seRows } = await db.query(
+            `
+            select
+              id,
+              schedule_id as "scheduleId",
+              status,
+              answers,
+              submitted_at as "submittedAt",
+              locked_at as "lockedAt",
+              created_at as "createdAt",
+              updated_at as "updatedAt"
+            from student_evaluations
+            where student_id = $1 and schedule_id = any($2::uuid[])
+            `,
+            [studentId, scheduleIds]
+        )
+        const seBySchedule = new Map<string, any>()
+        for (const r of seRows ?? []) {
+            seBySchedule.set(String((r as any).scheduleId), r)
+        }
 
-                const group = pickGroupScore(extras)
-                const system = pickSystemScore(extras)
-                const me = pickStudentScore(extras, studentId)
+        // 5) build per-schedule summary
+        const evalsBySchedule = new Map<string, any[]>()
+        for (const r of evalRows ?? []) {
+            const sid = String((r as any).scheduleId ?? "")
+            if (!sid) continue
+            if (!evalsBySchedule.has(sid)) evalsBySchedule.set(sid, [])
+            evalsBySchedule.get(sid)!.push(r)
+        }
+
+        const items = (schedRows ?? []).map((s: any) => {
+            const sid = String(s.scheduleId)
+            const rows = evalsBySchedule.get(sid) ?? []
+
+            const panelistEvaluations = rows.map((er: any) => {
+                const evaluationId = String(er.evaluationId)
+                const extras = asObj(er.extras)
+
+                const fallbackRubricAvg = rubricAvgByEval.get(evaluationId) ?? null
+
+                const groupScore =
+                    pickNumberFrom(extras, [
+                        ["groupScore"],
+                        ["overallScore"],
+                        ["overall", "score"],
+                        ["overall", "value"],
+                        ["group", "score"],
+                        ["group", "value"],
+                        ["totalScore"],
+                        ["total", "score"],
+                    ]) ?? fallbackRubricAvg
+
+                const systemScore =
+                    pickNumberFrom(extras, [
+                        ["systemScore"],
+                        ["system", "score"],
+                        ["system", "value"],
+                        ["ai", "score"],
+                        ["aiScore"],
+                    ]) ?? null
+
+                const groupComment =
+                    pickStringFrom(extras, [
+                        ["groupComment"],
+                        ["overallComment"],
+                        ["overall", "comment"],
+                        ["group", "comment"],
+                        ["overall", "remarks"],
+                    ]) ?? null
+
+                const systemComment =
+                    pickStringFrom(extras, [
+                        ["systemComment"],
+                        ["system", "comment"],
+                        ["system", "remarks"],
+                        ["ai", "comment"],
+                    ]) ?? null
+
+                const member = extractMemberEntry(extras, studentId)
+                const personalScore =
+                    member?.score ??
+                    pickNumberFrom(extras, [
+                        ["personalScore"],
+                        ["individualScore"],
+                        ["memberScore"],
+                    ]) ??
+                    null
+
+                const personalComment =
+                    member?.comment ??
+                    pickStringFrom(extras, [
+                        ["personalComment"],
+                        ["individualComment"],
+                        ["memberComment"],
+                    ]) ??
+                    null
 
                 return {
-                    evaluationId: String(r.evaluationId),
-                    status: String(r.status ?? ""),
-                    submittedAt: r.submittedAt ?? null,
-                    lockedAt: r.lockedAt ?? null,
+                    evaluationId,
+                    status: String(er.status ?? "pending"),
+                    submittedAt: er.submittedAt ?? null,
+                    lockedAt: er.lockedAt ?? null,
                     evaluator: {
-                        id: String(r.evaluatorId ?? ""),
-                        name: String(r.evaluatorName ?? ""),
-                        email: String(r.evaluatorEmail ?? ""),
+                        id: String(er.evaluatorId ?? ""),
+                        name: String(er.evaluatorName ?? ""),
+                        email: String(er.evaluatorEmail ?? ""),
                     },
                     scores: {
-                        groupScore: group.score,
-                        systemScore: system.score,
-                        personalScore: me.score,
+                        groupScore,
+                        systemScore,
+                        personalScore,
                     },
                     comments: {
-                        groupComment: group.comment,
-                        systemComment: system.comment,
-                        personalComment: me.comment,
+                        groupComment,
+                        systemComment,
+                        personalComment,
                     },
                 }
             })
 
-            const scores = {
-                groupScore: avg(panelistEvaluations.map((x: any) => x?.scores?.groupScore)),
-                systemScore: avg(panelistEvaluations.map((x: any) => x?.scores?.systemScore)),
-                personalScore: avg(panelistEvaluations.map((x: any) => x?.scores?.personalScore)),
-            }
+            const aggGroup = avg(panelistEvaluations.map((x: any) => x.scores.groupScore))
+            const aggSystem = avg(panelistEvaluations.map((x: any) => x.scores.systemScore))
+            const aggPersonal = avg(panelistEvaluations.map((x: any) => x.scores.personalScore))
 
-            const { rows: seRows } = await db.query(
-                `
-                select
-                  se.id,
-                  se.status,
-                  se.answers,
-                  se.submitted_at as "submittedAt",
-                  se.locked_at as "lockedAt",
-                  se.created_at as "createdAt",
-                  se.updated_at as "updatedAt"
-                from student_evaluations se
-                where se.schedule_id = $1 and se.student_id = $2
-                limit 1
-                `,
-                [scheduleId, studentId]
-            )
-
-            const studentEvaluation = (seRows?.[0] ?? null) as any
-
-            items.push({
+            return {
                 schedule: {
-                    id: scheduleId,
+                    id: sid,
                     scheduledAt: s.scheduledAt ?? null,
                     room: s.room ?? null,
                     status: s.status ?? null,
@@ -251,14 +401,18 @@ export async function GET(req: NextRequest) {
                     program: s.program ?? null,
                     term: s.term ?? null,
                 },
-                scores,
+                scores: {
+                    groupScore: aggGroup,
+                    systemScore: aggSystem,
+                    personalScore: aggPersonal,
+                },
                 panelistEvaluations,
-                studentEvaluation,
-            })
-        }
+                studentEvaluation: seBySchedule.get(sid) ?? null,
+            }
+        })
 
         return NextResponse.json({ ok: true, items })
     } catch (err: any) {
-        return errorJson(err, "Failed to fetch student evaluation summary")
+        return errorJson(err, "Failed to load student evaluation summary")
     }
 }

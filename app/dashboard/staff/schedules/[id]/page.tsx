@@ -762,7 +762,7 @@ export default function StaffScheduleDetailsPage() {
                                                         </div>
 
                                                         <DialogFooter className="gap-2 sm:gap-0">
-                                                            <Button variant="outline" onClick={() => setAddOpen(false)} disabled={adding}>
+                                                            <Button variant="outline" onClick={() => setAddOpen(false)} disabled={adding} className="mx-2">
                                                                 Cancel
                                                             </Button>
                                                             <Button onClick={addPanelist} disabled={adding || !selectedStaff}>

@@ -18,20 +18,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
-import {
-    Accordion,
-    AccordionContent,
-    AccordionItem,
-    AccordionTrigger,
-} from "@/components/ui/accordion"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -62,9 +50,9 @@ type SummaryItem = {
         term: string | null
     }
     scores: {
-        groupScore: number | null
-        systemScore: number | null
-        personalScore: number | null
+        groupScore: number | string | null
+        systemScore: number | string | null
+        personalScore: number | string | null
     }
     panelistEvaluations: Array<{
         evaluationId: string
@@ -72,7 +60,7 @@ type SummaryItem = {
         submittedAt: string | null
         lockedAt: string | null
         evaluator: { id: string; name: string; email: string }
-        scores: { groupScore: number | null; systemScore: number | null; personalScore: number | null }
+        scores: { groupScore: number | string | null; systemScore: number | string | null; personalScore: number | string | null }
         comments: { groupComment: string | null; systemComment: string | null; personalComment: string | null }
     }>
     studentEvaluation: null | {
@@ -91,23 +79,34 @@ function safeText(v: any, fallback = "") {
     return s ? s : fallback
 }
 
-function fmtScore(n: number | null | undefined) {
-    if (typeof n !== "number" || !Number.isFinite(n)) return "—"
-    // show ints cleanly, otherwise 2 decimals
-    return Number.isInteger(n) ? String(n) : n.toFixed(2)
+function toNumber(v: any): number | null {
+    if (typeof v === "number" && Number.isFinite(v)) return v
+    if (typeof v === "string") {
+        const n = Number(v)
+        return Number.isFinite(n) ? n : null
+    }
+    return null
 }
 
-function scoreScale(n: number | null | undefined) {
-    if (typeof n !== "number" || !Number.isFinite(n)) return 100
-    if (n <= 5) return 5
-    if (n <= 10) return 10
+function fmtScore(n: number | string | null | undefined) {
+    const x = toNumber(n)
+    if (x === null) return "—"
+    return Number.isInteger(x) ? String(x) : x.toFixed(2)
+}
+
+function scoreScale(n: number | string | null | undefined) {
+    const x = toNumber(n)
+    if (x === null) return 100
+    if (x <= 5) return 5
+    if (x <= 10) return 10
     return 100
 }
 
-function scoreProgress(n: number | null | undefined) {
-    if (typeof n !== "number" || !Number.isFinite(n)) return 0
-    const max = scoreScale(n)
-    return Math.max(0, Math.min(100, (n / max) * 100))
+function scoreProgress(n: number | string | null | undefined) {
+    const x = toNumber(n)
+    if (x === null) return 0
+    const max = scoreScale(x)
+    return Math.max(0, Math.min(100, (x / max) * 100))
 }
 
 function statusBadge(status?: string | null) {
@@ -178,11 +177,9 @@ export default function StudentEvaluationPage() {
     React.useEffect(() => {
         if (authLoading) return
         load()
-         
     }, [authLoading])
 
     React.useEffect(() => {
-        // keep selection stable and hydrate feedback
         const it = selected
         if (!it) return
         if (!selectedScheduleId) setSelectedScheduleId(it.schedule.id)
@@ -200,7 +197,6 @@ export default function StudentEvaluationPage() {
             return
         }
 
-        // If locked, block
         const se = selected.studentEvaluation
         const isLocked = safeText(se?.status, "").toLowerCase() === "locked"
         if (isLocked) {
@@ -211,7 +207,8 @@ export default function StudentEvaluationPage() {
         setSaving(true)
         try {
             const nowIso = new Date().toISOString()
-            const existingAnswers = (se?.answers && typeof se.answers === "object" && !Array.isArray(se.answers)) ? se.answers : {}
+            const existingAnswers =
+                se?.answers && typeof se.answers === "object" && !Array.isArray(se.answers) ? se.answers : {}
             const mergedAnswers = {
                 ...existingAnswers,
                 studentFeedback: {
@@ -220,9 +217,6 @@ export default function StudentEvaluationPage() {
                 },
             }
 
-            // Keep status logic:
-            // - if clearing, revert to pending (optional)
-            // - else mark submitted
             const nextStatus = next.clearStatusToPending ? "pending" : "submitted"
 
             if (se?.id) {
@@ -283,11 +277,7 @@ export default function StudentEvaluationPage() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        <Button
-                            variant="outline"
-                            onClick={() => load()}
-                            disabled={loading || authLoading}
-                        >
+                        <Button variant="outline" onClick={() => load()} disabled={loading || authLoading}>
                             <RefreshCw className="mr-2 h-4 w-4" />
                             Refresh
                         </Button>
@@ -335,18 +325,14 @@ export default function StudentEvaluationPage() {
                                 <div className="grid gap-3 sm:grid-cols-2">
                                     <div className="space-y-2">
                                         <Label>Schedule</Label>
-                                        <Select
-                                            value={selected?.schedule?.id ?? ""}
-                                            onValueChange={(v) => setSelectedScheduleId(v)}
-                                        >
+                                        <Select value={selected?.schedule?.id ?? ""} onValueChange={(v) => setSelectedScheduleId(v)}>
                                             <SelectTrigger>
                                                 <SelectValue placeholder="Select a schedule" />
                                             </SelectTrigger>
                                             <SelectContent>
                                                 {items.map((it) => (
                                                     <SelectItem key={it.schedule.id} value={it.schedule.id}>
-                                                        {safeText(it.group.title, "Untitled Group")} —{" "}
-                                                        {formatDateTime(it.schedule.scheduledAt)}
+                                                        {safeText(it.group.title, "Untitled Group")} — {formatDateTime(it.schedule.scheduledAt)}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -376,9 +362,7 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Average from panelist submissions.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">
-                                                {fmtScore(selected?.scores?.groupScore)}
-                                            </div>
+                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.groupScore)}</div>
                                             <Progress value={scoreProgress(selected?.scores?.groupScore)} />
                                         </CardContent>
                                     </Card>
@@ -392,9 +376,7 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Average system score (if provided).</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">
-                                                {fmtScore(selected?.scores?.systemScore)}
-                                            </div>
+                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.systemScore)}</div>
                                             <Progress value={scoreProgress(selected?.scores?.systemScore)} />
                                         </CardContent>
                                     </Card>
@@ -408,9 +390,7 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Your personal score only.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">
-                                                {fmtScore(selected?.scores?.personalScore)}
-                                            </div>
+                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.personalScore)}</div>
                                             <Progress value={scoreProgress(selected?.scores?.personalScore)} />
                                         </CardContent>
                                     </Card>
@@ -461,9 +441,7 @@ export default function StudentEvaluationPage() {
                                                             <TableRow key={r.evaluationId}>
                                                                 <TableCell>
                                                                     <div className="font-medium">{safeText(r.evaluator.name, "—")}</div>
-                                                                    <div className="text-xs text-muted-foreground">
-                                                                        {safeText(r.evaluator.email, "")}
-                                                                    </div>
+                                                                    <div className="text-xs text-muted-foreground">{safeText(r.evaluator.email, "")}</div>
                                                                 </TableCell>
                                                                 <TableCell className="text-right">{fmtScore(r.scores.groupScore)}</TableCell>
                                                                 <TableCell className="text-right">{fmtScore(r.scores.systemScore)}</TableCell>
@@ -538,9 +516,7 @@ export default function StudentEvaluationPage() {
                                         <MessageSquare className="h-5 w-5" />
                                         Submit feedback
                                     </CardTitle>
-                                    <CardDescription>
-                                        Only your feedback is saved under your account.
-                                    </CardDescription>
+                                    <CardDescription>Only your feedback is saved under your account.</CardDescription>
                                 </CardHeader>
 
                                 <CardContent className="space-y-4">
@@ -592,10 +568,7 @@ export default function StudentEvaluationPage() {
 
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="flex gap-2">
-                                            <Button
-                                                onClick={() => saveFeedback({ rating, comment })}
-                                                disabled={saving || loading}
-                                            >
+                                            <Button onClick={() => saveFeedback({ rating, comment })} disabled={saving || loading}>
                                                 {saving ? "Saving..." : "Save feedback"}
                                             </Button>
 
