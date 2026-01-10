@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (mode === "panelists") {
-            // FIX: table name is schedule_panelists (per your migration), NOT defense_schedule_panelists
+            // IMPORTANT: per migration 001_init.sql the table name is schedule_panelists (NOT defense_schedule_panelists)
             const r = await db.query(
                 `
                 insert into evaluations (schedule_id, evaluator_id, status)

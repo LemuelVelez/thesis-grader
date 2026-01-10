@@ -52,19 +52,7 @@ type EvalDetail = {
     createdAt?: string | null
 
     scheduleId?: string | null
-    scheduledAt?: string | null
-    room?: string | null
-    scheduleStatus?: string | null
-
-    groupId?: string | null
-    groupTitle?: string | null
-    program?: string | null
-    term?: string | null
-
     evaluatorId?: string | null
-    evaluatorName?: string | null
-    evaluatorEmail?: string | null
-    evaluatorRole?: string | null
 
     scores?: EvalScoreRow[]
 }
@@ -87,46 +75,13 @@ function fmtDateTime(iso?: string | null) {
     return dt.toLocaleString()
 }
 
-function fmtDate(iso?: string | null) {
-    const s = safeText(iso, "")
-    if (!s) return ""
-    const dt = new Date(s)
-    if (Number.isNaN(dt.getTime())) return s
-    return dt.toLocaleDateString()
-}
-
-function fmtTime(iso?: string | null) {
-    const s = safeText(iso, "")
-    if (!s) return ""
-    const dt = new Date(s)
-    if (Number.isNaN(dt.getTime())) return s
-    return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-}
-
 function statusBadge(status?: string | null) {
     const s = safeText(status, "").toLowerCase()
     if (!s) return <Badge variant="secondary">Unknown</Badge>
     if (s === "submitted" || s === "done" || s === "completed") return <Badge>Submitted</Badge>
     if (s === "pending" || s === "draft") return <Badge variant="secondary">Pending</Badge>
     if (s === "locked") return <Badge variant="outline">Locked</Badge>
-    if (s === "archived") return <Badge variant="outline">Archived</Badge>
-    if (s === "cancelled" || s === "canceled") return <Badge variant="destructive">Cancelled</Badge>
     return <Badge variant="secondary">{safeText(status, "Unknown")}</Badge>
-}
-
-function personLine(name?: string | null, email?: string | null) {
-    const n = safeText(name, "")
-    const e = safeText(email, "")
-    if (n && e) return `${n} (${e})`
-    return n || e || "—"
-}
-
-function scheduleLine(groupTitle?: string | null, scheduledAt?: string | null, room?: string | null) {
-    const left = safeText(groupTitle, "Schedule")
-    const when = scheduledAt ? `${fmtDate(scheduledAt)} ${fmtTime(scheduledAt)}`.trim() : ""
-    const r = safeText(room, "")
-    const where = r ? `Room ${r}` : ""
-    return [left, when, where].filter(Boolean).join(" · ")
 }
 
 async function apiJson<T>(method: string, url: string, body?: any): Promise<ApiOk<T> | ApiErr> {
@@ -140,41 +95,10 @@ async function apiJson<T>(method: string, url: string, body?: any): Promise<ApiO
     return data
 }
 
-/**
- * Normalize whatever the backend returns into a single EvalDetail + scores[].
- * This is defensive because your evaluationRoutes response shape may vary.
- */
-function normalizeEvalDetail(payload: any): { detail: EvalDetail | null; raw: any } {
-    const raw = payload
-
-    // candidate root objects
-    const candidate =
-        raw?.evaluation ??
-        raw?.item ??
-        raw?.record ??
-        raw?.evaluationRecord ??
-        (Array.isArray(raw?.evaluations) ? raw.evaluations[0] : null) ??
-        null
-
-    if (!candidate) return { detail: null, raw }
-
-    // schedules / group / evaluator may be nested or already flattened
-    const schedule = candidate?.schedule ?? candidate?.defenseSchedule ?? candidate?.defense_schedule ?? null
-    const group = candidate?.group ?? candidate?.thesisGroup ?? candidate?.thesis_group ?? schedule?.group ?? null
-    const evaluator = candidate?.evaluator ?? candidate?.user ?? candidate?.staff ?? null
-
-    const scoresRaw =
-        raw?.scores ??
-        candidate?.scores ??
-        candidate?.evaluationScores ??
-        candidate?.evaluation_scores ??
-        raw?.evaluationScores ??
-        raw?.evaluation_scores ??
-        []
-
-    const scoresArray: any[] = Array.isArray(scoresRaw) ? scoresRaw : []
-
-    const scores: EvalScoreRow[] = scoresArray.map((x) => {
+function normalizeScoreRows(raw: any): EvalScoreRow[] {
+    const arr = raw?.scores ?? raw?.items ?? raw?.rows ?? raw
+    const rows = Array.isArray(arr) ? arr : []
+    return rows.map((x: any) => {
         const crit = x?.criterion ?? x?.rubricCriterion ?? x?.rubric_criterion ?? null
         return {
             criterionId: safeText(x?.criterionId ?? x?.criterion_id ?? crit?.id ?? "", "") || undefined,
@@ -183,38 +107,10 @@ function normalizeEvalDetail(payload: any): { detail: EvalDetail | null; raw: an
             weight: x?.weight ?? crit?.weight ?? null,
             minScore: x?.minScore ?? crit?.min_score ?? crit?.minScore ?? null,
             maxScore: x?.maxScore ?? crit?.max_score ?? crit?.maxScore ?? null,
-            score: x?.score ?? null,
+            score: typeof x?.score === "number" ? x.score : (Number.isFinite(Number(x?.score)) ? Number(x.score) : null),
             comment: x?.comment ?? null,
         }
     })
-
-    const detail: EvalDetail = {
-        id: safeText(candidate?.id, ""),
-
-        status: candidate?.status ?? null,
-        submittedAt: candidate?.submittedAt ?? candidate?.submitted_at ?? null,
-        lockedAt: candidate?.lockedAt ?? candidate?.locked_at ?? null,
-        createdAt: candidate?.createdAt ?? candidate?.created_at ?? null,
-
-        scheduleId: candidate?.scheduleId ?? candidate?.schedule_id ?? schedule?.id ?? null,
-        scheduledAt: candidate?.scheduledAt ?? schedule?.scheduledAt ?? schedule?.scheduled_at ?? null,
-        room: candidate?.room ?? schedule?.room ?? null,
-        scheduleStatus: candidate?.scheduleStatus ?? schedule?.status ?? null,
-
-        groupId: candidate?.groupId ?? candidate?.group_id ?? group?.id ?? null,
-        groupTitle: candidate?.groupTitle ?? group?.title ?? group?.name ?? null,
-        program: candidate?.program ?? group?.program ?? null,
-        term: candidate?.term ?? group?.term ?? null,
-
-        evaluatorId: candidate?.evaluatorId ?? candidate?.evaluator_id ?? evaluator?.id ?? null,
-        evaluatorName: candidate?.evaluatorName ?? evaluator?.name ?? null,
-        evaluatorEmail: candidate?.evaluatorEmail ?? evaluator?.email ?? null,
-        evaluatorRole: candidate?.evaluatorRole ?? evaluator?.role ?? null,
-
-        scores,
-    }
-
-    return { detail, raw }
 }
 
 export default function AdminEvaluationDetailPage() {
@@ -250,16 +146,33 @@ export default function AdminEvaluationDetailPage() {
         if (!id) return
         setLoading(true)
         try {
-            const res = await apiJson<any>("GET", `/api/evaluation?resource=evaluations&id=${encodeURIComponent(id)}`)
-            if (!res.ok) throw new Error(res.error ?? "Failed to load evaluation")
+            const [evRes, scoresRes] = await Promise.all([
+                apiJson<any>("GET", `/api/evaluation?resource=evaluations&id=${encodeURIComponent(id)}`),
+                apiJson<any>("GET", `/api/evaluation?resource=evaluationScores&evaluationId=${encodeURIComponent(id)}`),
+            ])
 
-            const normalized = normalizeEvalDetail(res)
-            if (!normalized.detail) throw new Error("Evaluation not found")
+            if (!evRes.ok) throw new Error(evRes.error ?? "Failed to load evaluation")
 
-            setDetail(normalized.detail)
-            setRaw(normalized.raw)
+            const ev = (evRes as any).evaluation
+            if (!ev) throw new Error("Evaluation not found")
+
+            const scores = scoresRes.ok ? normalizeScoreRows(scoresRes) : []
+
+            setDetail({
+                id: safeText(ev.id, id),
+                status: ev.status ?? null,
+                submittedAt: ev.submittedAt ?? ev.submitted_at ?? null,
+                lockedAt: ev.lockedAt ?? ev.locked_at ?? null,
+                createdAt: ev.createdAt ?? ev.created_at ?? null,
+                scheduleId: ev.scheduleId ?? ev.schedule_id ?? null,
+                evaluatorId: ev.evaluatorId ?? ev.evaluator_id ?? null,
+                scores,
+            })
+
+            setRaw({ evaluation: ev, scores: scoresRes.ok ? (scoresRes as any).scores ?? [] : null })
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to load evaluation")
+            setDetail(null)
         } finally {
             setLoading(false)
         }
@@ -305,13 +218,7 @@ export default function AdminEvaluationDetailPage() {
         }
 
         const avg = totalWeight > 0 ? weightedSum / totalWeight : 0
-        return {
-            rows: rows.length,
-            scoredCount,
-            totalWeight,
-            weightedSum,
-            weightedAverage: avg,
-        }
+        return { rows: rows.length, scoredCount, weightedAverage: avg }
     }, [detail?.scores])
 
     async function setLock(lock: boolean) {
@@ -346,18 +253,14 @@ export default function AdminEvaluationDetailPage() {
                                 <h1 className="text-xl font-semibold">Evaluation record</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Admin view of a single evaluator submission. You can lock/unlock if required.
+                                Admin view of a single evaluator submission. Scores are loaded from evaluationScores.
                             </p>
                         </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
-                            {refreshing ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            ) : (
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                            )}
+                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                             Refresh
                         </Button>
 
@@ -398,7 +301,7 @@ export default function AdminEvaluationDetailPage() {
                         <Card>
                             <CardHeader className="space-y-2">
                                 <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                    <span className="min-w-0 truncate">{safeText(detail.groupTitle, "Schedule")}</span>
+                                    <span>Evaluation</span>
                                     <div className="flex flex-wrap items-center gap-2">
                                         {statusBadge(detail.status)}
                                         {isLocked ? (
@@ -436,49 +339,21 @@ export default function AdminEvaluationDetailPage() {
                                 </CardTitle>
 
                                 <CardDescription className="space-y-1">
-                                    <div>{scheduleLine(detail.groupTitle, detail.scheduledAt, detail.room)}</div>
-                                    <div className="text-xs text-muted-foreground">
-                                        Evaluator: {personLine(detail.evaluatorName, detail.evaluatorEmail)}
-                                    </div>
-                                    {(detail.program || detail.term) && (
-                                        <div className="text-xs text-muted-foreground">
-                                            {[safeText(detail.program, ""), safeText(detail.term, "")].filter(Boolean).join(" · ")}
-                                        </div>
-                                    )}
+                                    <div className="text-xs text-muted-foreground">Submitted: {fmtDateTime(detail.submittedAt) || "—"}</div>
+                                    <div className="text-xs text-muted-foreground">Locked: {fmtDateTime(detail.lockedAt) || "—"}</div>
                                 </CardDescription>
                             </CardHeader>
 
-                            <CardContent className="space-y-4">
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Submitted</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(detail.submittedAt) || "—"}</div>
-                                    </div>
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Locked</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(detail.lockedAt) || "—"}</div>
-                                    </div>
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Created</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(detail.createdAt) || "—"}</div>
-                                    </div>
-                                </div>
-
+                            <CardContent className="space-y-3">
                                 {showInternalIds ? (
                                     <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
                                         <div>Evaluation ID: {detail.id}</div>
                                         <div>Schedule ID: {safeText(detail.scheduleId, "—")}</div>
                                         <div>Evaluator ID: {safeText(detail.evaluatorId, "—")}</div>
-                                        <div>Group ID: {safeText(detail.groupId, "—")}</div>
                                     </div>
                                 ) : null}
 
                                 <div className="flex flex-wrap gap-2">
-                                    {detail.scheduleId ? (
-                                        <Button asChild variant="outline" size="sm">
-                                            <Link href={`/dashboard/admin/schedules/${detail.scheduleId}`}>Open schedule</Link>
-                                        </Button>
-                                    ) : null}
                                     <Button asChild variant="outline" size="sm">
                                         <Link href="/dashboard/admin/evaluation">Back to list</Link>
                                     </Button>
@@ -491,12 +366,7 @@ export default function AdminEvaluationDetailPage() {
                                 <CardTitle>Scores & comments</CardTitle>
                                 <CardDescription>
                                     Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
-                                    {scoreSummary.scoredCount > 0 ? (
-                                        <>
-                                            {" "}
-                                            • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}
-                                        </>
-                                    ) : null}
+                                    {scoreSummary.scoredCount > 0 ? <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</> : null}
                                 </CardDescription>
                             </CardHeader>
 
@@ -517,23 +387,13 @@ export default function AdminEvaluationDetailPage() {
                                                     const w = toNumber(r.weight, 1)
                                                     const sc = typeof r.score === "number" ? r.score : toNumber(r.score, NaN)
                                                     const crit = safeText(r.criterion, `Criterion ${idx + 1}`)
-                                                    const range =
-                                                        typeof r.minScore === "number" && typeof r.maxScore === "number"
-                                                            ? `(${r.minScore}–${r.maxScore})`
-                                                            : ""
-
                                                     return (
                                                         <TableRow key={`${r.criterionId ?? idx}`}>
                                                             <TableCell className="align-top">
                                                                 <div className="space-y-1">
                                                                     <div className="font-medium">{crit}</div>
                                                                     {r.description ? (
-                                                                        <div className="text-xs text-muted-foreground">
-                                                                            {safeText(r.description, "")}
-                                                                        </div>
-                                                                    ) : null}
-                                                                    {range ? (
-                                                                        <div className="text-[10px] text-muted-foreground">Range {range}</div>
+                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
                                                                     ) : null}
                                                                 </div>
                                                             </TableCell>
@@ -550,7 +410,7 @@ export default function AdminEvaluationDetailPage() {
                                     </div>
                                 ) : (
                                     <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                        No score rows were returned by the API for this evaluation.
+                                        No score rows returned for this evaluation.
                                     </div>
                                 )}
 

@@ -15,8 +15,8 @@ import {
     Search,
     ShieldCheck,
     Unlock,
-    Plus,
-    Trash2,
+    UserPlus,
+    UserMinus,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
@@ -95,34 +95,11 @@ type StudentOverviewItem = {
     studentEmail: string
 }
 
-type DbUser = {
-    id: string
-    name: string | null
-    email: string
-    role?: string | null
-    status?: string | null
-}
-
-type DbSchedule = {
-    id: string
-    groupId: string
-    scheduledAt: string
-    room: string | null
-    status: string
-    groupTitle: string | null
-    program: string | null
-    term: string | null
-}
+type StaffUserOption = { id: string; name: string | null; email: string; role?: string | null; status?: string | null }
 
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
-}
-
-function titleCaseRole(role?: string | null) {
-    const r = safeText(role, "").toLowerCase()
-    if (!r) return ""
-    return r.charAt(0).toUpperCase() + r.slice(1)
 }
 
 function fmtDateTime(d?: string | null) {
@@ -189,13 +166,16 @@ function personLine(name: string | null, email: string) {
     return n || e
 }
 
-function normalizeRole(role?: string | null) {
-    return safeText(role, "").toLowerCase()
-}
-
-function userLabel(u?: DbUser | null) {
-    if (!u) return ""
-    return personLine(u.name, u.email)
+function normalizeUsers(payload: any): any[] {
+    const raw = payload
+    const arr =
+        raw?.items ??
+        raw?.users ??
+        raw?.data ??
+        raw?.rows ??
+        raw?.result ??
+        (Array.isArray(raw) ? raw : null)
+    return Array.isArray(arr) ? arr : []
 }
 
 export default function AdminEvaluationPage() {
@@ -229,16 +209,6 @@ export default function AdminEvaluationPage() {
     const [inspectMeta, setInspectMeta] = React.useState<Record<string, any> | null>(null)
     const [inspectAnswers, setInspectAnswers] = React.useState<any>(null)
 
-    // Assignments (Admin feature)
-    const [assignOpen, setAssignOpen] = React.useState(false)
-    const [assignLoading, setAssignLoading] = React.useState(false)
-    const [assignTab, setAssignTab] = React.useState<"single" | "panelists">("single")
-    const [assignSchedules, setAssignSchedules] = React.useState<DbSchedule[]>([])
-    const [assignStaffUsers, setAssignStaffUsers] = React.useState<DbUser[]>([])
-    const [assignScheduleId, setAssignScheduleId] = React.useState("")
-    const [assignEvaluatorId, setAssignEvaluatorId] = React.useState("")
-    const [assignWorking, setAssignWorking] = React.useState(false)
-
     // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
     const [confirmTitle, setConfirmTitle] = React.useState("")
@@ -250,6 +220,48 @@ export default function AdminEvaluationPage() {
         setConfirmTitle(title)
         setConfirmDesc(desc)
         setConfirmOpen(true)
+    }
+
+    // ASSIGN dialog
+    const [assignOpen, setAssignOpen] = React.useState(false)
+    const [assignMode, setAssignMode] = React.useState<"panelists" | "single">("panelists")
+    const [assignScheduleId, setAssignScheduleId] = React.useState("")
+    const [assignStaffId, setAssignStaffId] = React.useState("")
+    const [assignWorking, setAssignWorking] = React.useState(false)
+
+    const [staffUsersLoading, setStaffUsersLoading] = React.useState(false)
+    const [staffUsers, setStaffUsers] = React.useState<StaffUserOption[]>([])
+
+    function openAssignDialog(mode: "panelists" | "single", scheduleId?: string) {
+        setAssignMode(mode)
+        setAssignScheduleId(safeText(scheduleId, ""))
+        setAssignStaffId("")
+        setAssignOpen(true)
+    }
+
+    async function loadStaffUsers() {
+        setStaffUsersLoading(true)
+        try {
+            const res = await apiJson<any>("GET", "/api/admin/users?limit=500&offset=0")
+            if (!res.ok) throw new Error(res.error ?? "Failed to load staff users")
+
+            const rows = normalizeUsers(res)
+            const filtered = rows
+                .map((u: any) => ({
+                    id: safeText(u?.id, ""),
+                    name: u?.name ?? null,
+                    email: safeText(u?.email, ""),
+                    role: u?.role ?? null,
+                    status: u?.status ?? null,
+                }))
+                .filter((u: StaffUserOption) => safeText(u.role, "").toLowerCase() === "staff")
+
+            setStaffUsers(filtered)
+        } catch (e: any) {
+            toast.error(e?.message ?? "Failed to load staff users")
+        } finally {
+            setStaffUsersLoading(false)
+        }
     }
 
     async function loadOverview() {
@@ -299,6 +311,15 @@ export default function AdminEvaluationPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [authLoading, user?.id])
 
+    // load staff users when opening assign dialog in single mode
+    React.useEffect(() => {
+        if (!assignOpen) return
+        if (assignMode !== "single") return
+        if (staffUsers.length > 0) return
+        loadStaffUsers()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [assignOpen, assignMode])
+
     const staffScheduleOptions = React.useMemo(() => {
         const map = new Map<string, { id: string; label: string }>()
         for (const it of staffItems) {
@@ -306,19 +327,6 @@ export default function AdminEvaluationPage() {
                 map.set(it.scheduleId, {
                     id: it.scheduleId,
                     label: scheduleLine(it.groupTitle, it.scheduledAt, it.room),
-                })
-            }
-        }
-        return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
-    }, [staffItems])
-
-    const staffEvaluatorOptions = React.useMemo(() => {
-        const map = new Map<string, { id: string; label: string }>()
-        for (const it of staffItems) {
-            if (!map.has(it.evaluatorId)) {
-                map.set(it.evaluatorId, {
-                    id: it.evaluatorId,
-                    label: personLine(it.evaluatorName, it.evaluatorEmail),
                 })
             }
         }
@@ -337,6 +345,27 @@ export default function AdminEvaluationPage() {
         }
         return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     }, [studentItems])
+
+    const allScheduleOptions = React.useMemo(() => {
+        const map = new Map<string, { id: string; label: string }>()
+        for (const s of [...staffScheduleOptions, ...studentScheduleOptions]) {
+            if (!map.has(s.id)) map.set(s.id, s)
+        }
+        return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
+    }, [staffScheduleOptions, studentScheduleOptions])
+
+    const staffEvaluatorOptions = React.useMemo(() => {
+        const map = new Map<string, { id: string; label: string }>()
+        for (const it of staffItems) {
+            if (!map.has(it.evaluatorId)) {
+                map.set(it.evaluatorId, {
+                    id: it.evaluatorId,
+                    label: personLine(it.evaluatorName, it.evaluatorEmail),
+                })
+            }
+        }
+        return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
+    }, [staffItems])
 
     const studentOptions = React.useMemo(() => {
         const map = new Map<string, { id: string; label: string }>()
@@ -475,119 +504,31 @@ export default function AdminEvaluationPage() {
         await loadOverview()
     }
 
-    // ---------- Admin Assignment feature ----------
-    async function openAssignDialog() {
-        setAssignOpen(true)
-        setAssignLoading(true)
-        try {
-            const [scRes, usRes] = await Promise.all([
-                apiJson<{ schedules: DbSchedule[] }>("GET", "/api/schedule?resource=schedules&limit=200&offset=0"),
-                apiJson<{ users: DbUser[] }>("GET", "/api/admin/users?limit=500&offset=0"),
-            ])
-
-            if (!scRes.ok) throw new Error(scRes.error ?? "Failed to load schedules")
-            if (!usRes.ok) throw new Error(usRes.error ?? "Failed to load users")
-
-            const schedules = Array.isArray((scRes as any).schedules) ? (scRes as any).schedules : []
-            const users = Array.isArray((usRes as any).users) ? (usRes as any).users : []
-
-            const staff = users
-                .filter((u: { role: string | null | undefined; status: any }) => normalizeRole(u.role) === "staff" && safeText(u.status, "active").toLowerCase() !== "disabled")
-                .sort((a: DbUser | null | undefined, b: DbUser | null | undefined) => userLabel(a).localeCompare(userLabel(b)))
-
-            setAssignSchedules(schedules)
-            setAssignStaffUsers(staff)
-
-            // preselect something helpful
-            setAssignScheduleId("")
-            setAssignEvaluatorId("")
-            setAssignTab("single")
-        } catch (e: any) {
-            toast.error(e?.message ?? "Failed to load assignment data")
-            setAssignOpen(false)
-        } finally {
-            setAssignLoading(false)
-        }
+    async function assignPanelists(scheduleId: string) {
+        const res = await apiJson("POST", "/api/admin/evaluations/assign", { mode: "panelists", scheduleId })
+        if (!res.ok) throw new Error(res.error ?? "Failed to assign panelists")
+        toast.success(`Assigned panelists. Created: ${(res as any).createdCount ?? 0}`)
+        await loadOverview()
     }
 
-    const assignScheduleOptions = React.useMemo(() => {
-        const list = assignSchedules.slice()
-        list.sort((a, b) => {
-            const la = scheduleLine(safeText(a.groupTitle, "Schedule"), a.scheduledAt, a.room)
-            const lb = scheduleLine(safeText(b.groupTitle, "Schedule"), b.scheduledAt, b.room)
-            return la.localeCompare(lb)
-        })
-        return list
-    }, [assignSchedules])
+    async function assignSingle(scheduleId: string, evaluatorId: string) {
+        const res = await apiJson("POST", "/api/admin/evaluations/assign", { mode: "single", scheduleId, evaluatorId })
+        if (!res.ok) throw new Error(res.error ?? "Failed to assign evaluator")
 
-    async function assignSingle() {
-        const scheduleId = safeText(assignScheduleId, "")
-        const evaluatorId = safeText(assignEvaluatorId, "")
-        if (!scheduleId) {
-            toast.error("Please select a schedule.")
-            return
-        }
-        if (!evaluatorId) {
-            toast.error("Please select a staff evaluator.")
-            return
-        }
-
-        setAssignWorking(true)
-        try {
-            const res = await apiJson<{ created: boolean }>("POST", "/api/admin/evaluations/assign", {
-                mode: "single",
-                scheduleId,
-                evaluatorId,
-            })
-            if (!res.ok) throw new Error(res.error ?? "Failed to assign evaluation")
-
-            toast.success((res as any).created ? "Evaluation assigned" : "Already assigned")
-            await loadOverview()
-        } catch (e: any) {
-            toast.error(e?.message ?? "Failed to assign evaluation")
-        } finally {
-            setAssignWorking(false)
-        }
+        const created = Boolean((res as any).created)
+        toast.success(created ? "Evaluator assigned" : "Already assigned")
+        await loadOverview()
     }
 
-    async function assignFromPanelists() {
-        const scheduleId = safeText(assignScheduleId, "")
-        if (!scheduleId) {
-            toast.error("Please select a schedule.")
-            return
-        }
-
-        setAssignWorking(true)
-        try {
-            const res = await apiJson<{ createdCount: number }>("POST", "/api/admin/evaluations/assign", {
-                mode: "panelists",
-                scheduleId,
-            })
-            if (!res.ok) throw new Error(res.error ?? "Failed to assign panelist evaluations")
-
-            toast.success(`Assigned ${Number((res as any).createdCount ?? 0)} evaluation(s) from panelists`)
-            await loadOverview()
-        } catch (e: any) {
-            toast.error(e?.message ?? "Failed to assign panelist evaluations")
-        } finally {
-            setAssignWorking(false)
-        }
-    }
-
-    async function unassignEvaluation(item: StaffOverviewItem) {
-        const scheduleId = item.scheduleId
-        const evaluatorId = item.evaluatorId
-
-        const res = await apiJson<{ removed: boolean }>(
+    async function unassignSingle(scheduleId: string, evaluatorId: string) {
+        const res = await apiJson(
             "DELETE",
             `/api/admin/evaluations/assign?scheduleId=${encodeURIComponent(scheduleId)}&evaluatorId=${encodeURIComponent(
                 evaluatorId
             )}`
         )
-        if (!res.ok) throw new Error(res.error ?? "Failed to unassign evaluation")
-
-        if ((res as any).removed) toast.success("Evaluation unassigned")
-        else toast.error("Cannot unassign (already submitted/locked).")
+        if (!res.ok) throw new Error(res.error ?? "Failed to unassign evaluator")
+        toast.success((res as any).removed ? "Unassigned" : "Not removed (already submitted/locked)")
         await loadOverview()
     }
 
@@ -605,20 +546,24 @@ export default function AdminEvaluationPage() {
                                 <h1 className="text-xl font-semibold">Evaluation Management</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Admin oversight + assignment for staff evaluations and student feedback.
+                                Admin oversight for staff evaluations and student feedback.
                             </p>
                         </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refreshAll} disabled={loading || refreshing}>
-                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            {refreshing ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
                             Refresh
                         </Button>
 
-                        <Button onClick={openAssignDialog} disabled={loading || refreshing}>
-                            <Plus className="mr-2 h-4 w-4" />
-                            Assign evaluations
+                        <Button variant="outline" onClick={() => openAssignDialog("panelists", staffScheduleFilter || "")}>
+                            <UserPlus className="mr-2 h-4 w-4" />
+                            Assign evaluation
                         </Button>
 
                         <div className="flex items-center gap-2 rounded-md border px-3 py-2">
@@ -654,7 +599,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 </CardTitle>
                                 <CardDescription>
-                                    Assign evaluation rows when needed (Admin). Lock/unlock for finalization control.
+                                    Use filters to find a specific schedule or evaluator. Admin can assign and lock/unlock when needed.
                                 </CardDescription>
                             </CardHeader>
 
@@ -731,7 +676,7 @@ export default function AdminEvaluationPage() {
                                         </Select>
                                     </div>
 
-                                    <div className="flex items-end gap-2 lg:col-span-4">
+                                    <div className="flex flex-col gap-2 lg:col-span-4 lg:flex-row">
                                         <Button
                                             variant="outline"
                                             className="w-full"
@@ -744,6 +689,31 @@ export default function AdminEvaluationPage() {
                                         >
                                             <Filter className="mr-2 h-4 w-4" />
                                             Clear filters
+                                        </Button>
+
+                                        <Button
+                                            className="w-full"
+                                            variant="outline"
+                                            disabled={!staffScheduleFilter}
+                                            onClick={() =>
+                                                openConfirm(
+                                                    "Assign panelists for this schedule?",
+                                                    "This will create missing evaluation records for all panelists assigned to the selected schedule.",
+                                                    async () => assignPanelists(staffScheduleFilter)
+                                                )
+                                            }
+                                        >
+                                            <UserPlus className="mr-2 h-4 w-4" />
+                                            Assign panelists (selected schedule)
+                                        </Button>
+
+                                        <Button
+                                            className="w-full"
+                                            variant="outline"
+                                            onClick={() => openAssignDialog("single", staffScheduleFilter || "")}
+                                        >
+                                            <UserPlus className="mr-2 h-4 w-4" />
+                                            Assign single evaluator
                                         </Button>
                                     </div>
                                 </div>
@@ -781,8 +751,10 @@ export default function AdminEvaluationPage() {
                                                     staffFiltered.map((it) => {
                                                         const s = safeText(it.status, "").toLowerCase()
                                                         const isLocked = s === "locked"
-                                                        const isSubmitted = ["submitted", "done", "completed"].includes(s)
-                                                        const canUnassign = !isLocked && !isSubmitted && !it.submittedAt && !it.lockedAt
+                                                        const canUnassign =
+                                                            !it.submittedAt &&
+                                                            !it.lockedAt &&
+                                                            ["pending", "draft", ""].includes(s)
 
                                                         return (
                                                             <TableRow key={it.id}>
@@ -794,9 +766,7 @@ export default function AdminEvaluationPage() {
                                                                         </div>
                                                                         {(it.program || it.term) && (
                                                                             <div className="text-xs text-muted-foreground">
-                                                                                {[safeText(it.program, ""), safeText(it.term, "")]
-                                                                                    .filter(Boolean)
-                                                                                    .join(" · ")}
+                                                                                {[safeText(it.program, ""), safeText(it.term, "")].filter(Boolean).join(" · ")}
                                                                             </div>
                                                                         )}
                                                                         {showInternalIds && (
@@ -810,7 +780,12 @@ export default function AdminEvaluationPage() {
                                                                 <TableCell className="align-top">
                                                                     <div className="space-y-1">
                                                                         <div className="font-medium">{personLine(it.evaluatorName, it.evaluatorEmail)}</div>
-                                                                        <div className="text-xs text-muted-foreground">{titleCaseRole(it.evaluatorRole) || "—"}</div>
+                                                                        <div className="text-xs text-muted-foreground">
+                                                                            {safeText(it.evaluatorRole, "").toLowerCase()
+                                                                                ? safeText(it.evaluatorRole, "").charAt(0).toUpperCase() +
+                                                                                safeText(it.evaluatorRole, "").slice(1).toLowerCase()
+                                                                                : "—"}
+                                                                        </div>
                                                                         {showInternalIds && (
                                                                             <div className="mt-1 text-[10px] text-muted-foreground">User: {it.evaluatorId}</div>
                                                                         )}
@@ -868,21 +843,22 @@ export default function AdminEvaluationPage() {
                                                                             </Button>
                                                                         )}
 
-                                                                        <Button
-                                                                            size="sm"
-                                                                            variant="destructive"
-                                                                            disabled={!canUnassign}
-                                                                            onClick={() =>
-                                                                                openConfirm(
-                                                                                    "Unassign evaluation?",
-                                                                                    "This removes the evaluation record (only allowed for unsubmitted/unlocked).",
-                                                                                    async () => unassignEvaluation(it)
-                                                                                )
-                                                                            }
-                                                                        >
-                                                                            <Trash2 className="mr-2 h-4 w-4" />
-                                                                            Unassign
-                                                                        </Button>
+                                                                        {canUnassign ? (
+                                                                            <Button
+                                                                                size="sm"
+                                                                                variant="outline"
+                                                                                onClick={() =>
+                                                                                    openConfirm(
+                                                                                        "Unassign evaluator?",
+                                                                                        "This removes the evaluation assignment (only allowed if not submitted/locked).",
+                                                                                        async () => unassignSingle(it.scheduleId, it.evaluatorId)
+                                                                                    )
+                                                                                }
+                                                                            >
+                                                                                <UserMinus className="mr-2 h-4 w-4" />
+                                                                                Unassign
+                                                                            </Button>
+                                                                        ) : null}
                                                                     </div>
                                                                 </TableCell>
                                                             </TableRow>
@@ -1047,9 +1023,7 @@ export default function AdminEvaluationPage() {
                                                                         </div>
                                                                         {(it.program || it.term) && (
                                                                             <div className="text-xs text-muted-foreground">
-                                                                                {[safeText(it.program, ""), safeText(it.term, "")]
-                                                                                    .filter(Boolean)
-                                                                                    .join(" · ")}
+                                                                                {[safeText(it.program, ""), safeText(it.term, "")].filter(Boolean).join(" · ")}
                                                                             </div>
                                                                         )}
                                                                         {showInternalIds && (
@@ -1132,104 +1106,117 @@ export default function AdminEvaluationPage() {
                     </TabsContent>
                 </Tabs>
 
-                {/* Assign Evaluations Dialog */}
+                {/* Assign dialog */}
                 <Dialog open={assignOpen} onOpenChange={setAssignOpen}>
-                    <DialogContent className="sm:max-w-2xl">
+                    <DialogContent className="sm:max-w-lg">
                         <DialogHeader>
-                            <DialogTitle>Assign evaluations</DialogTitle>
+                            <DialogTitle>Assign evaluation</DialogTitle>
                             <DialogDescription>
-                                Create missing staff evaluation records for a schedule. You can assign a single staff evaluator or bulk-assign all panelists.
+                                Create evaluation assignment(s) for a defense schedule.
                             </DialogDescription>
                         </DialogHeader>
 
-                        {assignLoading ? (
+                        <div className="space-y-4">
                             <div className="space-y-2">
-                                <Skeleton className="h-10 w-full" />
-                                <Skeleton className="h-10 w-full" />
-                                <Skeleton className="h-10 w-2/3" />
+                                <Label className="text-xs text-muted-foreground">Mode</Label>
+                                <Select value={assignMode} onValueChange={(v) => setAssignMode(v as any)}>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="panelists">Assign all panelists (recommended)</SelectItem>
+                                        <SelectItem value="single">Assign a single evaluator</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
-                        ) : (
-                            <div className="space-y-4">
+
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">Schedule</Label>
+                                <Select
+                                    value={assignScheduleId || CLEAR_SELECT_VALUE}
+                                    onValueChange={(v) => setAssignScheduleId(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select schedule" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value={CLEAR_SELECT_VALUE}>Select schedule</SelectItem>
+                                        {allScheduleOptions.map((s) => (
+                                            <SelectItem key={s.id} value={s.id}>
+                                                <span className="truncate">{s.label}</span>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {assignMode === "single" ? (
                                 <div className="space-y-2">
-                                    <Label className="text-xs text-muted-foreground">Schedule</Label>
+                                    <Label className="text-xs text-muted-foreground">Evaluator (staff)</Label>
                                     <Select
-                                        value={assignScheduleId || CLEAR_SELECT_VALUE}
-                                        onValueChange={(v) => setAssignScheduleId(v === CLEAR_SELECT_VALUE ? "" : v)}
+                                        value={assignStaffId || CLEAR_SELECT_VALUE}
+                                        onValueChange={(v) => setAssignStaffId(v === CLEAR_SELECT_VALUE ? "" : v)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select schedule" />
+                                            <SelectValue
+                                                placeholder={staffUsersLoading ? "Loading staff..." : "Select staff evaluator"}
+                                            />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value={CLEAR_SELECT_VALUE}>Select schedule</SelectItem>
-                                            {assignScheduleOptions.map((sc) => (
-                                                <SelectItem key={sc.id} value={sc.id}>
-                                                    <span className="truncate">
-                                                        {scheduleLine(safeText(sc.groupTitle, "Schedule"), sc.scheduledAt, sc.room)}
-                                                    </span>
+                                            <SelectItem value={CLEAR_SELECT_VALUE}>Select staff evaluator</SelectItem>
+                                            {staffUsers.map((u) => (
+                                                <SelectItem key={u.id} value={u.id}>
+                                                    <span className="truncate">{personLine(u.name, u.email)}</span>
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
                                 </div>
+                            ) : (
+                                <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                                    This will create missing evaluation records for all panelists in{" "}
+                                    <span className="font-medium">schedule_panelists</span> for the selected schedule.
+                                </div>
+                            )}
+                        </div>
 
-                                <Tabs value={assignTab} onValueChange={(v) => setAssignTab(v as any)}>
-                                    <TabsList className="grid w-full grid-cols-2">
-                                        <TabsTrigger value="single">Assign one staff</TabsTrigger>
-                                        <TabsTrigger value="panelists">Assign all panelists</TabsTrigger>
-                                    </TabsList>
+                        <DialogFooter className="mt-4">
+                            <Button variant="outline" onClick={() => setAssignOpen(false)} disabled={assignWorking}>
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={async () => {
+                                    try {
+                                        if (!assignScheduleId) {
+                                            toast.error("Please select a schedule")
+                                            return
+                                        }
+                                        if (assignMode === "single" && !assignStaffId) {
+                                            toast.error("Please select an evaluator")
+                                            return
+                                        }
 
-                                    <TabsContent value="single" className="mt-4 space-y-3">
-                                        <div className="space-y-2">
-                                            <Label className="text-xs text-muted-foreground">Staff evaluator</Label>
-                                            <Select
-                                                value={assignEvaluatorId || CLEAR_SELECT_VALUE}
-                                                onValueChange={(v) => setAssignEvaluatorId(v === CLEAR_SELECT_VALUE ? "" : v)}
-                                            >
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Select staff" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value={CLEAR_SELECT_VALUE}>Select staff</SelectItem>
-                                                    {assignStaffUsers.map((u) => (
-                                                        <SelectItem key={u.id} value={u.id}>
-                                                            <span className="truncate">{userLabel(u)}</span>
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
+                                        setAssignWorking(true)
 
-                                        <DialogFooter>
-                                            <Button variant="outline" onClick={() => setAssignOpen(false)} disabled={assignWorking}>
-                                                Close
-                                            </Button>
-                                            <Button onClick={assignSingle} disabled={assignWorking}>
-                                                {assignWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                                Assign
-                                            </Button>
-                                        </DialogFooter>
-                                    </TabsContent>
+                                        if (assignMode === "panelists") {
+                                            await assignPanelists(assignScheduleId)
+                                        } else {
+                                            await assignSingle(assignScheduleId, assignStaffId)
+                                        }
 
-                                    <TabsContent value="panelists" className="mt-4 space-y-3">
-                                        <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                                            This will create missing evaluation rows for all panelists assigned to the selected schedule
-                                            (from <span className="font-mono">schedule_panelists</span>).
-                                        </div>
-
-
-                                        <DialogFooter>
-                                            <Button variant="outline" onClick={() => setAssignOpen(false)} disabled={assignWorking}>
-                                                Close
-                                            </Button>
-                                            <Button onClick={assignFromPanelists} disabled={assignWorking}>
-                                                {assignWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                                Assign panelists
-                                            </Button>
-                                        </DialogFooter>
-                                    </TabsContent>
-                                </Tabs>
-                            </div>
-                        )}
+                                        setAssignOpen(false)
+                                    } catch (e: any) {
+                                        toast.error(e?.message ?? "Assign failed")
+                                    } finally {
+                                        setAssignWorking(false)
+                                    }
+                                }}
+                                disabled={assignWorking}
+                            >
+                                {assignWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                                Assign
+                            </Button>
+                        </DialogFooter>
                     </DialogContent>
                 </Dialog>
 
