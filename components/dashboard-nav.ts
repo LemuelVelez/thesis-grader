@@ -64,31 +64,26 @@ function isActivePath(pathname: string, href: string) {
 }
 
 /**
- * Exported menu builder.
- *
- * IMPORTANT CHANGE:
- * - "Overview" and "Dashboard" were duplicates (both represent the role root).
- * - We now keep a single entry: "Dashboard" -> role root.
+ * Nav is aligned with:
+ * - Features: Scheduling (Staff), Rubrics (Admin), Scoring/Feedback (Staff), Finalize/Lock, Audit Logs (Admin)
+ * - Roles: Student (schedule+evaluate), Staff (schedules+score+feedback+finalize), Admin (oversight+reports+audit)
  */
 export function getDashboardNav(role: string | null | undefined): NavGroup[] {
     const base = roleBasePath(role)
-
-    // Single root entry (no duplicate Overview)
-    const main: NavItem[] = [
-        { label: "Dashboard", href: base, icon: LayoutDashboard },
-        { label: "Settings", href: `${base}/settings`, icon: Settings },
-    ]
-
     const r = String(role ?? "").toLowerCase()
+
+    const dashboard: NavItem = { label: "Dashboard", href: base, icon: LayoutDashboard }
+    const settings: NavItem = { label: "Settings", href: `${base}/settings`, icon: Settings }
 
     if (r === "student") {
         return [
             {
                 title: "Main",
                 items: [
-                    ...main,
+                    dashboard,
                     { label: "My Schedule", href: `${base}/schedule`, icon: Calendar },
                     { label: "My Evaluation", href: `${base}/evaluation`, icon: ClipboardList },
+                    settings,
                 ],
             },
         ]
@@ -99,34 +94,56 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
             {
                 title: "Main",
                 items: [
-                    ...main,
+                    dashboard,
+
+                    // Scheduling (Staff)
                     { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
+
+                    // Scoring & feedback + Finalize & lock (Staff)
                     { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
+
+                    // Read-only reference to templates/criteria (supports scoring)
+                    { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
+
+                    settings,
                 ],
             },
         ]
     }
 
     if (r === "admin") {
-        const adminItems: NavItem[] = [
+        const oversight: NavItem[] = [
+            // Admin oversight typically needs visibility (not scoring)
+            { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
+            { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
+            { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
+        ]
+
+        const administration: NavItem[] = [
             { label: "Users", href: `${base}/users`, icon: Users },
             { label: "Thesis Records", href: `${base}/thesis`, icon: BookOpen },
 
-            // ✅ Rubrics
+            // Rubrics & criteria (Admin)
             { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
 
-            { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
+            // Audit logs (Admin)
             { label: "Audit Logs", href: `${base}/audit`, icon: ShieldCheck },
         ]
 
         return [
-            { title: "Main", items: main },
-            { title: "Administration", items: adminItems },
+            { title: "Main", items: [dashboard, settings] },
+            { title: "Oversight", items: oversight },
+            { title: "Administration", items: administration },
         ]
     }
 
     // Unknown role fallback (stable UI)
-    return [{ title: "Main", items: [{ label: "Dashboard", href: "/dashboard", icon: LayoutDashboard }] }]
+    return [
+        {
+            title: "Main",
+            items: [{ label: "Dashboard", href: "/dashboard", icon: LayoutDashboard }],
+        },
+    ]
 }
 
 export function DashboardNav() {

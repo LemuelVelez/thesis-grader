@@ -1,6 +1,6 @@
+// app/api/users/[id]/avatar/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextResponse, type NextRequest } from "next/server"
-import { cookies } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 
 import { db } from "@/lib/db"
 import { getUserFromSession, SESSION_COOKIE } from "@/lib/auth"
@@ -45,14 +45,11 @@ function wantsJson(req: NextRequest) {
     return fmt === "json"
 }
 
-function jsonOk(url: string | null) {
-    return NextResponse.json(
-        { ok: true, url },
-        {
-            status: 200,
-            headers: { "Cache-Control": "no-store" },
-        }
-    )
+function jsonOk(payload: any, cacheControl = "no-store") {
+    return NextResponse.json(payload, {
+        status: 200,
+        headers: { "Cache-Control": cacheControl },
+    })
 }
 
 function svgOk(svg: string) {
@@ -87,17 +84,18 @@ function pickAvatarKey(row: any): string | null {
 
 function pickAvatarUrl(row: any): string | null {
     if (!row) return null
-    const candidates = [row.avatar_url, row.avatarUrl, row.photo_url, row.photoUrl]
+    const candidates = [row.avatar_url, row.avatarUrl, row.photo_url, row.photoUrl, row.image_url, row.imageUrl]
     for (const v of candidates) {
         if (typeof v === "string" && /^https?:\/\//i.test(v)) return v
     }
     return null
 }
 
-async function getAdminActor() {
-    // ✅ FIX: cookies() returns Promise in your Next.js version
-    const cookieStore = await cookies()
-    const token = cookieStore.get(SESSION_COOKIE)?.value
+async function requireAdmin(req: NextRequest) {
+    const cookieToken = req.cookies.get(SESSION_COOKIE)?.value
+    const authHeader = req.headers.get("authorization") || ""
+    const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : ""
+    const token = cookieToken || bearerToken
     if (!token) return null
 
     try {
@@ -111,54 +109,70 @@ async function getAdminActor() {
     }
 }
 
+/**
+ * ✅ Your migrations only define: users, students, staff_profiles.
+ * The old code tried querying tables like `profiles` / `user_profiles` (not in migrations),
+ * which is wasted work per avatar request.
+ */
 async function loadMergedUserRow(id: string) {
     let userRow: any | null = null
     try {
-        const { rows } = await db.query(`select id, name, email, avatar_key from users where id = $1 limit 1`, [id])
+        const { rows } = await db.query(`select id, name, email, role, avatar_key from users where id = $1 limit 1`, [id])
         userRow = rows?.[0] ?? null
     } catch {
         userRow = null
     }
 
-    let profileRow: any | null = null
+    let studentRow: any | null = null
     try {
-        const { rows } = await db.query(`select * from profiles where user_id = $1 limit 1`, [id])
-        profileRow = rows?.[0] ?? null
+        const { rows } = await db.query(`select * from students where user_id = $1 limit 1`, [id])
+        studentRow = rows?.[0] ?? null
     } catch {
-        profileRow = null
+        studentRow = null
     }
 
-    if (!profileRow) {
-        try {
-            const { rows } = await db.query(`select * from user_profiles where user_id = $1 limit 1`, [id])
-            profileRow = rows?.[0] ?? null
-        } catch {
-            profileRow = null
-        }
+    let staffRow: any | null = null
+    try {
+        const { rows } = await db.query(`select * from staff_profiles where user_id = $1 limit 1`, [id])
+        staffRow = rows?.[0] ?? null
+    } catch {
+        staffRow = null
     }
 
-    return { ...(userRow ?? {}), ...(profileRow ?? {}) }
+    return {
+        ...(userRow ?? {}),
+        ...(studentRow ?? {}),
+        ...(staffRow ?? {}),
+    }
 }
 
 export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     const id = String(ctx?.params?.id ?? "").trim()
 
     if (!UUID_RE.test(id)) {
-        if (wantsJson(req)) return jsonOk(null)
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null })
         return svgOk(placeholderSvg("U"))
     }
 
-    const actor = await getAdminActor()
+    const actor = await requireAdmin(req)
     if (!actor) {
+        // IMPORTANT: return a placeholder SVG for non-json callers (e.g. <img> tags),
+        // but do not leak info via JSON.
         if (wantsJson(req)) return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 })
         return svgOk(placeholderSvg("U"))
     }
 
     const merged = await loadMergedUserRow(id)
 
+    if (!merged?.id) {
+        // ✅ FIX: avatars should NEVER be a hard 404; just return fallback.
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=300")
+        return svgOk(placeholderSvg("U"))
+    }
+
     const directUrl = pickAvatarUrl(merged)
     if (directUrl) {
-        if (wantsJson(req)) return jsonOk(directUrl)
+        if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: directUrl }, "no-store")
         const res = NextResponse.redirect(directUrl, 302)
         res.headers.set("Cache-Control", "no-store")
         return res
@@ -167,8 +181,13 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     const key = pickAvatarKey(merged)
     if (key) {
         try {
-            const url = await createPresignedGetUrl({ key, expiresInSeconds: 300 })
-            if (wantsJson(req)) return jsonOk(url)
+            const url = await createPresignedGetUrl({ key, expiresInSeconds: 60 * 10 })
+            if (wantsJson(req)) {
+                return jsonOk(
+                    { ok: true, avatar_key: key, url, expires_in_seconds: 60 * 10 },
+                    "private, max-age=300"
+                )
+            }
             const res = NextResponse.redirect(url, 302)
             res.headers.set("Cache-Control", "no-store")
             return res
@@ -187,6 +206,6 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
         ""
 
     const initials = safeInitials(String(nameOrEmail))
-    if (wantsJson(req)) return jsonOk(null)
+    if (wantsJson(req)) return jsonOk({ ok: true, avatar_key: null, url: null }, "private, max-age=300")
     return svgOk(placeholderSvg(initials))
 }

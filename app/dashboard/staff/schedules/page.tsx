@@ -8,7 +8,6 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
     CalendarDays,
-    CheckCircle2,
     ChevronDown,
     ClipboardCopy,
     Filter,
@@ -22,6 +21,7 @@ import {
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { useAuth } from "@/hooks/use-auth"
+import { useApi } from "@/hooks/use-api"
 import { cn } from "@/lib/utils"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -54,24 +54,24 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 
 type DefenseSchedule = {
     id: string
-    group_id: string
-    scheduled_at: string
+    groupId: string
+    scheduledAt: string
     room: string | null
     status: string
-    created_by: string | null
-    created_at: string
-    updated_at: string
+    createdBy: string | null
+    createdAt: string
+    updatedAt: string
 
-    // list endpoint includes these
-    group_title?: string
+    // optional enrichment (if backend adds it later)
+    groupTitle?: string | null
+    group_title?: string | null
     program?: string | null
     term?: string | null
 }
 
-type ListResponse = {
-    total: number
-    schedules: DefenseSchedule[]
-}
+type ScheduleListOk = { ok: true; total: number; schedules: DefenseSchedule[] }
+type ScheduleListErr = { ok: false; message?: string }
+type ScheduleListResponse = ScheduleListOk | ScheduleListErr
 
 type ThesisGroupOption = {
     id: string
@@ -80,9 +80,13 @@ type ThesisGroupOption = {
     term?: string | null
 }
 
-type StaffGroupsOk = { ok: true; total: number; groups: any[] }
-type StaffGroupsErr = { ok: false; message?: string }
-type StaffGroupsResponse = StaffGroupsOk | StaffGroupsErr
+type ThesisGroupsOk = { ok: true; total: number; groups: any[] }
+type ThesisGroupsErr = { ok: false; message?: string }
+type ThesisGroupsResponse = ThesisGroupsOk | ThesisGroupsErr
+
+type ThesisGroupByIdOk = { ok: true; group: any }
+type ThesisGroupByIdErr = { ok: false; message?: string }
+type ThesisGroupByIdResponse = ThesisGroupByIdOk | ThesisGroupByIdErr
 
 function toISODate(d: Date) {
     const y = d.getFullYear()
@@ -103,6 +107,14 @@ function formatDateTime(v: string) {
     }).format(d)
 }
 
+function datetimeLocalToIso(v: string) {
+    const s = String(v ?? "").trim()
+    if (!s) return ""
+    const d = new Date(s)
+    if (Number.isNaN(d.getTime())) return s
+    return d.toISOString()
+}
+
 function statusBadge(status: string) {
     const s = String(status || "").toLowerCase()
     if (s === "scheduled") return <Badge>Scheduled</Badge>
@@ -112,38 +124,11 @@ function statusBadge(status: string) {
     return <Badge variant="outline">{status || "unknown"}</Badge>
 }
 
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(url, {
-        ...init,
-        headers: {
-            "Content-Type": "application/json",
-            ...(init?.headers ?? {}),
-        },
-        cache: "no-store",
-    })
-
-    const text = await res.text().catch(() => "")
-    const asJson = (() => {
-        try {
-            return text ? JSON.parse(text) : null
-        } catch {
-            return null
-        }
-    })()
-
-    if (!res.ok) {
-        const msg = (asJson && (asJson.message || asJson.error)) || text || `Request failed (${res.status})`
-        throw new Error(String(msg))
-    }
-
-    return (asJson ?? ({} as any)) as T
-}
-
 function normalizeGroups(groups: any[]): ThesisGroupOption[] {
     const out: ThesisGroupOption[] = []
     for (const g of groups ?? []) {
-        const id = String(g?.id ?? g?.group_id ?? g?.groupId ?? "").trim()
-        const title = String(g?.title ?? g?.group_title ?? g?.name ?? "").trim()
+        const id = String(g?.id ?? g?.groupId ?? g?.group_id ?? "").trim()
+        const title = String(g?.title ?? g?.name ?? "").trim()
         if (!id) continue
         out.push({
             id,
@@ -152,33 +137,21 @@ function normalizeGroups(groups: any[]): ThesisGroupOption[] {
             term: g?.term ?? null,
         })
     }
-    // de-dupe by id
     const map = new Map<string, ThesisGroupOption>()
     for (const i of out) map.set(i.id, i)
     return Array.from(map.values())
-}
-
-async function fetchStaffThesisGroups(args: { q: string; limit: number; offset: number }) {
-    const params = new URLSearchParams()
-    params.set("q", args.q)
-    params.set("limit", String(args.limit))
-    params.set("offset", String(args.offset))
-
-    const res = await apiJson<StaffGroupsResponse>(`/api/staff/thesis-groups?${params.toString()}`)
-    if (!res || (res as any).ok !== true) {
-        const msg = (res as any)?.message ?? "Failed to load thesis groups"
-        throw new Error(msg)
-    }
-    const ok = res as StaffGroupsOk
-    return { total: ok.total ?? 0, groups: normalizeGroups(ok.groups ?? []) }
 }
 
 export default function StaffSchedulesPage() {
     const router = useRouter()
     const { user, loading } = useAuth() as any
 
+    const api = useApi({
+        onUnauthorized: () => router.replace("/auth/login"),
+    })
+
     const [busy, setBusy] = React.useState(false)
-    const [data, setData] = React.useState<ListResponse | null>(null)
+    const [data, setData] = React.useState<ScheduleListOk | null>(null)
 
     // filters
     const [q, setQ] = React.useState("")
@@ -194,13 +167,16 @@ export default function StaffSchedulesPage() {
     const [createOpen, setCreateOpen] = React.useState(false)
     const [creating, setCreating] = React.useState(false)
 
-    // group picker (uses /api/staff/thesis-groups)
+    // group picker (uses /api/thesis?resource=groups)
     const [groupOpen, setGroupOpen] = React.useState(false)
     const [groupQuery, setGroupQuery] = React.useState("")
     const [groupLoading, setGroupLoading] = React.useState(false)
     const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
     const [selectedGroup, setSelectedGroup] = React.useState<ThesisGroupOption | null>(null)
     const [groupError, setGroupError] = React.useState<string>("")
+
+    // cache of group meta for rendering schedules list
+    const [groupMetaById, setGroupMetaById] = React.useState<Record<string, ThesisGroupOption>>({})
 
     const [newScheduledAt, setNewScheduledAt] = React.useState("")
     const [newRoom, setNewRoom] = React.useState("")
@@ -212,25 +188,6 @@ export default function StaffSchedulesPage() {
     const canPrev = page > 0
     const canNext = (page + 1) * limit < total
 
-    const stats = React.useMemo(() => {
-        const byStatus = schedules.reduce<Record<string, number>>((acc, s) => {
-            const k = String(s.status ?? "unknown").toLowerCase()
-            acc[k] = (acc[k] ?? 0) + 1
-            return acc
-        }, {})
-        const today = new Date()
-        const todayKey = toISODate(today)
-        const todayCount = schedules.filter((s) => {
-            const d = new Date(s.scheduled_at)
-            return !Number.isNaN(d.getTime()) && toISODate(d) === todayKey
-        }).length
-        return {
-            todayCount,
-            scheduledCount: byStatus["scheduled"] ?? 0,
-            completedCount: (byStatus["completed"] ?? 0) + (byStatus["done"] ?? 0),
-        }
-    }, [schedules])
-
     React.useEffect(() => {
         if (!loading && (!user || user.role !== "staff")) {
             router.replace("/auth/login")
@@ -241,6 +198,7 @@ export default function StaffSchedulesPage() {
         setBusy(true)
         try {
             const params = new URLSearchParams()
+            params.set("resource", "schedules")
             params.set("limit", String(limit))
             params.set("offset", String(page * limit))
 
@@ -249,15 +207,20 @@ export default function StaffSchedulesPage() {
             if (fromDate) params.set("from", toISODate(fromDate))
             if (toDate) params.set("to", toISODate(toDate))
 
-            const res = await apiJson<ListResponse>(`/api/staff/defense-schedules?${params.toString()}`)
-            setData(res)
+            const res = await api.request<ScheduleListResponse>(`/api/schedule?${params.toString()}`)
+            if (!res || (res as any).ok !== true) {
+                const msg = (res as any)?.message ?? "Failed to load schedules"
+                throw new Error(String(msg))
+            }
+
+            setData(res as ScheduleListOk)
         } catch (e: any) {
             setData(null)
             toast.error(e?.message ?? "Failed to load schedules")
         } finally {
             setBusy(false)
         }
-    }, [limit, page, q, status, fromDate, toDate])
+    }, [api, limit, page, q, status, fromDate, toDate])
 
     React.useEffect(() => {
         if (!loading && user?.role === "staff") fetchList()
@@ -271,26 +234,64 @@ export default function StaffSchedulesPage() {
         setPage(0)
     }
 
-    const loadGroups = React.useCallback(async (query: string) => {
-        setGroupLoading(true)
-        setGroupError("")
-        try {
-            const { groups } = await fetchStaffThesisGroups({ q: query.trim(), limit: 50, offset: 0 })
-            setGroups(groups)
-        } catch (e: any) {
-            setGroups([])
-            setGroupError(e?.message || "Failed to load thesis groups.")
-        } finally {
-            setGroupLoading(false)
-        }
-    }, [])
+    const loadGroups = React.useCallback(
+        async (query: string) => {
+            setGroupLoading(true)
+            setGroupError("")
+            try {
+                const params = new URLSearchParams()
+                params.set("resource", "groups")
+                params.set("q", query.trim())
+                params.set("limit", "50")
+                params.set("offset", "0")
+
+                const res = await api.request<ThesisGroupsResponse>(`/api/thesis?${params.toString()}`)
+                if (!res || (res as any).ok !== true) {
+                    const msg = (res as any)?.message ?? "Failed to load thesis groups"
+                    throw new Error(String(msg))
+                }
+
+                const ok = res as ThesisGroupsOk
+                const normalized = normalizeGroups(ok.groups ?? [])
+                setGroups(normalized)
+
+                // warm cache
+                setGroupMetaById((prev) => {
+                    const next = { ...prev }
+                    for (const g of normalized) next[g.id] = g
+                    return next
+                })
+            } catch (e: any) {
+                setGroups([])
+                setGroupError(e?.message || "Failed to load thesis groups.")
+            } finally {
+                setGroupLoading(false)
+            }
+        },
+        [api]
+    )
+
+    const fetchThesisGroupById = React.useCallback(
+        async (id: string): Promise<ThesisGroupOption | null> => {
+            const params = new URLSearchParams()
+            params.set("resource", "groups")
+            params.set("id", id)
+
+            const res = await api.request<ThesisGroupByIdResponse>(`/api/thesis?${params.toString()}`)
+            if (!res || (res as any).ok !== true) return null
+            const ok = res as ThesisGroupByIdOk
+            const normalized = normalizeGroups([ok.group])
+            return normalized[0] ?? null
+        },
+        [api]
+    )
 
     React.useEffect(() => {
         if (!createOpen) return
         setSelectedGroup(null)
         setGroupQuery("")
         loadGroups("")
-    }, [createOpen])
+    }, [createOpen, loadGroups])
 
     React.useEffect(() => {
         if (!createOpen) return
@@ -298,26 +299,65 @@ export default function StaffSchedulesPage() {
             loadGroups(groupQuery)
         }, 350)
         return () => clearTimeout(t)
-    }, [groupQuery, createOpen])
+    }, [groupQuery, createOpen, loadGroups])
+
+    // ensure group meta for schedules currently visible
+    React.useEffect(() => {
+        const ids = Array.from(
+            new Set((schedules ?? []).map((s) => String(s.groupId ?? "").trim()).filter(Boolean))
+        )
+        if (!ids.length) return
+
+        const missing = ids.filter((id) => !groupMetaById[id])
+        if (!missing.length) return
+
+        let cancelled = false
+        ;(async () => {
+            try {
+                const fetched = await Promise.all(missing.map((gid) => fetchThesisGroupById(gid)))
+                const items = fetched.filter(Boolean) as ThesisGroupOption[]
+                if (cancelled || !items.length) return
+                setGroupMetaById((prev) => {
+                    const next = { ...prev }
+                    for (const g of items) next[g.id] = g
+                    return next
+                })
+            } catch {
+                // silent
+            }
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [schedules, groupMetaById, fetchThesisGroupById])
 
     const onCreate = async () => {
         const gid = selectedGroup?.id?.trim() ?? ""
-        const scheduledAt = newScheduledAt.trim()
+        const scheduledLocal = newScheduledAt.trim()
 
         if (!gid) return toast.error("Please select a group")
-        if (!scheduledAt) return toast.error("Scheduled date/time is required")
+        if (!scheduledLocal) return toast.error("Scheduled date/time is required")
+
+        const scheduledAtIso = datetimeLocalToIso(scheduledLocal)
+        if (!scheduledAtIso) return toast.error("Invalid scheduled date/time")
 
         setCreating(true)
         try {
-            await apiJson(`/api/staff/defense-schedules`, {
+            const params = new URLSearchParams()
+            params.set("resource", "schedules")
+
+            await api.request(`/api/schedule?${params.toString()}`, {
                 method: "POST",
                 body: JSON.stringify({
-                    group_id: gid,
-                    scheduled_at: scheduledAt,
+                    groupId: gid,
+                    scheduledAt: scheduledAtIso,
                     room: newRoom.trim() ? newRoom.trim() : null,
                     status: newStatus || "scheduled",
+                    createdBy: user?.id ?? null,
                 }),
             })
+
             toast.success("Schedule created")
             setCreateOpen(false)
 
@@ -338,7 +378,11 @@ export default function StaffSchedulesPage() {
 
     const onDelete = async (id: string) => {
         try {
-            await apiJson(`/api/staff/defense-schedules/${id}`, { method: "DELETE" })
+            const params = new URLSearchParams()
+            params.set("resource", "schedules")
+            params.set("id", id)
+
+            await api.request(`/api/schedule?${params.toString()}`, { method: "DELETE" })
             toast.success("Schedule deleted")
             await fetchList()
         } catch (e: any) {
@@ -415,7 +459,7 @@ export default function StaffSchedulesPage() {
                                                     </Button>
                                                 </PopoverTrigger>
 
-                                                <PopoverContent className="w-105 p-0" align="start">
+                                                <PopoverContent className="w-80 p-0 sm:w-96" align="start">
                                                     <Command>
                                                         <div className="flex items-center gap-2 border-b px-3 py-2">
                                                             <Search className="h-4 w-4 text-muted-foreground" />
@@ -467,9 +511,7 @@ export default function StaffSchedulesPage() {
                                             </Popover>
 
                                             <div className="flex items-center justify-between">
-                                                <p className="text-xs text-muted-foreground">
-                                                    Source: <span className="font-mono">/api/staff/thesis-groups</span>
-                                                </p>
+                                                <p className="text-xs text-muted-foreground">Select from available thesis groups.</p>
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
@@ -551,219 +593,156 @@ export default function StaffSchedulesPage() {
                             <AlertDescription>Please login as staff to access schedules.</AlertDescription>
                         </Alert>
                     ) : (
-                        <>
-                            <div className="grid gap-4 md:grid-cols-3">
-                                <Card>
-                                    <CardHeader className="pb-2">
-                                        <CardDescription>Today</CardDescription>
-                                        <CardTitle className="text-2xl">{stats.todayCount}</CardTitle>
-                                    </CardHeader>
-                                    <CardContent className="text-xs text-muted-foreground">
-                                        Schedules occurring today (based on current page data)
-                                    </CardContent>
-                                </Card>
+                        <Card>
+                            <CardHeader className="space-y-3">
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                    <div>
+                                        <CardTitle>Schedules</CardTitle>
+                                        <CardDescription>
+                                            Total: <span className="font-medium text-foreground">{total}</span>
+                                        </CardDescription>
+                                    </div>
 
-                                <Card>
-                                    <CardHeader className="pb-2">
-                                        <CardDescription>Scheduled</CardDescription>
-                                        <CardTitle className="text-2xl">{stats.scheduledCount}</CardTitle>
-                                    </CardHeader>
-                                    <CardContent className="text-xs text-muted-foreground">Currently marked as scheduled</CardContent>
-                                </Card>
-
-                                <Card>
-                                    <CardHeader className="pb-2">
-                                        <CardDescription>Completed</CardDescription>
-                                        <CardTitle className="text-2xl">{stats.completedCount}</CardTitle>
-                                    </CardHeader>
-                                    <CardContent className="text-xs text-muted-foreground">Completed/done on the current page</CardContent>
-                                </Card>
-                            </div>
-
-                            <Card>
-                                <CardHeader className="space-y-3">
-                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                                        <div>
-                                            <CardTitle>Schedules</CardTitle>
-                                            <CardDescription>
-                                                Total: <span className="font-medium text-foreground">{total}</span>
-                                            </CardDescription>
-                                        </div>
-
-                                        <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
-                                            <div className="relative w-full sm:w-80">
-                                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                                                <Input
-                                                    value={q}
-                                                    onChange={(e) => {
-                                                        setQ(e.target.value)
-                                                        setPage(0)
-                                                    }}
-                                                    placeholder="Search group / program / term / room..."
-                                                    className="pl-9"
-                                                />
-                                            </div>
-
-                                            <Select
-                                                value={status}
-                                                onValueChange={(v) => {
-                                                    setStatus(v)
+                                    <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+                                        <div className="relative w-full sm:w-80">
+                                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                            <Input
+                                                value={q}
+                                                onChange={(e) => {
+                                                    setQ(e.target.value)
                                                     setPage(0)
                                                 }}
-                                            >
-                                                <SelectTrigger className="w-full sm:w-45">
-                                                    <SelectValue placeholder="Status" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">All statuses</SelectItem>
-                                                    <SelectItem value="scheduled">scheduled</SelectItem>
-                                                    <SelectItem value="ongoing">ongoing</SelectItem>
-                                                    <SelectItem value="completed">completed</SelectItem>
-                                                    <SelectItem value="cancelled">cancelled</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-
-                                            <Popover>
-                                                <PopoverTrigger asChild>
-                                                    <Button variant="outline" className="w-full sm:w-auto">
-                                                        <Filter className="mr-2 h-4 w-4" />
-                                                        Date filter
-                                                    </Button>
-                                                </PopoverTrigger>
-                                                <PopoverContent align="end" className="w-90 p-3">
-                                                    <div className="grid gap-3">
-                                                        <div className="grid gap-2">
-                                                            <Label>From</Label>
-                                                            <div className="flex gap-2">
-                                                                <Popover>
-                                                                    <PopoverTrigger asChild>
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            className={cn("w-full justify-start", !fromDate && "text-muted-foreground")}
-                                                                        >
-                                                                            {fromDate ? toISODate(fromDate) : "Pick a date"}
-                                                                        </Button>
-                                                                    </PopoverTrigger>
-                                                                    <PopoverContent className="p-0" align="start">
-                                                                        <Calendar
-                                                                            mode="single"
-                                                                            selected={fromDate}
-                                                                            onSelect={(d: any) => {
-                                                                                setFromDate(d ?? undefined)
-                                                                                setPage(0)
-                                                                            }}
-                                                                            initialFocus
-                                                                        />
-                                                                    </PopoverContent>
-                                                                </Popover>
-                                                                <Button
-                                                                    variant="ghost"
-                                                                    onClick={() => {
-                                                                        setFromDate(undefined)
-                                                                        setPage(0)
-                                                                    }}
-                                                                >
-                                                                    Clear
-                                                                </Button>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="grid gap-2">
-                                                            <Label>To</Label>
-                                                            <div className="flex gap-2">
-                                                                <Popover>
-                                                                    <PopoverTrigger asChild>
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            className={cn("w-full justify-start", !toDate && "text-muted-foreground")}
-                                                                        >
-                                                                            {toDate ? toISODate(toDate) : "Pick a date"}
-                                                                        </Button>
-                                                                    </PopoverTrigger>
-                                                                    <PopoverContent className="p-0" align="start">
-                                                                        <Calendar
-                                                                            mode="single"
-                                                                            selected={toDate}
-                                                                            onSelect={(d: any) => {
-                                                                                setToDate(d ?? undefined)
-                                                                                setPage(0)
-                                                                            }}
-                                                                            initialFocus
-                                                                        />
-                                                                    </PopoverContent>
-                                                                </Popover>
-                                                                <Button
-                                                                    variant="ghost"
-                                                                    onClick={() => {
-                                                                        setToDate(undefined)
-                                                                        setPage(0)
-                                                                    }}
-                                                                >
-                                                                    Clear
-                                                                </Button>
-                                                            </div>
-                                                        </div>
-
-                                                        <Separator />
-
-                                                        <div className="flex items-center justify-between">
-                                                            <Button variant="outline" onClick={resetFilters}>
-                                                                Reset all
-                                                            </Button>
-                                                            <Button onClick={fetchList} disabled={busy}>
-                                                                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                                                Apply
-                                                            </Button>
-                                                        </div>
-                                                    </div>
-                                                </PopoverContent>
-                                            </Popover>
+                                                placeholder="Search room / status..."
+                                                className="pl-9"
+                                            />
                                         </div>
-                                    </div>
-                                </CardHeader>
 
-                                <CardContent className="space-y-4">
-                                    <div className="rounded-md border">
-                                        <Table>
-                                            <TableHeader>
+                                        <Select
+                                            value={status}
+                                            onValueChange={(v) => {
+                                                setStatus(v)
+                                                setPage(0)
+                                            }}
+                                        >
+                                            <SelectTrigger className="w-full sm:w-48">
+                                                <SelectValue placeholder="Status" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all">All statuses</SelectItem>
+                                                <SelectItem value="scheduled">scheduled</SelectItem>
+                                                <SelectItem value="ongoing">ongoing</SelectItem>
+                                                <SelectItem value="completed">completed</SelectItem>
+                                                <SelectItem value="cancelled">cancelled</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+
+                                        <Popover>
+                                            <PopoverTrigger asChild>
+                                                <Button variant="outline" className="w-full sm:w-auto">
+                                                    <Filter className="mr-2 h-4 w-4" />
+                                                    Date filter
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverContent align="end" className="w-80 p-3 sm:w-96">
+                                                <div className="grid gap-3">
+                                                    <div className="grid gap-2">
+                                                        <Label>From</Label>
+                                                        <Calendar
+                                                            mode="single"
+                                                            selected={fromDate}
+                                                            onSelect={(d: any) => {
+                                                                setFromDate(d ?? undefined)
+                                                                setPage(0)
+                                                            }}
+                                                            initialFocus
+                                                        />
+                                                    </div>
+
+                                                    <div className="grid gap-2">
+                                                        <Label>To</Label>
+                                                        <Calendar
+                                                            mode="single"
+                                                            selected={toDate}
+                                                            onSelect={(d: any) => {
+                                                                setToDate(d ?? undefined)
+                                                                setPage(0)
+                                                            }}
+                                                            initialFocus
+                                                        />
+                                                    </div>
+
+                                                    <Separator />
+
+                                                    <div className="flex items-center justify-between">
+                                                        <Button variant="outline" onClick={resetFilters}>
+                                                            Reset all
+                                                        </Button>
+                                                        <Button onClick={fetchList} disabled={busy}>
+                                                            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                                            Apply
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </PopoverContent>
+                                        </Popover>
+                                    </div>
+                                </div>
+                            </CardHeader>
+
+                            <CardContent className="space-y-4">
+                                <div className="rounded-md border">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead className="w-56">Scheduled</TableHead>
+                                                <TableHead>Group</TableHead>
+                                                <TableHead className="w-40">Room</TableHead>
+                                                <TableHead className="w-32">Status</TableHead>
+                                                <TableHead className="w-20 text-right">Actions</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {busy && !data ? (
                                                 <TableRow>
-                                                    <TableHead className="w-55">Scheduled</TableHead>
-                                                    <TableHead>Group</TableHead>
-                                                    <TableHead className="w-35">Room</TableHead>
-                                                    <TableHead className="w-32.5">Status</TableHead>
-                                                    <TableHead className="w-20 text-right">Actions</TableHead>
+                                                    <TableCell colSpan={5}>
+                                                        <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                            Loading schedules...
+                                                        </div>
+                                                    </TableCell>
                                                 </TableRow>
-                                            </TableHeader>
-                                            <TableBody>
-                                                {busy && !data ? (
-                                                    <TableRow>
-                                                        <TableCell colSpan={5}>
-                                                            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-                                                                <Loader2 className="h-4 w-4 animate-spin" />
-                                                                Loading schedules...
-                                                            </div>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ) : schedules.length === 0 ? (
-                                                    <TableRow>
-                                                        <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
-                                                            No schedules found.
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ) : (
-                                                    schedules.map((s) => (
+                                            ) : schedules.length === 0 ? (
+                                                <TableRow>
+                                                    <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                                                        No schedules found.
+                                                    </TableCell>
+                                                </TableRow>
+                                            ) : (
+                                                schedules.map((s) => {
+                                                    const cached = groupMetaById[String(s.groupId ?? "").trim()]
+                                                    const title =
+                                                        (s.groupTitle ?? s.group_title ?? "").trim() ||
+                                                        (cached?.title ?? "").trim() ||
+                                                        s.groupId
+
+                                                    const meta = [
+                                                        (s.program ?? cached?.program ?? null)?.toString().trim()
+                                                            ? (s.program ?? cached?.program)
+                                                            : null,
+                                                        (s.term ?? cached?.term ?? null)?.toString().trim()
+                                                            ? (s.term ?? cached?.term)
+                                                            : null,
+                                                    ]
+                                                        .filter(Boolean)
+                                                        .join(" • ")
+
+                                                    return (
                                                         <TableRow key={s.id}>
-                                                            <TableCell className="font-medium">{formatDateTime(s.scheduled_at)}</TableCell>
+                                                            <TableCell className="font-medium">{formatDateTime(s.scheduledAt)}</TableCell>
                                                             <TableCell>
                                                                 <div className="space-y-1">
-                                                                    <div className="line-clamp-1 font-medium">
-                                                                        {s.group_title?.trim() ? s.group_title : s.group_id}
-                                                                    </div>
-                                                                    <div className="text-xs text-muted-foreground">
-                                                                        {[s.program?.trim() ? s.program : null, s.term?.trim() ? s.term : null]
-                                                                            .filter(Boolean)
-                                                                            .join(" • ") || "—"}
-                                                                    </div>
+                                                                    <div className="line-clamp-1 font-medium">{title}</div>
+                                                                    <div className="text-xs text-muted-foreground">{meta || "—"}</div>
                                                                 </div>
                                                             </TableCell>
                                                             <TableCell>{s.room?.trim() ? s.room : "—"}</TableCell>
@@ -821,81 +800,73 @@ export default function StaffSchedulesPage() {
                                                                 </DropdownMenu>
                                                             </TableCell>
                                                         </TableRow>
-                                                    ))
-                                                )}
-                                            </TableBody>
-                                        </Table>
+                                                    )
+                                                })
+                                            )}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                        <span>
+                                            Page <span className="font-medium text-foreground">{page + 1}</span>
+                                        </span>
+                                        <span>•</span>
+                                        <span>
+                                            Showing <span className="font-medium text-foreground">{schedules.length}</span> of{" "}
+                                            <span className="font-medium text-foreground">{total}</span>
+                                        </span>
                                     </div>
 
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                            <span>
-                                                Page <span className="font-medium text-foreground">{page + 1}</span>
-                                            </span>
-                                            <span>•</span>
-                                            <span>
-                                                Showing <span className="font-medium text-foreground">{schedules.length}</span> of{" "}
-                                                <span className="font-medium text-foreground">{total}</span>
-                                            </span>
-                                        </div>
+                                    <div className="flex items-center gap-2">
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                                                    disabled={!canPrev || busy}
+                                                >
+                                                    Prev
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>Previous page</TooltipContent>
+                                        </Tooltip>
 
-                                        <div className="flex items-center gap-2">
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <Button
-                                                        variant="outline"
-                                                        onClick={() => setPage((p) => Math.max(0, p - 1))}
-                                                        disabled={!canPrev || busy}
-                                                    >
-                                                        Prev
-                                                    </Button>
-                                                </TooltipTrigger>
-                                                <TooltipContent>Previous page</TooltipContent>
-                                            </Tooltip>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={!canNext || busy}>
+                                                    Next
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>Next page</TooltipContent>
+                                        </Tooltip>
 
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={!canNext || busy}>
-                                                        Next
-                                                    </Button>
-                                                </TooltipTrigger>
-                                                <TooltipContent>Next page</TooltipContent>
-                                            </Tooltip>
+                                        <Select
+                                            value={String(limit)}
+                                            onValueChange={(v) => {
+                                                const n = Number(v)
+                                                setLimit(Number.isFinite(n) ? n : 20)
+                                                setPage(0)
+                                            }}
+                                        >
+                                            <SelectTrigger className="w-28">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="10">10 / page</SelectItem>
+                                                <SelectItem value="20">20 / page</SelectItem>
+                                                <SelectItem value="50">50 / page</SelectItem>
+                                            </SelectContent>
+                                        </Select>
 
-                                            <Select
-                                                value={String(limit)}
-                                                onValueChange={(v) => {
-                                                    const n = Number(v)
-                                                    setLimit(Number.isFinite(n) ? n : 20)
-                                                    setPage(0)
-                                                }}
-                                            >
-                                                <SelectTrigger className="w-27.5">
-                                                    <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="10">10 / page</SelectItem>
-                                                    <SelectItem value="20">20 / page</SelectItem>
-                                                    <SelectItem value="50">50 / page</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-
-                                            <Button variant="ghost" onClick={resetFilters} className="hidden sm:inline-flex">
-                                                Reset
-                                            </Button>
-                                        </div>
+                                        <Button variant="ghost" onClick={resetFilters} className="hidden sm:inline-flex">
+                                            Reset
+                                        </Button>
                                     </div>
-
-                                    <Separator />
-
-                                    <Alert>
-                                        <CheckCircle2 className="h-4 w-4" />
-                                        <AlertTitle>Tip</AlertTitle>
-                                        <AlertDescription>Open a schedule to manage its panelists (add/remove).</AlertDescription>
-                                    </Alert>
-                                </CardContent>
-                            </Card>
-                        </>
+                                </div>
+                            </CardContent>
+                        </Card>
                     )}
                 </div>
             </TooltipProvider>

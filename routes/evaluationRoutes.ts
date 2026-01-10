@@ -6,16 +6,39 @@ import { requireActor, assertRoles } from "@/lib/apiAuth"
 import { parseQuery, parseBody } from "@/lib/validate"
 import { evaluationContracts } from "@/lib/apiContracts"
 
+function actorRoleOf(actor: any) {
+    return String(actor?.role ?? "").toLowerCase()
+}
+
+function actorIdOf(actor: any) {
+    return String(actor?.id ?? "")
+}
+
+async function assertStaffOwnsEvaluation(actor: any, evaluationId: string) {
+    const role = actorRoleOf(actor)
+    if (role !== "staff") return // admin can access all
+
+    const actorId = actorIdOf(actor)
+    const ev = await EvaluationController.getEvaluationById(evaluationId)
+    if (!ev) return { notFound: true as const }
+
+    if (String(ev.evaluatorId) !== actorId) return { forbidden: true as const }
+    return { ok: true as const, evaluation: ev }
+}
+
 export async function GET(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const role = actorRoleOf(actor)
+        const actorId = actorIdOf(actor)
+
         const base = parseQuery(evaluationContracts.baseQuerySchema, req.nextUrl.searchParams)
 
-        const staffOnly = new Set(["rubricTemplates", "rubricCriteria", "evaluations", "evaluationScores"])
+        const staffReadable = new Set(["rubricTemplates", "rubricCriteria", "evaluations", "evaluationScores"])
         const isStudentEvaluations = base.resource === "studentEvaluations"
 
-        if (staffOnly.has(base.resource)) assertRoles(actor, ["staff", "admin"])
-        if (!staffOnly.has(base.resource) && !isStudentEvaluations) {
+        if (staffReadable.has(base.resource)) assertRoles(actor, ["staff", "admin"])
+        if (!staffReadable.has(base.resource) && !isStudentEvaluations) {
             return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
         }
 
@@ -42,18 +65,33 @@ export async function GET(req: NextRequest) {
             if (q.id) {
                 const evaluation = await EvaluationController.getEvaluationById(q.id)
                 if (!evaluation) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+
+                // Staff can only read their own evaluations
+                if (role === "staff" && String(evaluation.evaluatorId) !== actorId) {
+                    return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                }
+
                 return NextResponse.json({ ok: true, evaluation })
             }
 
-            if (q.byAssignment && q.scheduleId && q.evaluatorId) {
-                const evaluation = await EvaluationController.getEvaluationByAssignment(q.scheduleId, q.evaluatorId)
+            if (q.byAssignment && q.scheduleId) {
+                // Staff can only query byAssignment for themselves
+                const evaluatorId = role === "staff" ? actorId : (q.evaluatorId ?? "")
+                if (!evaluatorId) {
+                    return NextResponse.json({ ok: false, message: "evaluatorId is required" }, { status: 400 })
+                }
+                if (role === "staff" && q.evaluatorId && q.evaluatorId !== actorId) {
+                    return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                }
+
+                const evaluation = await EvaluationController.getEvaluationByAssignment(q.scheduleId, evaluatorId)
                 if (!evaluation) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
                 return NextResponse.json({ ok: true, evaluation })
             }
 
             const evaluations = await EvaluationController.listEvaluations({
                 scheduleId: q.scheduleId,
-                evaluatorId: q.evaluatorId,
+                evaluatorId: role === "staff" ? actorId : q.evaluatorId,
                 status: q.status,
                 limit: q.limit,
                 offset: q.offset,
@@ -63,27 +101,33 @@ export async function GET(req: NextRequest) {
 
         if (base.resource === "evaluationScores") {
             const q = parseQuery(evaluationContracts.getEvaluationScoresQuerySchema, req.nextUrl.searchParams)
+
+            // Staff can only read scores for their own evaluation
+            const chk = await assertStaffOwnsEvaluation(actor, q.evaluationId)
+            if ((chk as any)?.notFound) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+            if ((chk as any)?.forbidden) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+
             const scores = await EvaluationController.listEvaluationScores(q.evaluationId)
             return NextResponse.json({ ok: true, scores })
         }
 
         if (base.resource === "studentEvaluations") {
             const q = parseQuery(evaluationContracts.getStudentEvaluationsQuerySchema, req.nextUrl.searchParams)
-            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
-            const actorId = String((actor as any)?.id ?? "")
+            const actorRole = role
+            const aid = actorId
 
             if (q.id) {
                 const studentEvaluation = await EvaluationController.getStudentEvaluationById(q.id)
                 if (!studentEvaluation) {
                     return NextResponse.json({ ok: false, message: "Student evaluation not found" }, { status: 404 })
                 }
-                if (actorRole === "student" && studentEvaluation.studentId !== actorId) {
+                if (actorRole === "student" && studentEvaluation.studentId !== aid) {
                     return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
                 }
                 return NextResponse.json({ ok: true, studentEvaluation })
             }
 
-            const studentId = actorRole === "student" ? actorId : q.studentId
+            const studentId = actorRole === "student" ? aid : q.studentId
             const items = await EvaluationController.listStudentEvaluations({
                 scheduleId: q.scheduleId,
                 studentId,
@@ -103,19 +147,25 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const role = actorRoleOf(actor)
+        const actorId = actorIdOf(actor)
+
         const base = parseQuery(evaluationContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
-        const staffOnly = new Set([
-            "rubricTemplates",
-            "rubricCriteria",
-            "evaluations",
-            "evaluationScores",
-            "evaluationScoresBulk",
-        ])
-
-        if (staffOnly.has(base.resource)) assertRoles(actor, ["staff", "admin"])
-        if (!staffOnly.has(base.resource) && base.resource !== "studentEvaluations") {
+        // RBAC (based on spec):
+        // - Admin manages rubric templates & criteria
+        // - Staff encodes evaluation scores and finalizes evaluation
+        // - Student evaluations remain separate
+        if (base.resource === "rubricTemplates" || base.resource === "rubricCriteria") {
+            assertRoles(actor, ["admin"])
+        } else if (
+            base.resource === "evaluations" ||
+            base.resource === "evaluationScores" ||
+            base.resource === "evaluationScoresBulk"
+        ) {
+            assertRoles(actor, ["staff", "admin"])
+        } else if (base.resource !== "studentEvaluations") {
             return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
         }
 
@@ -145,6 +195,12 @@ export async function POST(req: NextRequest) {
 
         if (base.resource === "evaluations") {
             const body = parseBody(evaluationContracts.createEvaluationBodySchema, raw)
+
+            // Staff can only create/upsert their own evaluation record
+            if (role === "staff" && String(body.evaluatorId) !== actorId) {
+                return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+            }
+
             const evaluation = await EvaluationController.createEvaluation({
                 scheduleId: body.scheduleId,
                 evaluatorId: body.evaluatorId,
@@ -155,6 +211,12 @@ export async function POST(req: NextRequest) {
 
         if (base.resource === "evaluationScores") {
             const body = parseBody(evaluationContracts.upsertEvaluationScoreBodySchema, raw)
+
+            // Staff can only write scores to their own evaluation
+            const chk = await assertStaffOwnsEvaluation(actor, body.evaluationId)
+            if ((chk as any)?.notFound) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+            if ((chk as any)?.forbidden) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+
             const item = await EvaluationController.upsertEvaluationScore({
                 evaluationId: body.evaluationId,
                 criterionId: body.criterionId,
@@ -166,6 +228,12 @@ export async function POST(req: NextRequest) {
 
         if (base.resource === "evaluationScoresBulk") {
             const body = parseBody(evaluationContracts.bulkUpsertEvaluationScoresBodySchema, raw)
+
+            // Staff can only write scores to their own evaluation
+            const chk = await assertStaffOwnsEvaluation(actor, body.evaluationId)
+            if ((chk as any)?.notFound) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+            if ((chk as any)?.forbidden) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+
             const out = await EvaluationController.bulkUpsertEvaluationScores({
                 evaluationId: body.evaluationId,
                 items: body.items.map((x) => ({
@@ -179,10 +247,10 @@ export async function POST(req: NextRequest) {
 
         if (base.resource === "studentEvaluations") {
             const body = parseBody(evaluationContracts.upsertStudentEvaluationBodySchema, raw)
-            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
-            const actorId = String((actor as any)?.id ?? "")
+            const actorRole = role
+            const aid = actorId
 
-            if (actorRole === "student" && body.studentId !== actorId) {
+            if (actorRole === "student" && body.studentId !== aid) {
                 return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
             }
 
@@ -206,13 +274,20 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     try {
         const actor = await requireActor(req)
+        const role = actorRoleOf(actor)
+        const actorId = actorIdOf(actor)
+
         const base = parseQuery(evaluationContracts.baseQuerySchema, req.nextUrl.searchParams)
         const raw = await readJson(req)
 
-        const staffOnly = new Set(["rubricTemplates", "rubricCriteria", "evaluations"])
-
-        if (staffOnly.has(base.resource)) assertRoles(actor, ["staff", "admin"])
-        if (!staffOnly.has(base.resource) && base.resource !== "studentEvaluations") {
+        if (base.resource === "rubricTemplates" || base.resource === "rubricCriteria") {
+            assertRoles(actor, ["admin"])
+        } else if (base.resource === "evaluations") {
+            assertRoles(actor, ["staff", "admin"])
+        } else if (base.resource === "studentEvaluations") {
+            // keep behavior: students can update their own; staff/admin can update when allowed by existing logic below
+            // (role checks continue inside)
+        } else {
             return NextResponse.json({ ok: false, message: "Invalid resource" }, { status: 400 })
         }
 
@@ -252,6 +327,15 @@ export async function PATCH(req: NextRequest) {
             const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 
+            // Staff can only patch their own evaluations
+            if (role === "staff") {
+                const ev = await EvaluationController.getEvaluationById(id)
+                if (!ev) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+                if (String(ev.evaluatorId) !== actorId) {
+                    return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                }
+            }
+
             const evaluation = await EvaluationController.updateEvaluation(id, {
                 status: body.status,
                 submittedAt: body.submittedAt,
@@ -266,13 +350,13 @@ export async function PATCH(req: NextRequest) {
             const id = req.nextUrl.searchParams.get("id") ?? body.id
             if (!id) return NextResponse.json({ ok: false, message: "id is required" }, { status: 400 })
 
-            const actorRole = String((actor as any)?.role ?? "").toLowerCase()
-            const actorId = String((actor as any)?.id ?? "")
+            const actorRole = role
+            const aid = actorId
 
             if (actorRole === "student") {
                 const existing = await EvaluationController.getStudentEvaluationById(id)
                 if (!existing) return NextResponse.json({ ok: false, message: "Student evaluation not found" }, { status: 404 })
-                if (existing.studentId !== actorId) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+                if (existing.studentId !== aid) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
             } else {
                 assertRoles(actor, ["staff", "admin"])
             }
@@ -296,11 +380,16 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
     try {
         const actor = await requireActor(req)
-        assertRoles(actor, ["staff", "admin"])
 
         const base = parseQuery(evaluationContracts.baseQuerySchema, req.nextUrl.searchParams)
 
+        // Keep general delete protection:
+        // - admin-only rubric deletes
+        // - staff/admin can delete evaluationScores (but staff only for their own evaluation)
+        assertRoles(actor, ["staff", "admin"])
+
         if (base.resource === "rubricTemplates") {
+            assertRoles(actor, ["admin"])
             const q = parseQuery(evaluationContracts.deleteRubricTemplateQuerySchema, req.nextUrl.searchParams)
             const deletedId = await EvaluationController.deleteRubricTemplate(q.id)
             if (!deletedId) return NextResponse.json({ ok: false, message: "Template not found" }, { status: 404 })
@@ -308,6 +397,7 @@ export async function DELETE(req: NextRequest) {
         }
 
         if (base.resource === "rubricCriteria") {
+            assertRoles(actor, ["admin"])
             const q = parseQuery(evaluationContracts.deleteRubricCriterionQuerySchema, req.nextUrl.searchParams)
             const deletedId = await EvaluationController.deleteRubricCriterion(q.id)
             if (!deletedId) return NextResponse.json({ ok: false, message: "Criterion not found" }, { status: 404 })
@@ -316,6 +406,12 @@ export async function DELETE(req: NextRequest) {
 
         if (base.resource === "evaluationScores") {
             const q = parseQuery(evaluationContracts.deleteEvaluationScoresQuerySchema, req.nextUrl.searchParams)
+
+            // Staff can only delete scores of their own evaluation
+            const chk = await assertStaffOwnsEvaluation(actor, q.evaluationId)
+            if ((chk as any)?.notFound) return NextResponse.json({ ok: false, message: "Evaluation not found" }, { status: 404 })
+            if ((chk as any)?.forbidden) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+
             const deletedCount = await EvaluationController.deleteEvaluationScores(q.evaluationId)
             return NextResponse.json({ ok: true, deletedCount })
         }

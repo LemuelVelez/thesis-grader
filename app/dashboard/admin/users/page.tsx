@@ -1,3 +1,4 @@
+// app/dashboard/admin/users/page.tsx
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
@@ -28,6 +29,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
     Dialog,
     DialogContent,
@@ -153,7 +155,7 @@ function initialsFromName(name: string) {
 
 function avatarCacheKey(userId: string, avatarKey: string | null) {
     // still include avatarKey so we auto-refresh when list returns a new key,
-    // but we ALSO fetch even if it's null (API can look in profiles tables).
+    // but we ALSO fetch even if it's null (API can return null url, which is fine).
     return `${userId}:${avatarKey ?? ""}`
 }
 
@@ -170,19 +172,14 @@ function clearAvatarCacheForUser(userId: string) {
     }
 }
 
+// ✅ shadcn/ui Avatar
 function AvatarCircle(props: { url?: string | null; fallback: string; alt: string }) {
     const { url, fallback, alt } = props
     return (
-        <div className="h-8 w-8 overflow-hidden rounded-full border bg-muted">
-            {url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={url} alt={alt} className="h-full w-full object-cover" />
-            ) : (
-                <div className="flex h-full w-full items-center justify-center text-xs font-medium text-muted-foreground">
-                    {fallback}
-                </div>
-            )}
-        </div>
+        <Avatar className="h-8 w-8 border">
+            <AvatarImage src={url ?? undefined} alt={alt} />
+            <AvatarFallback className="text-xs font-medium text-muted-foreground">{fallback}</AvatarFallback>
+        </Avatar>
     )
 }
 
@@ -221,7 +218,7 @@ function UserAvatarCell(props: { user: UserRow }) {
 
             const p = (async () => {
                 try {
-                    const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/avatar`, {
+                    const res = await fetch(`/api/users/${encodeURIComponent(u.id)}/avatar`, {
                         method: "GET",
                         credentials: "include",
                         headers: { Accept: "application/json" },
@@ -690,6 +687,7 @@ export default function AdminUsersPage() {
                 },
             },
         ]
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [updateUser, busy])
 
     async function onCreateUser(e: React.FormEvent) {
