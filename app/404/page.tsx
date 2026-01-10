@@ -1,5 +1,8 @@
+"use client"
+
 import Image from "next/image"
 import Link from "next/link"
+
 import { Button } from "@/components/ui/button"
 import {
     Card,
@@ -10,8 +13,22 @@ import {
     CardTitle,
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { useAuth } from "@/hooks/use-auth"
+
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    return "/dashboard"
+}
 
 export default function NotFoundPage() {
+    const { user } = useAuth()
+
+    const actionHref = user ? roleBasePath(user.role) : "/login"
+    const actionLabel = user ? "Go to dashboard" : "Sign in"
+
     return (
         <div className="min-h-dvh bg-background text-foreground">
             <main className="relative flex min-h-dvh items-center justify-center overflow-x-hidden px-6 py-10">
@@ -31,7 +48,13 @@ export default function NotFoundPage() {
                                 404
                             </Badge>
                             <div className="relative h-26 w-40 overflow-hidden rounded-md border bg-card">
-                                <Image src="/logo.png" alt="THESISGRADER" fill className="object-cover" priority />
+                                <Image
+                                    src="/logo.png"
+                                    alt="THESISGRADER"
+                                    fill
+                                    className="object-cover"
+                                    priority
+                                />
                             </div>
                         </div>
 
@@ -53,8 +76,9 @@ export default function NotFoundPage() {
                         <Button asChild variant="outline" className="w-full sm:w-auto">
                             <Link href="/">Go to homepage</Link>
                         </Button>
+
                         <Button asChild className="w-full sm:w-auto">
-                            <Link href="/login">Sign in</Link>
+                            <Link href={actionHref}>{actionLabel}</Link>
                         </Button>
                     </CardFooter>
                 </Card>

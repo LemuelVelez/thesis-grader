@@ -115,7 +115,10 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
         const oversight: NavItem[] = [
             // Admin oversight typically needs visibility (not scoring)
             { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
-            { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
+
+            // ✅ changed from `${base}/evaluations` to `${base}/evaluation`
+            { label: "Evaluations", href: `${base}/evaluation`, icon: ClipboardList },
+
             { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
         ]
 

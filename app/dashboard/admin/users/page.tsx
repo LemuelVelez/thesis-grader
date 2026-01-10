@@ -687,7 +687,7 @@ export default function AdminUsersPage() {
                 },
             },
         ]
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [updateUser, busy])
 
     async function onCreateUser(e: React.FormEvent) {
