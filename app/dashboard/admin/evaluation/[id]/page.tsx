@@ -13,12 +13,9 @@ import { useAuth } from "@/hooks/use-auth"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
     AlertDialog,
     AlertDialogAction,
@@ -153,10 +150,6 @@ export default function AdminEvaluationDetailPage() {
     const [refreshing, setRefreshing] = React.useState(false)
 
     const [detail, setDetail] = React.useState<DetailPayload | null>(null)
-    const [raw, setRaw] = React.useState<any>(null)
-
-    const [showInternalIds, setShowInternalIds] = React.useState(false)
-    const [showRaw, setShowRaw] = React.useState(false)
 
     // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
@@ -175,6 +168,7 @@ export default function AdminEvaluationDetailPage() {
         if (!id) return
         setLoading(true)
         try {
+            // NOTE: this expects /api/admin/evaluations/detail to exist (added in this update)
             const res = await apiJson<{ detail: DetailPayload }>(
                 "GET",
                 `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`
@@ -183,11 +177,9 @@ export default function AdminEvaluationDetailPage() {
 
             const d = (res as any).detail as DetailPayload
             setDetail(d)
-            setRaw(d)
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to load evaluation")
             setDetail(null)
-            setRaw(null)
         } finally {
             setLoading(false)
         }
@@ -282,24 +274,6 @@ export default function AdminEvaluationDetailPage() {
                             )}
                             Refresh
                         </Button>
-
-                        <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-                            <Checkbox
-                                id="showInternalIds"
-                                checked={showInternalIds}
-                                onCheckedChange={(v) => setShowInternalIds(Boolean(v))}
-                            />
-                            <Label htmlFor="showInternalIds" className="cursor-pointer select-none text-sm">
-                                Show internal IDs
-                            </Label>
-                        </div>
-
-                        <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-                            <Checkbox id="showRaw" checked={showRaw} onCheckedChange={(v) => setShowRaw(Boolean(v))} />
-                            <Label htmlFor="showRaw" className="cursor-pointer select-none text-sm">
-                                Show raw JSON
-                            </Label>
-                        </div>
                     </div>
                 </div>
 
@@ -379,7 +353,9 @@ export default function AdminEvaluationDetailPage() {
                                         </div>
                                         {(detail.group.program || detail.group.term) ? (
                                             <div className="mt-1 text-sm text-muted-foreground">
-                                                {[safeText(detail.group.program, ""), safeText(detail.group.term, "")].filter(Boolean).join(" · ")}
+                                                {[safeText(detail.group.program, ""), safeText(detail.group.term, "")]
+                                                    .filter(Boolean)
+                                                    .join(" · ")}
                                             </div>
                                         ) : null}
                                         <div className="mt-2">{statusBadge(detail.schedule.status)}</div>
@@ -397,7 +373,8 @@ export default function AdminEvaluationDetailPage() {
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Rubric</div>
                                         <div className="mt-1 font-medium">
-                                            {detail.rubric.name} (v{detail.rubric.version}) {detail.rubric.active ? "" : "(inactive)"}
+                                            {detail.rubric.name} (v{detail.rubric.version}){" "}
+                                            {detail.rubric.active ? "" : "(inactive)"}
                                         </div>
                                         {detail.rubric.description ? (
                                             <div className="mt-1 text-sm text-muted-foreground">{detail.rubric.description}</div>
@@ -408,16 +385,6 @@ export default function AdminEvaluationDetailPage() {
                                         No rubric template found (no active template and no scored criterion template).
                                     </div>
                                 )}
-
-                                {showInternalIds ? (
-                                    <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
-                                        <div>Evaluation ID: {detail.evaluation.id}</div>
-                                        <div>Schedule ID: {detail.schedule.id}</div>
-                                        <div>Group ID: {detail.group.id}</div>
-                                        <div>Evaluator ID: {detail.evaluator.id}</div>
-                                        <div>Rubric ID: {detail.rubric?.id ?? "—"}</div>
-                                    </div>
-                                ) : null}
 
                                 <div className="flex flex-wrap gap-2">
                                     <Button asChild variant="outline" size="sm">
@@ -446,7 +413,6 @@ export default function AdminEvaluationDetailPage() {
                                             {detail.group.students.map((s) => (
                                                 <div key={s.id} className="text-sm">
                                                     {personLabel(s)}
-                                                    {showInternalIds ? <div className="text-[10px] text-muted-foreground">{s.id}</div> : null}
                                                 </div>
                                             ))}
                                         </div>
@@ -468,7 +434,6 @@ export default function AdminEvaluationDetailPage() {
                                                             <span>{personLabel(p)}</span>
                                                             {isEvaluator ? <Badge variant="secondary">Evaluator</Badge> : null}
                                                         </div>
-                                                        {showInternalIds ? <div className="text-[10px] text-muted-foreground">{p.id}</div> : null}
                                                     </div>
                                                 )
                                             })}
@@ -486,7 +451,9 @@ export default function AdminEvaluationDetailPage() {
                                 <CardTitle>Scores & comments</CardTitle>
                                 <CardDescription>
                                     Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
-                                    {scoreSummary.scoredCount > 0 ? <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</> : null}
+                                    {scoreSummary.scoredCount > 0 ? (
+                                        <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</>
+                                    ) : null}
                                 </CardDescription>
                             </CardHeader>
 
@@ -513,10 +480,9 @@ export default function AdminEvaluationDetailPage() {
                                                                 <div className="space-y-1">
                                                                     <div className="font-medium">{safeText(r.criterion, "—")}</div>
                                                                     {r.description ? (
-                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
-                                                                    ) : null}
-                                                                    {showInternalIds ? (
-                                                                        <div className="text-[10px] text-muted-foreground">{r.criterionId}</div>
+                                                                        <div className="text-xs text-muted-foreground">
+                                                                            {safeText(r.description, "")}
+                                                                        </div>
                                                                     ) : null}
                                                                 </div>
                                                             </TableCell>
@@ -539,18 +505,6 @@ export default function AdminEvaluationDetailPage() {
                                         No rubric criteria returned. (No active template and no scored template found.)
                                     </div>
                                 )}
-
-                                {showRaw ? (
-                                    <>
-                                        <Separator />
-                                        <div>
-                                            <div className="mb-2 text-sm font-semibold">Raw JSON</div>
-                                            <ScrollArea className="h-72 rounded-md border">
-                                                <pre className="p-3 text-xs">{JSON.stringify(raw ?? {}, null, 2)}</pre>
-                                            </ScrollArea>
-                                        </div>
-                                    </>
-                                ) : null}
                             </CardContent>
                         </Card>
                     </>

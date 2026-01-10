@@ -25,7 +25,6 @@ import { useAuth } from "@/hooks/use-auth"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -70,11 +69,15 @@ type StaffOverviewItem = {
     evaluatorName: string | null
     evaluatorEmail: string
     evaluatorRole: string
+
+    // provided by adminEvaluationsRoutes
+    studentCount?: number
+    panelistCount?: number
 }
 
 type StudentOverviewItem = {
     id: string
-    status: "pending" | "submitted" | "locked"
+    status: "pending" | "submitted" | "locked" | string
     submittedAt: string | null
     lockedAt: string | null
     createdAt: string
@@ -93,6 +96,10 @@ type StudentOverviewItem = {
     studentId: string
     studentName: string | null
     studentEmail: string
+
+    // provided by adminEvaluationsRoutes
+    studentCount?: number
+    panelistCount?: number
 }
 
 type StaffUserOption = { id: string; name: string | null; email: string; role?: string | null; status?: string | null }
@@ -134,7 +141,7 @@ function statusBadge(status?: string | null) {
     if (s === "locked") return <Badge variant="outline">Locked</Badge>
     if (s === "archived") return <Badge variant="outline">Archived</Badge>
     if (s === "cancelled" || s === "canceled") return <Badge variant="destructive">Cancelled</Badge>
-    return <Badge variant="secondary">{status}</Badge>
+    return <Badge variant="secondary">{safeText(status, "Unknown")}</Badge>
 }
 
 // IMPORTANT: Select.Item cannot use empty string values.
@@ -163,7 +170,7 @@ function personLine(name: string | null, email: string) {
     const n = safeText(name, "")
     const e = safeText(email, "")
     if (n && e) return `${n} (${e})`
-    return n || e
+    return n || e || "—"
 }
 
 function normalizeUsers(payload: any): any[] {
@@ -185,8 +192,6 @@ export default function AdminEvaluationPage() {
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
     const [activeTab, setActiveTab] = React.useState<"staff" | "students">("staff")
-
-    const [showInternalIds, setShowInternalIds] = React.useState(false)
 
     // staff evaluation overview
     const [staffItems, setStaffItems] = React.useState<StaffOverviewItem[]>([])
@@ -396,9 +401,6 @@ export default function AdminEvaluationPage() {
                 safeText(it.term, ""),
                 personLine(it.evaluatorName, it.evaluatorEmail),
                 safeText(it.status, ""),
-                showInternalIds ? it.id : "",
-                showInternalIds ? it.scheduleId : "",
-                showInternalIds ? it.evaluatorId : "",
             ]
                 .filter(Boolean)
                 .join(" · ")
@@ -406,7 +408,7 @@ export default function AdminEvaluationPage() {
 
             return parts.includes(qq)
         })
-    }, [staffItems, staffQ, staffStatusFilter, staffScheduleFilter, staffEvaluatorFilter, showInternalIds])
+    }, [staffItems, staffQ, staffStatusFilter, staffScheduleFilter, staffEvaluatorFilter])
 
     const studentFiltered = React.useMemo(() => {
         const qq = safeText(studentQ, "").toLowerCase()
@@ -424,9 +426,6 @@ export default function AdminEvaluationPage() {
                 safeText(it.term, ""),
                 personLine(it.studentName, it.studentEmail),
                 safeText(it.status, ""),
-                showInternalIds ? it.id : "",
-                showInternalIds ? it.scheduleId : "",
-                showInternalIds ? it.studentId : "",
             ]
                 .filter(Boolean)
                 .join(" · ")
@@ -434,7 +433,7 @@ export default function AdminEvaluationPage() {
 
             return parts.includes(qq)
         })
-    }, [studentItems, studentQ, studentStatusFilter, studentScheduleFilter, studentFilter, showInternalIds])
+    }, [studentItems, studentQ, studentStatusFilter, studentScheduleFilter, studentFilter])
 
     const staffSummary = React.useMemo(() => {
         const total = staffItems.length
@@ -565,17 +564,6 @@ export default function AdminEvaluationPage() {
                             <UserPlus className="mr-2 h-4 w-4" />
                             Assign evaluation
                         </Button>
-
-                        <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-                            <Checkbox
-                                id="showInternalIds"
-                                checked={showInternalIds}
-                                onCheckedChange={(v) => setShowInternalIds(Boolean(v))}
-                            />
-                            <Label htmlFor="showInternalIds" className="cursor-pointer select-none text-sm">
-                                Show internal IDs
-                            </Label>
-                        </div>
                     </div>
                 </div>
 
@@ -599,7 +587,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 </CardTitle>
                                 <CardDescription>
-                                    Use filters to find a specific schedule or evaluator. Admin can assign and lock/unlock when needed.
+                                    Use filters to find a schedule or evaluator. Admin can assign and lock/unlock when needed.
                                 </CardDescription>
                             </CardHeader>
 
@@ -769,11 +757,10 @@ export default function AdminEvaluationPage() {
                                                                                 {[safeText(it.program, ""), safeText(it.term, "")].filter(Boolean).join(" · ")}
                                                                             </div>
                                                                         )}
-                                                                        {showInternalIds && (
-                                                                            <div className="mt-1 text-[10px] text-muted-foreground">
-                                                                                Eval: {it.id} • Schedule: {it.scheduleId}
-                                                                            </div>
-                                                                        )}
+                                                                        <div className="flex flex-wrap gap-2 pt-1 text-xs text-muted-foreground">
+                                                                            <span>Students: {Number.isFinite(Number(it.studentCount)) ? it.studentCount : "—"}</span>
+                                                                            <span>Panelists: {Number.isFinite(Number(it.panelistCount)) ? it.panelistCount : "—"}</span>
+                                                                        </div>
                                                                     </div>
                                                                 </TableCell>
 
@@ -786,9 +773,6 @@ export default function AdminEvaluationPage() {
                                                                                 safeText(it.evaluatorRole, "").slice(1).toLowerCase()
                                                                                 : "—"}
                                                                         </div>
-                                                                        {showInternalIds && (
-                                                                            <div className="mt-1 text-[10px] text-muted-foreground">User: {it.evaluatorId}</div>
-                                                                        )}
                                                                     </div>
                                                                 </TableCell>
 
@@ -1026,20 +1010,16 @@ export default function AdminEvaluationPage() {
                                                                                 {[safeText(it.program, ""), safeText(it.term, "")].filter(Boolean).join(" · ")}
                                                                             </div>
                                                                         )}
-                                                                        {showInternalIds && (
-                                                                            <div className="mt-1 text-[10px] text-muted-foreground">
-                                                                                Record: {it.id} • Schedule: {it.scheduleId}
-                                                                            </div>
-                                                                        )}
+                                                                        <div className="flex flex-wrap gap-2 pt-1 text-xs text-muted-foreground">
+                                                                            <span>Students: {Number.isFinite(Number(it.studentCount)) ? it.studentCount : "—"}</span>
+                                                                            <span>Panelists: {Number.isFinite(Number(it.panelistCount)) ? it.panelistCount : "—"}</span>
+                                                                        </div>
                                                                     </div>
                                                                 </TableCell>
 
                                                                 <TableCell className="align-top">
                                                                     <div className="space-y-1">
                                                                         <div className="font-medium">{personLine(it.studentName, it.studentEmail)}</div>
-                                                                        {showInternalIds && (
-                                                                            <div className="mt-1 text-[10px] text-muted-foreground">User: {it.studentId}</div>
-                                                                        )}
                                                                     </div>
                                                                 </TableCell>
 
@@ -1111,9 +1091,7 @@ export default function AdminEvaluationPage() {
                     <DialogContent className="sm:max-w-lg">
                         <DialogHeader>
                             <DialogTitle>Assign evaluation</DialogTitle>
-                            <DialogDescription>
-                                Create evaluation assignment(s) for a defense schedule.
-                            </DialogDescription>
+                            <DialogDescription>Create evaluation assignment(s) for a defense schedule.</DialogDescription>
                         </DialogHeader>
 
                         <div className="space-y-4">
@@ -1213,7 +1191,11 @@ export default function AdminEvaluationPage() {
                                 }}
                                 disabled={assignWorking}
                             >
-                                {assignWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                                {assignWorking ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : (
+                                    <UserPlus className="mr-2 h-4 w-4" />
+                                )}
                                 Assign
                             </Button>
                         </DialogFooter>
@@ -1225,7 +1207,7 @@ export default function AdminEvaluationPage() {
                     <DialogContent className="sm:max-w-xl">
                         <DialogHeader>
                             <DialogTitle>{inspectTitle || "Inspect"}</DialogTitle>
-                            <DialogDescription>Answers are shown as JSON (as stored).</DialogDescription>
+                            <DialogDescription>Answers are shown as stored.</DialogDescription>
                         </DialogHeader>
 
                         {inspectLoading ? (
@@ -1248,7 +1230,7 @@ export default function AdminEvaluationPage() {
                                 </div>
 
                                 <div>
-                                    <div className="mb-2 text-sm font-semibold">Answers (JSON)</div>
+                                    <div className="mb-2 text-sm font-semibold">Answers</div>
                                     <ScrollArea className="h-64 rounded-md border">
                                         <pre className="p-3 text-xs">{JSON.stringify(inspectAnswers ?? {}, null, 2)}</pre>
                                     </ScrollArea>

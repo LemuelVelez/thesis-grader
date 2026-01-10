@@ -43,7 +43,7 @@ export type DbStudentEvaluation = {
     id: string
     scheduleId: string
     studentId: string
-    status: "pending" | "submitted" | "locked"
+    status: "pending" | "submitted" | "locked" | string
     answers: any
     submittedAt: string | null
     lockedAt: string | null
@@ -61,6 +61,45 @@ function normOffset(n: unknown) {
     const x = Number(n)
     if (!Number.isFinite(x) || x < 0) return 0
     return Math.floor(x)
+}
+
+/**
+ * Some deployments use TEXT for student_evaluations.status, others use ENUM.
+ * Hard-casting to a specific enum name can cause 500 if that enum doesn't exist.
+ *
+ * We detect the column type once and only cast if it's an enum (using the actual udt_name).
+ */
+let _studentStatusTypeIdent: string | null | undefined
+
+async function getStudentStatusTypeIdent(): Promise<string | null> {
+    if (_studentStatusTypeIdent !== undefined) return _studentStatusTypeIdent
+    try {
+        const { rows } = await db.query(
+            `
+            select data_type, udt_name
+            from information_schema.columns
+            where table_name = 'student_evaluations'
+              and column_name = 'status'
+              and table_schema not in ('pg_catalog','information_schema')
+            order by (case when table_schema = 'public' then 0 else 1 end), table_schema
+            limit 1
+            `,
+            []
+        )
+
+        const row = rows?.[0]
+        const isEnum = String(row?.data_type ?? "") === "USER-DEFINED"
+        const udt = String(row?.udt_name ?? "").trim()
+
+        if (isEnum && udt && /^[A-Za-z_][A-Za-z0-9_]*$/.test(udt)) {
+            _studentStatusTypeIdent = `"${udt}"`
+        } else {
+            _studentStatusTypeIdent = null
+        }
+    } catch {
+        _studentStatusTypeIdent = null
+    }
+    return _studentStatusTypeIdent
 }
 
 /** -------------------- Rubric Templates -------------------- */
@@ -554,7 +593,8 @@ export async function listStudentEvaluations(params: {
         values.push(params.studentId)
     }
     if (params.status) {
-        where.push(`se.status = $${i++}::student_eval_status`)
+        // SAFE for TEXT or ENUM column
+        where.push(`lower(se.status::text) = lower($${i++})`)
         values.push(params.status)
     }
 
@@ -603,14 +643,17 @@ export async function getStudentEvaluationById(id: string) {
 export async function upsertStudentEvaluation(input: {
     scheduleId: string
     studentId: string
-    status?: "pending" | "submitted" | "locked"
+    status?: "pending" | "submitted" | "locked" | string
     answers?: any
     submittedAt?: string | null
     lockedAt?: string | null
 }) {
+    const typeIdent = await getStudentStatusTypeIdent()
+    const statusCast = typeIdent ? `::${typeIdent}` : ""
+
     const q = `
     insert into student_evaluations (schedule_id, student_id, status, answers, submitted_at, locked_at)
-    values ($1, $2, $3::student_eval_status, $4::jsonb, $5::timestamptz, $6::timestamptz)
+    values ($1, $2, $3${statusCast}, $4::jsonb, $5::timestamptz, $6::timestamptz)
     on conflict (schedule_id, student_id)
     do update set
       status = excluded.status,
@@ -642,18 +685,21 @@ export async function upsertStudentEvaluation(input: {
 export async function updateStudentEvaluation(
     id: string,
     patch: Partial<{
-        status: "pending" | "submitted" | "locked"
+        status: "pending" | "submitted" | "locked" | string
         answers: any
         submittedAt: string | null
         lockedAt: string | null
     }>
 ) {
+    const typeIdent = await getStudentStatusTypeIdent()
+    const statusCast = typeIdent ? `::${typeIdent}` : ""
+
     const sets: string[] = []
     const values: any[] = []
     let i = 1
 
     if (patch.status !== undefined) {
-        sets.push(`status = $${i++}::student_eval_status`)
+        sets.push(`status = $${i++}${statusCast}`)
         values.push(patch.status)
     }
     if (patch.answers !== undefined) {
