@@ -118,6 +118,15 @@ type MemberScore = {
     raw?: any
 }
 
+type MemberCriterionScore = {
+    criterionId: string
+    score: number | null
+    comment: string | null
+    raw?: any
+}
+
+type MemberCriteriaMap = Record<string, Record<string, MemberCriterionScore>>
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -158,7 +167,6 @@ function fmtTime(iso?: string | null) {
 
 function fmtScore(v: number | null | undefined) {
     if (typeof v !== "number" || !Number.isFinite(v)) return "—"
-    // show 2 decimals only when needed
     return Number.isInteger(v) ? String(v) : v.toFixed(2)
 }
 
@@ -229,6 +237,11 @@ function pickMemberScore(value: any): { score: number | null; comment: string | 
     return { score: finalScore, comment, raw: value }
 }
 
+/**
+ * Member overall scores extractor.
+ * IMPORTANT: Supports the exact shape you provided:
+ *  - extras.membersOverall: { [studentId]: { score, comment } }
+ */
 function extractMemberScores(extras: any): Record<string, MemberScore> {
     const out: Record<string, MemberScore> = {}
     if (!extras || typeof extras !== "object") return out
@@ -239,7 +252,8 @@ function extractMemberScores(extras: any): Record<string, MemberScore> {
             const sid = safeText(row.studentId ?? row.id ?? row.memberId ?? row.userId ?? "", "")
             if (!sid) continue
 
-            const scoreCandidate = row.score ?? row.total ?? row.value ?? row.points ?? row.memberScore ?? row.finalScore ?? null
+            const scoreCandidate =
+                row.score ?? row.total ?? row.value ?? row.points ?? row.memberScore ?? row.finalScore ?? null
             const sc = typeof scoreCandidate === "number" ? scoreCandidate : toNumber(scoreCandidate, NaN)
             const score = Number.isFinite(sc) ? sc : null
 
@@ -253,11 +267,6 @@ function extractMemberScores(extras: any): Record<string, MemberScore> {
         }
     }
 
-    // common shapes
-    if (Array.isArray(extras.memberScores)) tryArray(extras.memberScores)
-    if (Array.isArray(extras.members)) tryArray(extras.members)
-    if (Array.isArray(extras.individualScores)) tryArray(extras.individualScores)
-
     const tryObjectMap = (obj: any) => {
         if (!obj || typeof obj !== "object" || Array.isArray(obj)) return
         for (const [k, v] of Object.entries(obj)) {
@@ -265,22 +274,64 @@ function extractMemberScores(extras: any): Record<string, MemberScore> {
             if (!sid) continue
             const picked = pickMemberScore(v)
             if (!picked) continue
+            // do not overwrite a value that already exists from a more authoritative source
+            if (out[sid]) continue
             out[sid] = { studentId: sid, score: picked.score, comment: picked.comment, raw: picked.raw }
         }
     }
+
+    // 1) Exact expected keys (most authoritative)
+    if (extras.membersOverall) tryObjectMap(extras.membersOverall)
+
+    // 2) Common legacy shapes
+    if (Array.isArray(extras.memberScores)) tryArray(extras.memberScores)
+    if (Array.isArray(extras.members)) tryArray(extras.members)
+    if (Array.isArray(extras.individualScores)) tryArray(extras.individualScores)
 
     if (extras.scoresByMember) tryObjectMap(extras.scoresByMember)
     if (extras.memberScoreById) tryObjectMap(extras.memberScoreById)
     if (extras.memberScoresById) tryObjectMap(extras.memberScoresById)
     if (extras.memberScoreMap) tryObjectMap(extras.memberScoreMap)
 
-    // heuristic: top-level uuid keys mapping -> values
+    // 3) Heuristic: top-level uuid keys mapping -> values
     for (const [k, v] of Object.entries(extras)) {
         if (!looksLikeUuid(k)) continue
         if (out[k]) continue
         const picked = pickMemberScore(v)
         if (!picked) continue
         out[k] = { studentId: k, score: picked.score, comment: picked.comment, raw: picked.raw }
+    }
+
+    return out
+}
+
+/**
+ * Extract per-criterion member scores.
+ * Supports the exact provided shape:
+ *  - extras.membersCriteria: { [studentId]: { [criterionId]: { score, comment } } }
+ */
+function extractMemberCriteria(extras: any): MemberCriteriaMap {
+    const out: MemberCriteriaMap = {}
+    if (!extras || typeof extras !== "object") return out
+
+    const src = extras.membersCriteria
+    if (!src || typeof src !== "object" || Array.isArray(src)) return out
+
+    for (const [studentId, perCrit] of Object.entries(src)) {
+        const sid = safeText(studentId, "")
+        if (!sid) continue
+        if (!perCrit || typeof perCrit !== "object" || Array.isArray(perCrit)) continue
+
+        const bucket: Record<string, MemberCriterionScore> = {}
+        for (const [criterionId, v] of Object.entries(perCrit as any)) {
+            const cid = safeText(criterionId, "")
+            if (!cid) continue
+            const picked = pickMemberScore(v)
+            if (!picked) continue
+            bucket[cid] = { criterionId: cid, score: picked.score, comment: picked.comment, raw: picked.raw }
+        }
+
+        if (Object.keys(bucket).length) out[sid] = bucket
     }
 
     return out
@@ -309,6 +360,13 @@ function pickOverallComment(extras: any): string | null {
     return null
 }
 
+function pickExtrasScore(extras: any, path: Array<string>): number | null {
+    let cur: any = extras
+    for (const k of path) cur = cur?.[k]
+    const n = typeof cur === "number" ? cur : toNumber(cur, NaN)
+    return Number.isFinite(n) ? n : null
+}
+
 export default function AdminEvaluationDetailPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
@@ -322,17 +380,14 @@ export default function AdminEvaluationDetailPage() {
     const [detail, setDetail] = React.useState<DetailPayload | null>(null)
     const [scheduleDetail, setScheduleDetail] = React.useState<ScheduleDetailPayload | null>(null)
 
-    // members + extras (for evaluation detail view)
     const [membersLoading, setMembersLoading] = React.useState(false)
     const [members, setMembers] = React.useState<Person[]>([])
     const [extrasLoading, setExtrasLoading] = React.useState(false)
     const [extras, setExtras] = React.useState<any>(null)
 
-    // score summaries for scheduleDetail.evaluations (small N; safe to fetch)
     const [evalSummaries, setEvalSummaries] = React.useState<Record<string, EvalScoreSummary>>({})
     const [evalSummariesLoading, setEvalSummariesLoading] = React.useState<Record<string, boolean>>({})
 
-    // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
     const [confirmTitle, setConfirmTitle] = React.useState("")
     const [confirmDesc, setConfirmDesc] = React.useState("")
@@ -353,14 +408,16 @@ export default function AdminEvaluationDetailPage() {
 
         try {
             const [mRes, xRes] = await Promise.all([
-                apiJson<{ members: Person[] }>("GET", `/api/evaluations/members?evaluationId=${encodeURIComponent(evaluationId)}`),
+                apiJson<{ members: Person[] }>(
+                    "GET",
+                    `/api/evaluations/members?evaluationId=${encodeURIComponent(evaluationId)}`
+                ),
                 apiJson<{ extras: any }>("GET", `/api/evaluations/extras?evaluationId=${encodeURIComponent(evaluationId)}`),
             ])
 
             if (mRes.ok) {
                 setMembers(Array.isArray((mRes as any).members) ? ((mRes as any).members as Person[]) : [])
             } else {
-                // do not fail the page; just notify
                 toast.error(mRes.error ?? "Failed to load evaluation members")
             }
 
@@ -379,37 +436,24 @@ export default function AdminEvaluationDetailPage() {
         if (!id) return
         setLoading(true)
 
-        // reset cross-view state
         setEvalSummaries({})
         setEvalSummariesLoading({})
         setMembers([])
         setExtras(null)
 
         try {
-            // 1) Try evaluation detail (evaluationId)
-            const res = await apiJson<{ detail: DetailPayload }>(
-                "GET",
-                `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`
-            )
+            const res = await apiJson<{ detail: DetailPayload }>("GET", `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`)
             if (res.ok) {
                 const d = (res as any).detail as DetailPayload
                 setDetail(d)
                 setScheduleDetail(null)
 
-                // load member scores + extras (members group + system extras)
                 const evaluationId = safeText(d?.evaluation?.id, "")
-                if (evaluationId) {
-                    // do not block rendering; run after we set detail
-                    void loadMembersAndExtras(evaluationId)
-                }
+                if (evaluationId) void loadMembersAndExtras(evaluationId)
                 return
             }
 
-            // 2) Fallback: treat id as scheduleId and show schedule detail (even if evaluations not yet created)
-            const res2 = await apiJson<{ detail: ScheduleDetailPayload }>(
-                "GET",
-                `/api/admin/schedules/detail?id=${encodeURIComponent(id)}`
-            )
+            const res2 = await apiJson<{ detail: ScheduleDetailPayload }>("GET", `/api/admin/schedules/detail?id=${encodeURIComponent(id)}`)
             if (!res2.ok) throw new Error(res2.error ?? res.error ?? "Failed to load evaluation/schedule detail")
 
             const sd = (res2 as any).detail as ScheduleDetailPayload
@@ -445,7 +489,6 @@ export default function AdminEvaluationDetailPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [authLoading, user?.id, id])
 
-    // When viewing a scheduleDetail, load score summaries for each evaluation row (small N).
     React.useEffect(() => {
         const evals = scheduleDetail?.evaluations ?? []
         if (!scheduleDetail?.schedule?.id) return
@@ -468,10 +511,7 @@ export default function AdminEvaluationDetailPage() {
             try {
                 const results = await Promise.all(
                     toFetch.map(async (eid) => {
-                        const r = await apiJson<{ detail: DetailPayload }>(
-                            "GET",
-                            `/api/admin/evaluations/detail?id=${encodeURIComponent(eid)}`
-                        )
+                        const r = await apiJson<{ detail: DetailPayload }>("GET", `/api/admin/evaluations/detail?id=${encodeURIComponent(eid)}`)
                         if (!r.ok) throw new Error(r.error ?? "Failed to load evaluation detail")
                         const d = (r as any).detail as DetailPayload
                         const summary = computeSummary(d?.criteria ?? [])
@@ -485,7 +525,7 @@ export default function AdminEvaluationDetailPage() {
                 for (const it of results) next[it.eid] = it.summary
                 setEvalSummaries((prev) => ({ ...prev, ...next }))
             } catch {
-                // silent (we still allow viewing each record)
+                // silent
             } finally {
                 if (cancelled) return
                 setEvalSummariesLoading((prev) => {
@@ -521,14 +561,22 @@ export default function AdminEvaluationDetailPage() {
         return { count: valid.length, avg, min, max }
     }, [evalSummaries])
 
+    // ✅ NOW includes extras.membersOverall (your provided structure)
     const memberScoreMap = React.useMemo(() => extractMemberScores(extras), [extras])
 
+    // ✅ NEW: per-criterion map from extras.membersCriteria
+    const memberCriteriaMap = React.useMemo(() => extractMemberCriteria(extras), [extras])
+
+    const criterionNameById = React.useMemo(() => {
+        const out: Record<string, string> = {}
+        for (const c of detail?.criteria ?? []) out[safeText(c.criterionId, "")] = safeText(c.criterion, "—")
+        return out
+    }, [detail?.criteria])
+
     const memberList = React.useMemo(() => {
-        // prefer /api/evaluations/members (actual group_members join), fallback to detail.group.students
         const fromApi = Array.isArray(members) ? members : []
         const fromDetail = Array.isArray(detail?.group?.students) ? (detail!.group.students as Person[]) : []
         const base = fromApi.length ? fromApi : fromDetail
-        // stable sort by name/email
         return [...base].sort((a, b) => personLabel(a).localeCompare(personLabel(b)))
     }, [members, detail])
 
@@ -539,14 +587,15 @@ export default function AdminEvaluationDetailPage() {
             return ms && typeof ms.score === "number" && Number.isFinite(ms.score)
         })
         const scoredCount = scored.length
-        const avg =
-            scoredCount > 0
-                ? scored.reduce((a, m) => a + (memberScoreMap[m.id]?.score ?? 0), 0) / scoredCount
-                : null
+        const avg = scoredCount > 0 ? scored.reduce((a, m) => a + (memberScoreMap[m.id]?.score ?? 0), 0) / scoredCount : null
         return { total, scoredCount, avg }
     }, [memberList, memberScoreMap])
 
     const overallComment = React.useMemo(() => pickOverallComment(extras), [extras])
+
+    // Optional display: extras.system.score / extras.overall.score if present
+    const extrasSystemScore = React.useMemo(() => pickExtrasScore(extras, ["system", "score"]), [extras])
+    const extrasOverallScore = React.useMemo(() => pickExtrasScore(extras, ["overall", "score"]), [extras])
 
     async function setLock(lock: boolean) {
         if (!detail?.evaluation?.id) return
@@ -600,11 +649,7 @@ export default function AdminEvaluationDetailPage() {
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
-                            {refreshing ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            ) : (
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                            )}
+                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                             Refresh
                         </Button>
                     </div>
@@ -624,7 +669,6 @@ export default function AdminEvaluationDetailPage() {
                     </Card>
                 ) : scheduleDetail ? (
                     <>
-                        {/* Schedule Overview */}
                         <Card>
                             <CardHeader className="space-y-2">
                                 <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -677,8 +721,8 @@ export default function AdminEvaluationDetailPage() {
 
                                         <div className="mt-3 text-xs text-muted-foreground">Counts</div>
                                         <div className="mt-1 text-sm">
-                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists:{" "}
-                                            {scheduleDetail.panelists?.length ?? 0} · Evaluations: {scheduleDetail.evaluations?.length ?? 0}
+                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists: {scheduleDetail.panelists?.length ?? 0} ·
+                                            Evaluations: {scheduleDetail.evaluations?.length ?? 0}
                                         </div>
 
                                         <div className="mt-3 text-xs text-muted-foreground">System score snapshot</div>
@@ -703,7 +747,6 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
-                        {/* Evaluations */}
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle>Evaluation assignments</CardTitle>
@@ -734,13 +777,7 @@ export default function AdminEvaluationDetailPage() {
                                                     const isSumLoading = Boolean(evalSummariesLoading[e.id])
 
                                                     const scoreAvg =
-                                                        sum && sum.scoredCount > 0
-                                                            ? fmtScore(sum.weightedAverage)
-                                                            : sum
-                                                                ? "—"
-                                                                : isSumLoading
-                                                                    ? ""
-                                                                    : "—"
+                                                        sum && sum.scoredCount > 0 ? fmtScore(sum.weightedAverage) : sum ? "—" : isSumLoading ? "" : "—"
                                                     const scored = sum ? `${sum.scoredCount}/${sum.rows}` : isSumLoading ? "" : "—"
 
                                                     return (
@@ -779,7 +816,6 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
-                        {/* People */}
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle className="flex items-center gap-2">
@@ -826,7 +862,6 @@ export default function AdminEvaluationDetailPage() {
                     </>
                 ) : (
                     <>
-                        {/* Evaluation Summary */}
                         <Card>
                             <CardHeader className="space-y-2">
                                 <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -838,10 +873,8 @@ export default function AdminEvaluationDetailPage() {
                                                 size="sm"
                                                 variant="outline"
                                                 onClick={() =>
-                                                    openConfirm(
-                                                        "Unlock evaluation?",
-                                                        "This will remove the lock so it can be edited again.",
-                                                        async () => setLock(false)
+                                                    openConfirm("Unlock evaluation?", "This will remove the lock so it can be edited again.", async () =>
+                                                        setLock(false)
                                                     )
                                                 }
                                             >
@@ -853,10 +886,8 @@ export default function AdminEvaluationDetailPage() {
                                                 size="sm"
                                                 variant="outline"
                                                 onClick={() =>
-                                                    openConfirm(
-                                                        "Lock evaluation?",
-                                                        "This will lock the evaluation to prevent further changes.",
-                                                        async () => setLock(true)
+                                                    openConfirm("Lock evaluation?", "This will lock the evaluation to prevent further changes.", async () =>
+                                                        setLock(true)
                                                     )
                                                 }
                                             >
@@ -884,9 +915,7 @@ export default function AdminEvaluationDetailPage() {
                                         </div>
                                         {detail!.group.program || detail!.group.term ? (
                                             <div className="mt-1 text-sm text-muted-foreground">
-                                                {[safeText(detail!.group.program, ""), safeText(detail!.group.term, "")]
-                                                    .filter(Boolean)
-                                                    .join(" · ")}
+                                                {[safeText(detail!.group.program, ""), safeText(detail!.group.term, "")].filter(Boolean).join(" · ")}
                                             </div>
                                         ) : null}
                                         <div className="mt-2">{statusBadge(detail!.schedule.status)}</div>
@@ -907,7 +936,7 @@ export default function AdminEvaluationDetailPage() {
                                             {detail!.rubric.name} (v{detail!.rubric.version}) {detail!.rubric.active ? "" : "(inactive)"}
                                         </div>
                                         {detail!.rubric.description ? (
-                                            <div className="mt-1 text-sm text-muted-foreground">{detail!.rubric.description}</div>
+                                            <div className="mt-1 text-sm text-muted-foreground">{safeText(detail!.rubric.description, "")}</div>
                                         ) : null}
                                     </div>
                                 ) : (
@@ -924,7 +953,6 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
-                        {/* People */}
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle className="flex items-center gap-2">
@@ -975,13 +1003,10 @@ export default function AdminEvaluationDetailPage() {
                             </CardContent>
                         </Card>
 
-                        {/* Scores (SYSTEM + MEMBERS) */}
                         <Card>
                             <CardHeader className="space-y-1">
                                 <CardTitle>Scores</CardTitle>
-                                <CardDescription>
-                                    System (rubric criteria) and member-level scores (from evaluation extras).
-                                </CardDescription>
+                                <CardDescription>System (rubric criteria) and member-level scores (from evaluation extras).</CardDescription>
                             </CardHeader>
 
                             <CardContent className="space-y-4">
@@ -997,10 +1022,16 @@ export default function AdminEvaluationDetailPage() {
                                             <div className="text-sm font-semibold">System summary</div>
                                             <div className="mt-1 text-sm text-muted-foreground">
                                                 Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
-                                                {scoreSummary.scoredCount > 0 ? (
-                                                    <> • Weighted avg: {fmtScore(scoreSummary.weightedAverage)}</>
-                                                ) : null}
+                                                {scoreSummary.scoredCount > 0 ? <> • Weighted avg: {fmtScore(scoreSummary.weightedAverage)}</> : null}
                                             </div>
+
+                                            {(extrasSystemScore !== null || extrasOverallScore !== null) && (
+                                                <div className="mt-2 text-sm text-muted-foreground">
+                                                    {extrasSystemScore !== null ? <>Extras system score: {fmtScore(extrasSystemScore)}</> : null}
+                                                    {extrasSystemScore !== null && extrasOverallScore !== null ? " • " : null}
+                                                    {extrasOverallScore !== null ? <>Extras overall score: {fmtScore(extrasOverallScore)}</> : null}
+                                                </div>
+                                            )}
 
                                             {overallComment ? (
                                                 <div className="mt-3">
@@ -1068,10 +1099,12 @@ export default function AdminEvaluationDetailPage() {
                                                             <> • Avg: {fmtScore(memberScoreSummary.avg)}</>
                                                         ) : null}
                                                     </div>
+                                                    <div className="mt-1 text-xs text-muted-foreground">
+                                                        Source: <span className="font-medium">extras.membersOverall</span> (with criteria from{" "}
+                                                        <span className="font-medium">extras.membersCriteria</span>).
+                                                    </div>
                                                 </div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    {membersLoading || extrasLoading ? "Loading…" : " "}
-                                                </div>
+                                                <div className="text-xs text-muted-foreground">{membersLoading || extrasLoading ? "Loading…" : " "}</div>
                                             </div>
                                         </div>
 
@@ -1083,12 +1116,22 @@ export default function AdminEvaluationDetailPage() {
                                                             <TableHead className="w-80">Member</TableHead>
                                                             <TableHead className="w-64">Email</TableHead>
                                                             <TableHead className="w-32">Score</TableHead>
-                                                            <TableHead>Comment</TableHead>
+                                                            <TableHead>Comment / Criteria</TableHead>
                                                         </TableRow>
                                                     </TableHeader>
                                                     <TableBody>
                                                         {memberList.map((m) => {
+                                                            // ✅ Score now matches your provided JSON: extras.membersOverall[memberId].score
                                                             const ms = memberScoreMap[m.id]
+                                                            const perCrit = memberCriteriaMap[m.id]
+                                                            const critEntries = perCrit ? Object.values(perCrit) : []
+
+                                                            const sortedCrit = [...critEntries].sort((a, b) =>
+                                                                safeText(criterionNameById[a.criterionId], a.criterionId).localeCompare(
+                                                                    safeText(criterionNameById[b.criterionId], b.criterionId)
+                                                                )
+                                                            )
+
                                                             return (
                                                                 <TableRow key={m.id}>
                                                                     <TableCell className="align-top">
@@ -1100,6 +1143,30 @@ export default function AdminEvaluationDetailPage() {
                                                                     <TableCell className="align-top">{fmtScore(ms?.score ?? null)}</TableCell>
                                                                     <TableCell className="align-top">
                                                                         <div className="whitespace-pre-wrap text-sm">{safeText(ms?.comment ?? "", "—")}</div>
+
+                                                                        {sortedCrit.length ? (
+                                                                            <div className="mt-3">
+                                                                                <div className="text-xs text-muted-foreground">Per-criterion</div>
+                                                                                <div className="mt-2 space-y-2">
+                                                                                    {sortedCrit.map((c) => {
+                                                                                        const name = safeText(criterionNameById[c.criterionId], c.criterionId)
+                                                                                        return (
+                                                                                            <div key={c.criterionId} className="rounded-md border p-2">
+                                                                                                <div className="flex items-center justify-between gap-3">
+                                                                                                    <div className="text-sm font-medium">{name}</div>
+                                                                                                    <div className="text-sm">{fmtScore(c.score)}</div>
+                                                                                                </div>
+                                                                                                {c.comment ? (
+                                                                                                    <div className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+                                                                                                        {safeText(c.comment, "")}
+                                                                                                    </div>
+                                                                                                ) : null}
+                                                                                            </div>
+                                                                                        )
+                                                                                    })}
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : null}
                                                                     </TableCell>
                                                                 </TableRow>
                                                             )
@@ -1108,16 +1175,13 @@ export default function AdminEvaluationDetailPage() {
                                                 </Table>
                                             </div>
                                         ) : (
-                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                                No members found for this evaluation.
-                                            </div>
+                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">No members found for this evaluation.</div>
                                         )}
 
                                         {!extrasLoading && extras && Object.keys(memberScoreMap).length === 0 ? (
                                             <div className="rounded-md border p-4 text-sm text-muted-foreground">
                                                 No member-level scores were found in <span className="font-medium">evaluation extras</span>.
-                                                If your staff UI saves member scores under a different key, open the <span className="font-medium">Raw</span>{" "}
-                                                tab to confirm the stored structure.
+                                                Open the <span className="font-medium">Raw</span> tab to confirm the stored structure.
                                             </div>
                                         ) : null}
                                     </TabsContent>
@@ -1147,7 +1211,6 @@ export default function AdminEvaluationDetailPage() {
                     </>
                 )}
 
-                {/* Confirm dialog */}
                 <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                     <AlertDialogContent>
                         <AlertDialogHeader>
