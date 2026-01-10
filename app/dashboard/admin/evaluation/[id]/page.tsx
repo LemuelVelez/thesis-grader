@@ -77,6 +77,32 @@ type DetailPayload = {
     }>
 }
 
+type ScheduleDetailPayload = {
+    schedule: {
+        id: string
+        scheduledAt: string
+        room: string | null
+        status: string | null
+    }
+    group: {
+        id: string
+        title: string
+        program: string | null
+        term: string | null
+        adviser: Person | null
+        students: Person[]
+    }
+    panelists: Person[]
+    evaluations: Array<{
+        id: string
+        status: string
+        submittedAt: string | null
+        lockedAt: string | null
+        createdAt: string | null
+        evaluator: Person
+    }>
+}
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -150,6 +176,7 @@ export default function AdminEvaluationDetailPage() {
     const [refreshing, setRefreshing] = React.useState(false)
 
     const [detail, setDetail] = React.useState<DetailPayload | null>(null)
+    const [scheduleDetail, setScheduleDetail] = React.useState<ScheduleDetailPayload | null>(null)
 
     // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
@@ -168,18 +195,26 @@ export default function AdminEvaluationDetailPage() {
         if (!id) return
         setLoading(true)
         try {
-            // NOTE: this expects /api/admin/evaluations/detail to exist (added in this update)
-            const res = await apiJson<{ detail: DetailPayload }>(
-                "GET",
-                `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`
-            )
-            if (!res.ok) throw new Error(res.error ?? "Failed to load evaluation detail")
+            // 1) Try evaluation detail (evaluationId)
+            const res = await apiJson<{ detail: DetailPayload }>("GET", `/api/admin/evaluations/detail?id=${encodeURIComponent(id)}`)
+            if (res.ok) {
+                const d = (res as any).detail as DetailPayload
+                setDetail(d)
+                setScheduleDetail(null)
+                return
+            }
 
-            const d = (res as any).detail as DetailPayload
-            setDetail(d)
+            // 2) Fallback: treat id as scheduleId and show schedule detail (even if evaluations not yet created)
+            const res2 = await apiJson<{ detail: ScheduleDetailPayload }>("GET", `/api/admin/schedules/detail?id=${encodeURIComponent(id)}`)
+            if (!res2.ok) throw new Error(res2.error ?? res.error ?? "Failed to load evaluation/schedule detail")
+
+            const sd = (res2 as any).detail as ScheduleDetailPayload
+            setScheduleDetail(sd)
+            setDetail(null)
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to load evaluation")
             setDetail(null)
+            setScheduleDetail(null)
         } finally {
             setLoading(false)
         }
@@ -245,6 +280,13 @@ export default function AdminEvaluationDetailPage() {
         await loadOne()
     }
 
+    async function assignPanelists(scheduleId: string) {
+        const res = await apiJson("POST", "/api/admin/evaluations/assign", { mode: "panelists", scheduleId })
+        if (!res.ok) throw new Error(res.error ?? "Failed to assign panelists")
+        toast.success(`Assigned panelists. Created: ${(res as any).createdCount ?? 0}`)
+        await loadOne()
+    }
+
     return (
         <DashboardLayout>
             <div className="space-y-6">
@@ -257,10 +299,16 @@ export default function AdminEvaluationDetailPage() {
                         <div>
                             <div className="flex items-center gap-2">
                                 <ShieldCheck className="h-5 w-5" />
-                                <h1 className="text-xl font-semibold">Evaluation detail</h1>
+                                <h1 className="text-xl font-semibold">
+                                    {detail ? "Evaluation detail" : scheduleDetail ? "Schedule detail" : "Detail"}
+                                </h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Schedule, group, evaluator, rubric, and scores (admin view).
+                                {detail
+                                    ? "Schedule, group, evaluator, rubric, and scores (admin view)."
+                                    : scheduleDetail
+                                        ? "Schedule, group, panelists, and evaluation assignments."
+                                        : "Admin view."}
                             </p>
                         </div>
                     </div>
@@ -282,22 +330,181 @@ export default function AdminEvaluationDetailPage() {
                         <Skeleton className="h-28 w-full" />
                         <Skeleton className="h-64 w-full" />
                     </div>
-                ) : !detail ? (
+                ) : !detail && !scheduleDetail ? (
                     <Card>
                         <CardHeader>
                             <CardTitle>Not found</CardTitle>
-                            <CardDescription>This evaluation record could not be loaded.</CardDescription>
+                            <CardDescription>This record could not be loaded.</CardDescription>
                         </CardHeader>
                     </Card>
+                ) : scheduleDetail ? (
+                    <>
+                        {/* Schedule Overview */}
+                        <Card>
+                            <CardHeader className="space-y-2">
+                                <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <span>Schedule overview</span>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                                openConfirm(
+                                                    "Assign panelists for this schedule?",
+                                                    "This will create missing evaluation rows for all panelists assigned to this schedule.",
+                                                    async () => assignPanelists(scheduleDetail.schedule.id)
+                                                )
+                                            }
+                                        >
+                                            <Users className="mr-2 h-4 w-4" />
+                                            Assign panelists
+                                        </Button>
+                                    </div>
+                                </CardTitle>
+
+                                <CardDescription className="space-y-1">
+                                    <div className="text-xs text-muted-foreground">
+                                        When: {fmtDate(scheduleDetail.schedule.scheduledAt)} {fmtTime(scheduleDetail.schedule.scheduledAt)}
+                                        {scheduleDetail.schedule.room ? <> · Room {scheduleDetail.schedule.room}</> : null}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">Schedule ID: {scheduleDetail.schedule.id}</div>
+                                </CardDescription>
+                            </CardHeader>
+
+                            <CardContent className="space-y-4">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Group</div>
+                                        <div className="mt-1 font-medium">{safeText(scheduleDetail.group.title, "—")}</div>
+                                        {(scheduleDetail.group.program || scheduleDetail.group.term) ? (
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                {[safeText(scheduleDetail.group.program, ""), safeText(scheduleDetail.group.term, "")]
+                                                    .filter(Boolean)
+                                                    .join(" · ")}
+                                            </div>
+                                        ) : null}
+                                        <div className="mt-2">{statusBadge(scheduleDetail.schedule.status)}</div>
+                                    </div>
+
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Adviser</div>
+                                        <div className="mt-1 font-medium">{personLabel(scheduleDetail.group.adviser)}</div>
+                                        <div className="mt-3 text-xs text-muted-foreground">Counts</div>
+                                        <div className="mt-1 text-sm">
+                                            Students: {scheduleDetail.group.students?.length ?? 0} · Panelists: {scheduleDetail.panelists?.length ?? 0} · Evaluations:{" "}
+                                            {scheduleDetail.evaluations?.length ?? 0}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-wrap gap-2">
+                                    <Button asChild variant="outline" size="sm">
+                                        <Link href="/dashboard/admin/evaluation">Back to list</Link>
+                                    </Button>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        {/* Evaluations */}
+                        <Card>
+                            <CardHeader className="space-y-1">
+                                <CardTitle>Evaluation assignments</CardTitle>
+                                <CardDescription>Existing evaluation rows for this schedule (if any).</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                {scheduleDetail.evaluations?.length ? (
+                                    <div className="rounded-md border">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead className="w-80">Evaluator</TableHead>
+                                                    <TableHead className="w-40">Status</TableHead>
+                                                    <TableHead className="w-56">Submitted</TableHead>
+                                                    <TableHead className="w-56">Locked</TableHead>
+                                                    <TableHead className="w-40 text-right">Action</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {scheduleDetail.evaluations.map((e) => (
+                                                    <TableRow key={e.id}>
+                                                        <TableCell className="align-top">
+                                                            <div className="font-medium">{personLabel(e.evaluator)}</div>
+                                                        </TableCell>
+                                                        <TableCell className="align-top">{statusBadge(e.status)}</TableCell>
+                                                        <TableCell className="align-top">{fmtDateTime(e.submittedAt) || "—"}</TableCell>
+                                                        <TableCell className="align-top">{fmtDateTime(e.lockedAt) || "—"}</TableCell>
+                                                        <TableCell className="align-top text-right">
+                                                            <Button asChild size="sm" variant="outline">
+                                                                <Link href={`/dashboard/admin/evaluation/${e.id}`}>View</Link>
+                                                            </Button>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                ) : (
+                                    <div className="rounded-md border p-6 text-sm text-muted-foreground">
+                                        No evaluation rows yet. Click <span className="font-medium">Assign panelists</span> above to generate them.
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        {/* People */}
+                        <Card>
+                            <CardHeader className="space-y-1">
+                                <CardTitle className="flex items-center gap-2">
+                                    <Users className="h-4 w-4" />
+                                    People
+                                </CardTitle>
+                                <CardDescription>Students in the group and panelists assigned to this schedule.</CardDescription>
+                            </CardHeader>
+
+                            <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div className="rounded-md border p-3">
+                                    <div className="text-sm font-semibold">Students ({scheduleDetail.group.students?.length ?? 0})</div>
+                                    <Separator className="my-2" />
+                                    {scheduleDetail.group.students?.length ? (
+                                        <div className="space-y-2">
+                                            {scheduleDetail.group.students.map((s) => (
+                                                <div key={s.id} className="text-sm">
+                                                    {personLabel(s)}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-muted-foreground">No students found for this group.</div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-md border p-3">
+                                    <div className="text-sm font-semibold">Panelists ({scheduleDetail.panelists?.length ?? 0})</div>
+                                    <Separator className="my-2" />
+                                    {scheduleDetail.panelists?.length ? (
+                                        <div className="space-y-2">
+                                            {scheduleDetail.panelists.map((p) => (
+                                                <div key={p.id} className="text-sm">
+                                                    {personLabel(p)}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-muted-foreground">No panelists found for this schedule.</div>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </>
                 ) : (
                     <>
-                        {/* Summary */}
+                        {/* Evaluation Summary */}
                         <Card>
                             <CardHeader className="space-y-2">
                                 <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <span>Overview</span>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        {statusBadge(detail.evaluation.status)}
+                                        {statusBadge(detail!.evaluation.status)}
                                         {isLocked ? (
                                             <Button
                                                 size="sm"
@@ -334,10 +541,10 @@ export default function AdminEvaluationDetailPage() {
 
                                 <CardDescription className="space-y-1">
                                     <div className="text-xs text-muted-foreground">
-                                        Submitted: {fmtDateTime(detail.evaluation.submittedAt) || "—"}
+                                        Submitted: {fmtDateTime(detail!.evaluation.submittedAt) || "—"}
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                        Locked: {fmtDateTime(detail.evaluation.lockedAt) || "—"}
+                                        Locked: {fmtDateTime(detail!.evaluation.lockedAt) || "—"}
                                     </div>
                                 </CardDescription>
                             </CardHeader>
@@ -346,38 +553,38 @@ export default function AdminEvaluationDetailPage() {
                                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Schedule</div>
-                                        <div className="mt-1 font-medium">{safeText(detail.group.title, "—")}</div>
+                                        <div className="mt-1 font-medium">{safeText(detail!.group.title, "—")}</div>
                                         <div className="mt-1 text-sm text-muted-foreground">
-                                            {fmtDate(detail.schedule.scheduledAt)} {fmtTime(detail.schedule.scheduledAt)}
-                                            {detail.schedule.room ? <> · Room {detail.schedule.room}</> : null}
+                                            {fmtDate(detail!.schedule.scheduledAt)} {fmtTime(detail!.schedule.scheduledAt)}
+                                            {detail!.schedule.room ? <> · Room {detail!.schedule.room}</> : null}
                                         </div>
-                                        {(detail.group.program || detail.group.term) ? (
+                                        {(detail!.group.program || detail!.group.term) ? (
                                             <div className="mt-1 text-sm text-muted-foreground">
-                                                {[safeText(detail.group.program, ""), safeText(detail.group.term, "")]
+                                                {[safeText(detail!.group.program, ""), safeText(detail!.group.term, "")]
                                                     .filter(Boolean)
                                                     .join(" · ")}
                                             </div>
                                         ) : null}
-                                        <div className="mt-2">{statusBadge(detail.schedule.status)}</div>
+                                        <div className="mt-2">{statusBadge(detail!.schedule.status)}</div>
                                     </div>
 
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Evaluator</div>
-                                        <div className="mt-1 font-medium">{personLabel(detail.evaluator)}</div>
+                                        <div className="mt-1 font-medium">{personLabel(detail!.evaluator)}</div>
                                         <div className="mt-3 text-xs text-muted-foreground">Adviser</div>
-                                        <div className="mt-1 text-sm">{personLabel(detail.group.adviser)}</div>
+                                        <div className="mt-1 text-sm">{personLabel(detail!.group.adviser)}</div>
                                     </div>
                                 </div>
 
-                                {detail.rubric ? (
+                                {detail!.rubric ? (
                                     <div className="rounded-md border p-3">
                                         <div className="text-xs text-muted-foreground">Rubric</div>
                                         <div className="mt-1 font-medium">
-                                            {detail.rubric.name} (v{detail.rubric.version}){" "}
-                                            {detail.rubric.active ? "" : "(inactive)"}
+                                            {detail!.rubric.name} (v{detail!.rubric.version}){" "}
+                                            {detail!.rubric.active ? "" : "(inactive)"}
                                         </div>
-                                        {detail.rubric.description ? (
-                                            <div className="mt-1 text-sm text-muted-foreground">{detail.rubric.description}</div>
+                                        {detail!.rubric.description ? (
+                                            <div className="mt-1 text-sm text-muted-foreground">{detail!.rubric.description}</div>
                                         ) : null}
                                     </div>
                                 ) : (
@@ -406,11 +613,11 @@ export default function AdminEvaluationDetailPage() {
 
                             <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                 <div className="rounded-md border p-3">
-                                    <div className="text-sm font-semibold">Students ({detail.group.students?.length ?? 0})</div>
+                                    <div className="text-sm font-semibold">Students ({detail!.group.students?.length ?? 0})</div>
                                     <Separator className="my-2" />
-                                    {detail.group.students?.length ? (
+                                    {detail!.group.students?.length ? (
                                         <div className="space-y-2">
-                                            {detail.group.students.map((s) => (
+                                            {detail!.group.students.map((s) => (
                                                 <div key={s.id} className="text-sm">
                                                     {personLabel(s)}
                                                 </div>
@@ -422,12 +629,12 @@ export default function AdminEvaluationDetailPage() {
                                 </div>
 
                                 <div className="rounded-md border p-3">
-                                    <div className="text-sm font-semibold">Panelists ({detail.panelists?.length ?? 0})</div>
+                                    <div className="text-sm font-semibold">Panelists ({detail!.panelists?.length ?? 0})</div>
                                     <Separator className="my-2" />
-                                    {detail.panelists?.length ? (
+                                    {detail!.panelists?.length ? (
                                         <div className="space-y-2">
-                                            {detail.panelists.map((p) => {
-                                                const isEvaluator = p.id === detail.evaluator.id
+                                            {detail!.panelists.map((p) => {
+                                                const isEvaluator = p.id === detail!.evaluator.id
                                                 return (
                                                     <div key={p.id} className="text-sm">
                                                         <div className="flex items-center gap-2">
@@ -451,14 +658,12 @@ export default function AdminEvaluationDetailPage() {
                                 <CardTitle>Scores & comments</CardTitle>
                                 <CardDescription>
                                     Rows: {scoreSummary.rows} • Scored: {scoreSummary.scoredCount}
-                                    {scoreSummary.scoredCount > 0 ? (
-                                        <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</>
-                                    ) : null}
+                                    {scoreSummary.scoredCount > 0 ? <> • Weighted avg: {scoreSummary.weightedAverage.toFixed(2)}</> : null}
                                 </CardDescription>
                             </CardHeader>
 
                             <CardContent className="space-y-4">
-                                {Array.isArray(detail.criteria) && detail.criteria.length > 0 ? (
+                                {Array.isArray(detail!.criteria) && detail!.criteria.length > 0 ? (
                                     <div className="rounded-md border">
                                         <Table>
                                             <TableHeader>
@@ -471,7 +676,7 @@ export default function AdminEvaluationDetailPage() {
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {detail.criteria.map((r) => {
+                                                {detail!.criteria.map((r) => {
                                                     const w = toNumber(r.weight, 1)
                                                     const sc = typeof r.score === "number" ? r.score : null
                                                     return (
@@ -480,9 +685,7 @@ export default function AdminEvaluationDetailPage() {
                                                                 <div className="space-y-1">
                                                                     <div className="font-medium">{safeText(r.criterion, "—")}</div>
                                                                     {r.description ? (
-                                                                        <div className="text-xs text-muted-foreground">
-                                                                            {safeText(r.description, "")}
-                                                                        </div>
+                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
                                                                     ) : null}
                                                                 </div>
                                                             </TableCell>

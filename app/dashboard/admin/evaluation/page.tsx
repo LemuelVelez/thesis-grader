@@ -104,6 +104,20 @@ type StudentOverviewItem = {
 
 type StaffUserOption = { id: string; name: string | null; email: string; role?: string | null; status?: string | null }
 
+type AdminScheduleItem = {
+    id: string
+    scheduledAt: string
+    room: string | null
+    status: string | null
+    groupId: string
+    groupTitle: string
+    program: string | null
+    term: string | null
+    studentCount?: number
+    panelistCount?: number
+    evaluationCount?: number
+}
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -137,7 +151,7 @@ function statusBadge(status?: string | null) {
     const s = safeText(status, "").toLowerCase()
     if (!s) return <Badge variant="secondary">Unknown</Badge>
     if (s === "submitted" || s === "done" || s === "completed") return <Badge>Submitted</Badge>
-    if (s === "pending" || s === "draft") return <Badge variant="secondary">Pending</Badge>
+    if (s === "pending" || s === "draft" || s === "") return <Badge variant="secondary">Pending</Badge>
     if (s === "locked") return <Badge variant="outline">Locked</Badge>
     if (s === "archived") return <Badge variant="outline">Archived</Badge>
     if (s === "cancelled" || s === "canceled") return <Badge variant="destructive">Cancelled</Badge>
@@ -173,10 +187,11 @@ function personLine(name: string | null, email: string) {
     return n || e || "—"
 }
 
-function normalizeUsers(payload: any): any[] {
+function normalizeList(payload: any): any[] {
     const raw = payload
     const arr =
         raw?.items ??
+        raw?.schedules ??
         raw?.users ??
         raw?.data ??
         raw?.rows ??
@@ -192,6 +207,9 @@ export default function AdminEvaluationPage() {
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
     const [activeTab, setActiveTab] = React.useState<"staff" | "students">("staff")
+
+    // schedules (IMPORTANT: schedules exist even if evaluations don't)
+    const [scheduleItems, setScheduleItems] = React.useState<AdminScheduleItem[]>([])
 
     // staff evaluation overview
     const [staffItems, setStaffItems] = React.useState<StaffOverviewItem[]>([])
@@ -250,7 +268,7 @@ export default function AdminEvaluationPage() {
             const res = await apiJson<any>("GET", "/api/admin/users?limit=500&offset=0")
             if (!res.ok) throw new Error(res.error ?? "Failed to load staff users")
 
-            const rows = normalizeUsers(res)
+            const rows = normalizeList(res)
             const filtered = rows
                 .map((u: any) => ({
                     id: safeText(u?.id, ""),
@@ -272,7 +290,7 @@ export default function AdminEvaluationPage() {
     async function loadOverview() {
         setLoading(true)
         try {
-            const [staffRes, studentRes] = await Promise.all([
+            const [staffRes, studentRes, schedRes] = await Promise.all([
                 apiJson<{ total: number; items: StaffOverviewItem[] }>(
                     "GET",
                     "/api/admin/evaluations?type=staff&limit=500&offset=0"
@@ -281,13 +299,20 @@ export default function AdminEvaluationPage() {
                     "GET",
                     "/api/admin/evaluations?type=student&limit=500&offset=0"
                 ),
+                // IMPORTANT FIX: load schedules directly (so schedule dropdown works even if no evaluations exist yet)
+                apiJson<{ total: number; items: AdminScheduleItem[] }>(
+                    "GET",
+                    "/api/admin/schedules?limit=500&offset=0"
+                ),
             ])
 
             if (!staffRes.ok) throw new Error(staffRes.error ?? "Failed to load staff evaluations")
             if (!studentRes.ok) throw new Error(studentRes.error ?? "Failed to load student feedback")
+            if (!schedRes.ok) throw new Error(schedRes.error ?? "Failed to load schedules")
 
             setStaffItems(Array.isArray((staffRes as any).items) ? (staffRes as any).items : [])
             setStudentItems(Array.isArray((studentRes as any).items) ? (studentRes as any).items : [])
+            setScheduleItems(Array.isArray((schedRes as any).items) ? (schedRes as any).items : [])
         } catch (e: any) {
             toast.error(e?.message ?? "Failed to load evaluation overview")
         } finally {
@@ -325,39 +350,20 @@ export default function AdminEvaluationPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [assignOpen, assignMode])
 
-    const staffScheduleOptions = React.useMemo(() => {
+    const scheduleOptions = React.useMemo(() => {
         const map = new Map<string, { id: string; label: string }>()
-        for (const it of staffItems) {
-            if (!map.has(it.scheduleId)) {
-                map.set(it.scheduleId, {
-                    id: it.scheduleId,
-                    label: scheduleLine(it.groupTitle, it.scheduledAt, it.room),
+        for (const s of scheduleItems) {
+            const sid = safeText(s.id, "")
+            if (!sid) continue
+            if (!map.has(sid)) {
+                map.set(sid, {
+                    id: sid,
+                    label: scheduleLine(safeText(s.groupTitle, "Schedule"), safeText(s.scheduledAt, ""), s.room ?? null),
                 })
             }
         }
         return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
-    }, [staffItems])
-
-    const studentScheduleOptions = React.useMemo(() => {
-        const map = new Map<string, { id: string; label: string }>()
-        for (const it of studentItems) {
-            if (!map.has(it.scheduleId)) {
-                map.set(it.scheduleId, {
-                    id: it.scheduleId,
-                    label: scheduleLine(it.groupTitle, it.scheduledAt, it.room),
-                })
-            }
-        }
-        return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
-    }, [studentItems])
-
-    const allScheduleOptions = React.useMemo(() => {
-        const map = new Map<string, { id: string; label: string }>()
-        for (const s of [...staffScheduleOptions, ...studentScheduleOptions]) {
-            if (!map.has(s.id)) map.set(s.id, s)
-        }
-        return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
-    }, [staffScheduleOptions, studentScheduleOptions])
+    }, [scheduleItems])
 
     const staffEvaluatorOptions = React.useMemo(() => {
         const map = new Map<string, { id: string; label: string }>()
@@ -531,6 +537,8 @@ export default function AdminEvaluationPage() {
         await loadOverview()
     }
 
+    const selectedScheduleForActions = activeTab === "staff" ? staffScheduleFilter : studentScheduleFilter
+
     return (
         <DashboardLayout>
             <div className="space-y-6">
@@ -560,7 +568,11 @@ export default function AdminEvaluationPage() {
                             Refresh
                         </Button>
 
-                        <Button variant="outline" onClick={() => openAssignDialog("panelists", staffScheduleFilter || "")}>
+                        <Button
+                            variant="outline"
+                            onClick={() => openAssignDialog("panelists", selectedScheduleForActions || "")}
+                            disabled={loading || refreshing}
+                        >
                             <UserPlus className="mr-2 h-4 w-4" />
                             Assign evaluation
                         </Button>
@@ -587,7 +599,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 </CardTitle>
                                 <CardDescription>
-                                    Use filters to find a schedule or evaluator. Admin can assign and lock/unlock when needed.
+                                    Schedules are loaded from <span className="font-medium">defense_schedules</span> (even if no evaluations exist yet).
                                 </CardDescription>
                             </CardHeader>
 
@@ -617,7 +629,7 @@ export default function AdminEvaluationPage() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectItem value={CLEAR_SELECT_VALUE}>All schedules</SelectItem>
-                                                {staffScheduleOptions.map((s) => (
+                                                {scheduleOptions.map((s) => (
                                                     <SelectItem key={s.id} value={s.id}>
                                                         <span className="truncate">{s.label}</span>
                                                     </SelectItem>
@@ -733,6 +745,10 @@ export default function AdminEvaluationPage() {
                                                     <TableRow>
                                                         <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
                                                             No records found.
+                                                            <div className="mt-2 text-xs text-muted-foreground">
+                                                                If schedules exist but no records show, use{" "}
+                                                                <span className="font-medium">Assign panelists</span> to create evaluation rows.
+                                                            </div>
                                                         </TableCell>
                                                     </TableRow>
                                                 ) : (
@@ -901,7 +917,7 @@ export default function AdminEvaluationPage() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectItem value={CLEAR_SELECT_VALUE}>All schedules</SelectItem>
-                                                {studentScheduleOptions.map((s) => (
+                                                {scheduleOptions.map((s) => (
                                                     <SelectItem key={s.id} value={s.id}>
                                                         <span className="truncate">{s.label}</span>
                                                     </SelectItem>
@@ -1119,7 +1135,7 @@ export default function AdminEvaluationPage() {
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value={CLEAR_SELECT_VALUE}>Select schedule</SelectItem>
-                                        {allScheduleOptions.map((s) => (
+                                        {scheduleOptions.map((s) => (
                                             <SelectItem key={s.id} value={s.id}>
                                                 <span className="truncate">{s.label}</span>
                                             </SelectItem>
@@ -1136,9 +1152,7 @@ export default function AdminEvaluationPage() {
                                         onValueChange={(v) => setAssignStaffId(v === CLEAR_SELECT_VALUE ? "" : v)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue
-                                                placeholder={staffUsersLoading ? "Loading staff..." : "Select staff evaluator"}
-                                            />
+                                            <SelectValue placeholder={staffUsersLoading ? "Loading staff..." : "Select staff evaluator"} />
                                         </SelectTrigger>
                                         <SelectContent>
                                             <SelectItem value={CLEAR_SELECT_VALUE}>Select staff evaluator</SelectItem>
