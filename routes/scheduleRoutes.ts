@@ -82,8 +82,32 @@ async function canStaffManageSchedule(scheduleId: string, staffId: string) {
     return Boolean(row?.created || row?.assigned)
 }
 
+/**
+ * Student visibility scope:
+ * - Student can ONLY view schedules for thesis group(s) they belong to.
+ *
+ * NOTE: This assumes a membership table exists:
+ *   thesis_group_members(group_id, user_id)
+ * If your actual table/columns differ, update the SQL here.
+ */
+async function canStudentViewSchedule(scheduleId: string, studentId: string) {
+    const r = await db.query(
+        `
+    select exists(
+      select 1
+      from defense_schedules ds
+      join thesis_group_members gm on gm.group_id = ds.group_id
+      where ds.id = $1 and gm.user_id = $2
+    ) as ok
+    `,
+        [scheduleId, studentId]
+    )
+    return Boolean(r.rows?.[0]?.ok)
+}
+
 export async function GET(req: NextRequest) {
-    const auth = await requireUser(["staff", "admin"])
+    // ✅ allow students to read schedules/panelists (scoped), keep staff/admin behavior
+    const auth = await requireUser(["student", "staff", "admin"])
     if (auth.error) return auth.error
 
     const role = String(auth.user?.role ?? "").toLowerCase() as Role
@@ -93,7 +117,7 @@ export async function GET(req: NextRequest) {
         const resource = (url.searchParams.get("resource") || "").toLowerCase()
 
         // -------------------------
-        // schedules
+        // schedules (read)
         // -------------------------
         if (resource === "schedules") {
             const id = url.searchParams.get("id")
@@ -108,6 +132,18 @@ export async function GET(req: NextRequest) {
             and (
               s.created_by = $2
               or exists (select 1 from schedule_panelists sp where sp.schedule_id = s.id and sp.staff_id = $2)
+            )
+          `
+                }
+
+                // Student visibility is scoped: must belong to the schedule's group.
+                if (role === "student") {
+                    args.push(auth.user!.id)
+                    whereExtra = `
+            and exists (
+              select 1
+              from thesis_group_members gm
+              where gm.group_id = s.group_id and gm.user_id = $2
             )
           `
                 }
@@ -188,6 +224,17 @@ export async function GET(req: NextRequest) {
                 idx++
             }
 
+            // ✅ Student visibility is scoped: only schedules for groups they belong to.
+            if (role === "student") {
+                where.push(`exists (
+          select 1
+          from thesis_group_members gm
+          where gm.group_id = s.group_id and gm.user_id = $${idx}
+        )`)
+                args.push(auth.user!.id)
+                idx++
+            }
+
             const whereSql = where.length ? `where ${where.join(" and ")}` : ""
 
             const totalRes = await db.query(
@@ -231,7 +278,7 @@ export async function GET(req: NextRequest) {
         }
 
         // -------------------------
-        // panelists
+        // panelists (read)
         // -------------------------
         if (resource === "panelists") {
             const scheduleId = (url.searchParams.get("scheduleId") || "").trim()
@@ -242,6 +289,12 @@ export async function GET(req: NextRequest) {
             // Staff visibility is scoped.
             if (role === "staff") {
                 const ok = await canStaffManageSchedule(scheduleId, auth.user!.id)
+                if (!ok) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
+            }
+
+            // ✅ Student visibility is scoped to their own group schedule.
+            if (role === "student") {
+                const ok = await canStudentViewSchedule(scheduleId, auth.user!.id)
                 if (!ok) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })
             }
 
