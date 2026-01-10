@@ -43,6 +43,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 type ApiOk<T> = { ok: true } & T
@@ -203,7 +204,6 @@ async function apiDelete<T>(url: string): Promise<ApiOk<T> | ApiErr> {
 }
 
 function buildScheduledAtISO(dateStr: string, timeStr: string) {
-    // local time -> ISO
     const d = safeText(dateStr, "")
     const t = safeText(timeStr, "")
     if (!d || !t) return ""
@@ -241,6 +241,7 @@ export default function AdminSchedulesPage() {
     const [edTime, setEdTime] = React.useState<string>("")
     const [edRoom, setEdRoom] = React.useState<string>("")
     const [edStatus, setEdStatus] = React.useState<string>("scheduled")
+    const [edReason, setEdReason] = React.useState<string>("")
 
     // panelists modal
     const [openPanel, setOpenPanel] = React.useState(false)
@@ -250,6 +251,7 @@ export default function AdminSchedulesPage() {
     const [panelAddStaffId, setPanelAddStaffId] = React.useState<string>("")
     const [panelBusyId, setPanelBusyId] = React.useState<string>("") // staffId while removing
     const [panelAdding, setPanelAdding] = React.useState(false)
+    const [panelReason, setPanelReason] = React.useState("")
 
     const usersById = React.useMemo(() => {
         const m = new Map<string, DbUser>()
@@ -270,9 +272,7 @@ export default function AdminSchedulesPage() {
     }, [users])
 
     const groupOptions = React.useMemo(() => {
-        return groups
-            .slice()
-            .sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)))
+        return groups.slice().sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)))
     }, [groups])
 
     const distinctStatuses = React.useMemo(() => {
@@ -333,6 +333,7 @@ export default function AdminSchedulesPage() {
         setEdTime("")
         setEdRoom("")
         setEdStatus("scheduled")
+        setEdReason("")
     }
 
     function openCreate() {
@@ -347,6 +348,7 @@ export default function AdminSchedulesPage() {
         setEdTime(toLocalTimeInput(sc.scheduledAt))
         setEdRoom(safeText(sc.room, ""))
         setEdStatus(safeText(sc.status, "scheduled") || "scheduled")
+        setEdReason("")
         setOpenUpsert(true)
     }
 
@@ -407,6 +409,12 @@ export default function AdminSchedulesPage() {
             return
         }
 
+        const reason = safeText(edReason, "")
+        if (!reason) {
+            toast.error("Reason is required for admin overrides.")
+            return
+        }
+
         setSaving(true)
         try {
             if (editing?.id) {
@@ -414,6 +422,7 @@ export default function AdminSchedulesPage() {
                     scheduledAt,
                     room: safeText(edRoom, "") || null,
                     status: safeText(edStatus, "scheduled") || "scheduled",
+                    reason,
                 })
                 if (!res.ok) throw new Error(res.error ?? "Failed to update schedule")
                 toast.success("Schedule updated")
@@ -423,6 +432,7 @@ export default function AdminSchedulesPage() {
                     scheduledAt,
                     room: safeText(edRoom, "") || null,
                     status: safeText(edStatus, "scheduled") || "scheduled",
+                    reason,
                 })
                 if (!res.ok) throw new Error(res.error ?? "Failed to create schedule")
                 toast.success("Schedule created")
@@ -441,8 +451,17 @@ export default function AdminSchedulesPage() {
     async function handleDelete(sc: DbSchedule) {
         const ok = window.confirm("Delete this schedule?")
         if (!ok) return
+
+        const reason = safeText(window.prompt("Reason (required for admin override):") ?? "", "")
+        if (!reason) {
+            toast.error("Reason is required.")
+            return
+        }
+
         try {
-            const res = await apiDelete(`/api/schedule?resource=schedules&id=${encodeURIComponent(sc.id)}`)
+            const res = await apiDelete(
+                `/api/schedule?resource=schedules&id=${encodeURIComponent(sc.id)}&reason=${encodeURIComponent(reason)}`
+            )
             if (!res.ok) throw new Error(res.error ?? "Failed to delete schedule")
             toast.success("Schedule deleted")
             await loadAll()
@@ -456,6 +475,7 @@ export default function AdminSchedulesPage() {
         setOpenPanel(true)
         setPanelAddStaffId("")
         setPanelists([])
+        setPanelReason("")
         setPanelLoading(true)
         try {
             const res = await apiGet<{ panelists: DbPanelist[] }>(
@@ -479,16 +499,22 @@ export default function AdminSchedulesPage() {
             return
         }
 
+        const reason = safeText(panelReason, "")
+        if (!reason) {
+            toast.error("Reason is required for admin overrides.")
+            return
+        }
+
         setPanelAdding(true)
         try {
-            const res = await apiPost(`/api/schedule?resource=panelists`, { scheduleId: sc.id, staffId })
+            const res = await apiPost(`/api/schedule?resource=panelists`, { scheduleId: sc.id, staffId, reason })
             if (!res.ok) throw new Error(res.error ?? "Failed to add panelist")
 
-            // refresh list
             const rr = await apiGet<{ panelists: DbPanelist[] }>(
                 `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}`
             )
             if (!rr.ok) throw new Error(rr.error ?? "Failed to refresh panelists")
+
             setPanelists(Array.isArray((rr as any).panelists) ? (rr as any).panelists : [])
             setPanelAddStaffId("")
             toast.success("Panelist added")
@@ -503,10 +529,18 @@ export default function AdminSchedulesPage() {
         const sc = panelSchedule
         if (!sc) return
 
+        const reason = safeText(panelReason, "")
+        if (!reason) {
+            toast.error("Reason is required for admin overrides.")
+            return
+        }
+
         setPanelBusyId(staffId)
         try {
             const res = await apiDelete(
-                `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}&staffId=${encodeURIComponent(staffId)}`
+                `/api/schedule?resource=panelists&scheduleId=${encodeURIComponent(sc.id)}&staffId=${encodeURIComponent(
+                    staffId
+                )}&reason=${encodeURIComponent(reason)}`
             )
             if (!res.ok) throw new Error(res.error ?? "Failed to remove panelist")
 
@@ -533,14 +567,18 @@ export default function AdminSchedulesPage() {
                                 <h1 className="text-xl font-semibold">Schedules</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Create schedules, set date/time, manage room/status, and assign panelists.
+                                Admin view: oversee all defenses. Admin may override schedules and panel assignments (audit-backed).
                             </p>
                         </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
-                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            {refreshing ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
                             Refresh
                         </Button>
 
@@ -657,14 +695,14 @@ export default function AdminSchedulesPage() {
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
-                                            <TableHead className="w-[320px]">Group</TableHead>
-                                            <TableHead className="w-35">Status</TableHead>
-                                            <TableHead className="w-45">Date</TableHead>
+                                            <TableHead className="w-80">Group</TableHead>
+                                            <TableHead className="w-40">Status</TableHead>
+                                            <TableHead className="w-40">Date</TableHead>
                                             <TableHead className="w-40">Time</TableHead>
                                             <TableHead>Room</TableHead>
-                                            <TableHead className="w-60">Panel</TableHead>
-                                            <TableHead className="w-60">Updated</TableHead>
-                                            <TableHead className="w-60 text-right">Actions</TableHead>
+                                            <TableHead className="w-44">Panel</TableHead>
+                                            <TableHead className="w-56">Updated</TableHead>
+                                            <TableHead className="w-56 text-right">Actions</TableHead>
                                         </TableRow>
                                     </TableHeader>
 
@@ -771,9 +809,7 @@ export default function AdminSchedulesPage() {
                     <DialogContent className="max-w-2xl">
                         <DialogHeader>
                             <DialogTitle>{editing ? "Edit schedule" : "Create schedule"}</DialogTitle>
-                            <DialogDescription>
-                                Set date/time, room, and status. Group is selected on create.
-                            </DialogDescription>
+                            <DialogDescription>Admin override: edits are logged to audit trail (reason required).</DialogDescription>
                         </DialogHeader>
 
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -832,6 +868,15 @@ export default function AdminSchedulesPage() {
                                     </SelectContent>
                                 </Select>
                             </div>
+
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>Reason (required)</Label>
+                                <Textarea
+                                    value={edReason}
+                                    onChange={(e) => setEdReason(e.target.value)}
+                                    placeholder="Why are you changing this schedule? (audit-backed override)"
+                                />
+                            </div>
                         </div>
 
                         <DialogFooter className="gap-2">
@@ -863,6 +908,7 @@ export default function AdminSchedulesPage() {
                             setPanelSchedule(null)
                             setPanelists([])
                             setPanelAddStaffId("")
+                            setPanelReason("")
                         }
                     }}
                 >
@@ -875,7 +921,7 @@ export default function AdminSchedulesPage() {
                                 </Button>
                             </DialogTitle>
                             <DialogDescription>
-                                Assign staff panelists for this schedule. Only Staff accounts can be added as panelists.
+                                Admin override: assign/remove staff panelists (audit-backed; reason required).
                             </DialogDescription>
                         </DialogHeader>
 
@@ -889,6 +935,15 @@ export default function AdminSchedulesPage() {
                                 <div className="mt-1 text-xs text-muted-foreground">
                                     {panelSchedule ? fmtDateTime(panelSchedule.scheduledAt) : ""}
                                 </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Reason (required)</Label>
+                                <Textarea
+                                    value={panelReason}
+                                    onChange={(e) => setPanelReason(e.target.value)}
+                                    placeholder="Why are you changing panel assignments?"
+                                />
                             </div>
 
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -914,7 +969,11 @@ export default function AdminSchedulesPage() {
 
                                 <div className="flex items-end">
                                     <Button className="w-full" onClick={addPanelist} disabled={panelAdding || panelLoading}>
-                                        {panelAdding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Users className="mr-2 h-4 w-4" />}
+                                        {panelAdding ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Users className="mr-2 h-4 w-4" />
+                                        )}
                                         Add
                                     </Button>
                                 </div>
@@ -934,10 +993,7 @@ export default function AdminSchedulesPage() {
                             ) : (
                                 <div className="space-y-2">
                                     {panelists.map((p) => (
-                                        <div
-                                            key={p.staffId}
-                                            className={cn("flex items-center gap-3 rounded-md border px-3 py-2")}
-                                        >
+                                        <div key={p.staffId} className={cn("flex items-center gap-3 rounded-md border px-3 py-2")}>
                                             <div className="min-w-0 flex-1">
                                                 <div className="truncate text-sm font-medium">
                                                     {safeText(p.staffName, safeText(p.staffEmail, "Staff"))}
@@ -952,9 +1008,7 @@ export default function AdminSchedulesPage() {
                                                 onClick={() => removePanelist(p.staffId)}
                                                 disabled={panelBusyId === p.staffId}
                                             >
-                                                {panelBusyId === p.staffId ? (
-                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : null}
+                                                {panelBusyId === p.staffId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                                 Remove
                                             </Button>
                                         </div>
