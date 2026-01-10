@@ -19,6 +19,7 @@ import {
     Bar,
     BarChart,
     CartesianGrid,
+    Cell,
     Legend,
     Pie,
     PieChart,
@@ -115,6 +116,8 @@ type ThesisGroupOption = {
     term?: string | null
 }
 
+type PieDatum = { key: string; name: string; value: number }
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const res = await fetch(url, {
         ...init,
@@ -180,7 +183,22 @@ function normStatus(s: string) {
     if (v === "pending") return "pending"
     if (v === "submitted") return "submitted"
     if (v === "locked" || v === "finalized") return "locked"
+    if (v === "active") return "active"
+    if (v === "inactive") return "inactive"
     return "other"
+}
+
+const STATUS_LABELS: Record<string, string> = {
+    scheduled: "Scheduled",
+    ongoing: "Ongoing",
+    completed: "Completed",
+    cancelled: "Cancelled",
+    pending: "Pending",
+    submitted: "Submitted",
+    locked: "Locked",
+    active: "Active",
+    inactive: "Inactive",
+    other: "Other",
 }
 
 function statusBadge(label: string) {
@@ -215,6 +233,51 @@ function normalizeGroups(groups: any[]): ThesisGroupOption[] {
 
 function clamp(n: number, min: number, max: number) {
     return Math.max(min, Math.min(max, n))
+}
+
+/**
+ * Chart color helpers:
+ * Your globals.css uses HEX for --chart-* and --border.
+ * So we must NOT wrap them with `hsl(...)`. Use `var(--chart-1)` directly.
+ */
+function chartVar(n: 1 | 2 | 3 | 4 | 5) {
+    return `var(--chart-${n})`
+}
+
+function colorForScheduleStatus(k: string) {
+    const key = normStatus(k)
+    if (key === "scheduled") return chartVar(1)
+    if (key === "ongoing") return chartVar(2)
+    if (key === "completed") return chartVar(3)
+    if (key === "cancelled") return chartVar(4)
+    return chartVar(5)
+}
+function colorForEvalStatus(k: string) {
+    const key = normStatus(k)
+    if (key === "pending") return chartVar(1)
+    if (key === "submitted") return chartVar(2)
+    if (key === "locked") return chartVar(3)
+    return chartVar(4)
+}
+function colorForRubricStatus(k: string) {
+    const key = normStatus(k)
+    if (key === "active") return chartVar(2)
+    if (key === "inactive") return chartVar(5)
+    return chartVar(4)
+}
+
+function tooltipProps() {
+    return {
+        contentStyle: {
+            background: "var(--popover)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            color: "var(--popover-foreground)",
+        } as React.CSSProperties,
+        labelStyle: { color: "var(--foreground)" } as React.CSSProperties,
+        itemStyle: { color: "var(--foreground)" } as React.CSSProperties,
+        cursor: { fill: "rgba(0,0,0,0.04)" } as any,
+    }
 }
 
 function StatCard(props: {
@@ -282,13 +345,18 @@ export default function StaffDashboardPage() {
             const schedulesUrl = `/api/schedule?resource=schedules&limit=500&offset=0`
             const rubricsUrl = `/api/evaluation?resource=rubricTemplates&q=&limit=200&offset=0`
 
+            // ✅ FIX: `/api/evaluation` contracts commonly cap `limit` at 200.
+            // Sending 500 can trigger 400 Bad Request (validation).
+            const MAX_EVAL_LIMIT = 200
+
             const sp = new URLSearchParams()
             sp.set("resource", "evaluations")
-            sp.set("limit", "500")
+            sp.set("limit", String(MAX_EVAL_LIMIT))
             sp.set("offset", "0")
-            // staff should only see their assignments; admin can see all but default to "mine" here for staff dashboard
-            if (isStaff) sp.set("evaluatorId", actorId)
-            if (isAdmin) sp.set("evaluatorId", actorId)
+
+            // staff should only see their assignments; admin can also view "mine" on staff dashboard
+            if (actorId && (isStaff || isAdmin)) sp.set("evaluatorId", actorId)
+
             const evaluationsUrl = `/api/evaluation?${sp.toString()}`
 
             const [schRes, rbRes, evRes] = await Promise.all([
@@ -386,20 +454,25 @@ export default function StaffDashboardPage() {
 
     const scheduleStatusCounts = React.useMemo(() => {
         const counts: Record<string, number> = { scheduled: 0, ongoing: 0, completed: 0, cancelled: 0, other: 0 }
-        for (const s of schedules) counts[normStatus(s.status)] = (counts[normStatus(s.status)] ?? 0) + 1
+        for (const s of schedules) {
+            const k = normStatus(s.status)
+            counts[k] = (counts[k] ?? 0) + 1
+        }
         return counts
     }, [schedules])
 
     const evalStatusCounts = React.useMemo(() => {
         const counts: Record<string, number> = { pending: 0, submitted: 0, locked: 0, other: 0 }
-        for (const e of evaluations) counts[normStatus(e.status)] = (counts[normStatus(e.status)] ?? 0) + 1
+        for (const e of evaluations) {
+            const k = normStatus(e.status)
+            counts[k] = (counts[k] ?? 0) + 1
+        }
         return counts
     }, [evaluations])
 
     const rubricCounts = React.useMemo(() => {
         let active = 0
         let inactive = 0
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
         for (const r of rubrics) (r.active ? active++ : inactive++)
         return { active, inactive }
     }, [rubrics])
@@ -489,7 +562,9 @@ export default function StaffDashboardPage() {
     }, [evaluations, scheduleById, groupMetaById, qEvaluations])
 
     const recentRubrics = React.useMemo(() => {
-        const list = [...rubrics].sort((a, b) => (safeDate(b.updatedAt)?.getTime() ?? 0) - (safeDate(a.updatedAt)?.getTime() ?? 0))
+        const list = [...rubrics].sort(
+            (a, b) => (safeDate(b.updatedAt)?.getTime() ?? 0) - (safeDate(a.updatedAt)?.getTime() ?? 0)
+        )
         const q = qRubrics.trim().toLowerCase()
         if (!q) return list.slice(0, 25)
 
@@ -544,24 +619,24 @@ export default function StaffDashboardPage() {
         return buckets
     }, [schedules])
 
-    const scheduleStatusPie = React.useMemo(() => {
+    const scheduleStatusPie = React.useMemo<PieDatum[]>(() => {
         const order = ["scheduled", "ongoing", "completed", "cancelled", "other"] as const
         return order
-            .map((k) => ({ name: k, value: Number(scheduleStatusCounts[k] ?? 0) }))
+            .map((k) => ({ key: k, name: STATUS_LABELS[k], value: Number(scheduleStatusCounts[k] ?? 0) }))
             .filter((x) => x.value > 0)
     }, [scheduleStatusCounts])
 
-    const evaluationStatusPie = React.useMemo(() => {
+    const evaluationStatusPie = React.useMemo<PieDatum[]>(() => {
         const order = ["pending", "submitted", "locked", "other"] as const
         return order
-            .map((k) => ({ name: k, value: Number(evalStatusCounts[k] ?? 0) }))
+            .map((k) => ({ key: k, name: STATUS_LABELS[k], value: Number(evalStatusCounts[k] ?? 0) }))
             .filter((x) => x.value > 0)
     }, [evalStatusCounts])
 
-    const rubricStatusPie = React.useMemo(() => {
-        const items = [
-            { name: "active", value: rubricCounts.active },
-            { name: "inactive", value: rubricCounts.inactive },
+    const rubricStatusPie = React.useMemo<PieDatum[]>(() => {
+        const items: PieDatum[] = [
+            { key: "active", name: STATUS_LABELS.active, value: rubricCounts.active },
+            { key: "inactive", name: STATUS_LABELS.inactive, value: rubricCounts.inactive },
         ]
         return items.filter((x) => x.value > 0)
     }, [rubricCounts])
@@ -590,9 +665,14 @@ export default function StaffDashboardPage() {
                                     Signed in as <span className="font-medium text-foreground">{headerMeta.name}</span>
                                 </span>
                                 <span className="rounded-md border px-2 py-1">
-                                    Last updated <span className="font-medium text-foreground">{headerMeta.updated}</span>
+                                    Last updated{" "}
+                                    <span className="font-medium text-foreground">{headerMeta.updated}</span>
                                 </span>
-                                {isAdmin ? <Badge variant="outline">Admin viewing staff area</Badge> : <Badge variant="outline">Staff</Badge>}
+                                {isAdmin ? (
+                                    <Badge variant="outline">Admin viewing staff area</Badge>
+                                ) : (
+                                    <Badge variant="outline">Staff</Badge>
+                                )}
                             </div>
                         </div>
 
@@ -707,7 +787,9 @@ export default function StaffDashboardPage() {
                                     nextUpcomingSchedule ? (
                                         <span className="inline-flex items-center gap-2">
                                             {statusBadge(nextUpcomingSchedule.status)}
-                                            <span className="text-muted-foreground">{nextUpcomingSchedule.room?.trim() ? nextUpcomingSchedule.room : "No room"}</span>
+                                            <span className="text-muted-foreground">
+                                                {nextUpcomingSchedule.room?.trim() ? nextUpcomingSchedule.room : "No room"}
+                                            </span>
                                         </span>
                                     ) : (
                                         "No upcoming schedules"
@@ -820,15 +902,15 @@ export default function StaffDashboardPage() {
                                         ) : (
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={schedulesNext14DaysChart}>
-                                                    <CartesianGrid strokeDasharray="3 3" />
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                                                     <XAxis dataKey="label" tickLine={false} axisLine={false} />
                                                     <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
-                                                    <RechartsTooltip />
+                                                    <RechartsTooltip {...tooltipProps()} />
                                                     <Legend />
-                                                    <Bar dataKey="scheduled" name="Scheduled" fill="hsl(var(--chart-1))" radius={[6, 6, 0, 0]} />
-                                                    <Bar dataKey="ongoing" name="Ongoing" fill="hsl(var(--chart-2))" radius={[6, 6, 0, 0]} />
-                                                    <Bar dataKey="completed" name="Completed" fill="hsl(var(--chart-3))" radius={[6, 6, 0, 0]} />
-                                                    <Bar dataKey="cancelled" name="Cancelled" fill="hsl(var(--chart-4))" radius={[6, 6, 0, 0]} />
+                                                    <Bar dataKey="scheduled" name="Scheduled" fill={chartVar(1)} radius={[6, 6, 0, 0]} />
+                                                    <Bar dataKey="ongoing" name="Ongoing" fill={chartVar(2)} radius={[6, 6, 0, 0]} />
+                                                    <Bar dataKey="completed" name="Completed" fill={chartVar(3)} radius={[6, 6, 0, 0]} />
+                                                    <Bar dataKey="cancelled" name="Cancelled" fill={chartVar(4)} radius={[6, 6, 0, 0]} />
                                                 </BarChart>
                                             </ResponsiveContainer>
                                         )}
@@ -848,7 +930,7 @@ export default function StaffDashboardPage() {
                                         ) : (
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart>
-                                                    <RechartsTooltip />
+                                                    <RechartsTooltip {...tooltipProps()} />
                                                     <Legend />
                                                     <Pie
                                                         data={evaluationStatusPie}
@@ -856,27 +938,13 @@ export default function StaffDashboardPage() {
                                                         nameKey="name"
                                                         innerRadius={55}
                                                         outerRadius={95}
-                                                        stroke="hsl(var(--border))"
+                                                        stroke="var(--border)"
                                                         strokeWidth={1}
                                                     >
                                                         {evaluationStatusPie.map((entry) => (
-                                                            <React.Fragment key={entry.name}>
-                                                                {/* Pie "Cell" is optional; recharts will render default fills if not provided,
-                                                                    but we set fills using CSS vars for consistency with shadcn charts. */}
-                                                            </React.Fragment>
+                                                            <Cell key={entry.key} fill={colorForEvalStatus(entry.key)} />
                                                         ))}
                                                     </Pie>
-                                                    {/** Lightweight "manual fills" by mapping to a second Pie to avoid importing Cell */}
-                                                    <Pie
-                                                        data={evaluationStatusPie}
-                                                        dataKey="value"
-                                                        nameKey="name"
-                                                        innerRadius={55}
-                                                        outerRadius={95}
-                                                        isAnimationActive={false}
-                                                        stroke="none"
-                                                        fill="hsl(var(--chart-1))"
-                                                    />
                                                 </PieChart>
                                             </ResponsiveContainer>
                                         )}
@@ -888,7 +956,8 @@ export default function StaffDashboardPage() {
                                             <Badge variant="outline">Locked {evalStatusCounts.locked ?? 0}</Badge>
                                             <Separator orientation="vertical" className="h-4" />
                                             <span className="text-muted-foreground">
-                                                Completion: <span className="font-medium text-foreground">{completionRate}%</span>
+                                                Completion:{" "}
+                                                <span className="font-medium text-foreground">{completionRate}%</span>
                                             </span>
                                         </div>
                                     </CardContent>
@@ -907,7 +976,7 @@ export default function StaffDashboardPage() {
                                         ) : (
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart>
-                                                    <RechartsTooltip />
+                                                    <RechartsTooltip {...tooltipProps()} />
                                                     <Legend />
                                                     <Pie
                                                         data={scheduleStatusPie}
@@ -915,10 +984,13 @@ export default function StaffDashboardPage() {
                                                         nameKey="name"
                                                         innerRadius={45}
                                                         outerRadius={90}
-                                                        stroke="hsl(var(--border))"
+                                                        stroke="var(--border)"
                                                         strokeWidth={1}
-                                                        fill="hsl(var(--chart-2))"
-                                                    />
+                                                    >
+                                                        {scheduleStatusPie.map((entry) => (
+                                                            <Cell key={entry.key} fill={colorForScheduleStatus(entry.key)} />
+                                                        ))}
+                                                    </Pie>
                                                 </PieChart>
                                             </ResponsiveContainer>
                                         )}
@@ -936,7 +1008,7 @@ export default function StaffDashboardPage() {
                                         ) : (
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart>
-                                                    <RechartsTooltip />
+                                                    <RechartsTooltip {...tooltipProps()} />
                                                     <Legend />
                                                     <Pie
                                                         data={rubricStatusPie}
@@ -944,10 +1016,13 @@ export default function StaffDashboardPage() {
                                                         nameKey="name"
                                                         innerRadius={45}
                                                         outerRadius={90}
-                                                        stroke="hsl(var(--border))"
+                                                        stroke="var(--border)"
                                                         strokeWidth={1}
-                                                        fill="hsl(var(--chart-3))"
-                                                    />
+                                                    >
+                                                        {rubricStatusPie.map((entry) => (
+                                                            <Cell key={entry.key} fill={colorForRubricStatus(entry.key)} />
+                                                        ))}
+                                                    </Pie>
                                                 </PieChart>
                                             </ResponsiveContainer>
                                         )}
@@ -980,7 +1055,8 @@ export default function StaffDashboardPage() {
                                         </Link>
                                         <Separator />
                                         <div className="text-xs text-muted-foreground">
-                                            Tip: start with <span className="font-medium text-foreground">Pending evaluations</span> to avoid missing your scoring window.
+                                            Tip: start with{" "}
+                                            <span className="font-medium text-foreground">Pending evaluations</span> to avoid missing your scoring window.
                                         </div>
                                     </CardContent>
                                 </Card>
@@ -993,7 +1069,9 @@ export default function StaffDashboardPage() {
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                                         <div>
                                             <CardTitle>Upcoming schedules</CardTitle>
-                                            <CardDescription>Derived from the schedules module (sorted by schedule date).</CardDescription>
+                                            <CardDescription>
+                                                Derived from the schedules module (sorted by schedule date).
+                                            </CardDescription>
                                         </div>
                                         <div className="relative w-full sm:max-w-md">
                                             <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -1036,7 +1114,9 @@ export default function StaffDashboardPage() {
                                                         const meta = [g?.program, g?.term].filter(Boolean).join(" • ")
                                                         return (
                                                             <TableRow key={s.id}>
-                                                                <TableCell className="font-medium">{formatDateTime(s.scheduledAt)}</TableCell>
+                                                                <TableCell className="font-medium">
+                                                                    {formatDateTime(s.scheduledAt)}
+                                                                </TableCell>
                                                                 <TableCell>
                                                                     <div className="space-y-1">
                                                                         <div className="line-clamp-1 font-medium">{title}</div>
@@ -1207,7 +1287,13 @@ export default function StaffDashboardPage() {
                                                             <TableCell>
                                                                 <Badge variant="outline">v{t.version}</Badge>
                                                             </TableCell>
-                                                            <TableCell>{t.active ? <Badge variant="secondary">Active</Badge> : <Badge variant="outline">Inactive</Badge>}</TableCell>
+                                                            <TableCell>
+                                                                {t.active ? (
+                                                                    <Badge variant="secondary">Active</Badge>
+                                                                ) : (
+                                                                    <Badge variant="outline">Inactive</Badge>
+                                                                )}
+                                                            </TableCell>
                                                             <TableCell className="text-sm text-muted-foreground">{formatShort(t.updatedAt)}</TableCell>
                                                             <TableCell className="text-right">
                                                                 <Link href={`/dashboard/staff/rubrics/${t.id}`}>
@@ -1250,9 +1336,7 @@ export default function StaffDashboardPage() {
                                             <span className="font-medium text-foreground">Rubrics</span> show active vs inactive templates and recent updates.
                                         </li>
                                     </ul>
-                                    <p>
-                                        Use the tabs to drill down, or open the full pages via Quick Links / Actions.
-                                    </p>
+                                    <p>Use the tabs to drill down, or open the full pages via Quick Links / Actions.</p>
                                 </div>
                             </AccordionContent>
                         </AccordionItem>

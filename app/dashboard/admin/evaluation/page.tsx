@@ -17,6 +17,8 @@ import {
     Unlock,
     UserPlus,
     UserMinus,
+    Users,
+    Cpu,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
@@ -118,9 +120,67 @@ type AdminScheduleItem = {
     evaluationCount?: number
 }
 
+type Person = { id: string; name: string | null; email: string }
+
+type AdminEvalDetail = {
+    evaluation: {
+        id: string
+        status: string
+        submittedAt: string | null
+        lockedAt: string | null
+        createdAt: string | null
+    }
+    schedule: {
+        id: string
+        scheduledAt: string
+        room: string | null
+        status: string | null
+    }
+    group: {
+        id: string
+        title: string
+        program: string | null
+        term: string | null
+        adviser: Person | null
+        students: Person[]
+    }
+    evaluator: Person
+    panelists: Person[]
+    rubric: {
+        id: string
+        name: string
+        version: number
+        active: boolean
+        description: string | null
+        createdAt: string
+        updatedAt: string
+    } | null
+    criteria: Array<{
+        criterionId: string
+        criterion: string
+        description: string | null
+        weight: string
+        minScore: number
+        maxScore: number
+        score: number | null
+        comment: string | null
+    }>
+}
+
+type EvalScoreSummary = {
+    rows: number
+    scoredCount: number
+    weightedAverage: number
+}
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
+}
+
+function toNumber(v: any, fallback = 0) {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : fallback
 }
 
 function fmtDateTime(d?: string | null) {
@@ -187,6 +247,14 @@ function personLine(name: string | null, email: string) {
     return n || e || "—"
 }
 
+function personLabel(p: Person | null | undefined) {
+    if (!p) return "—"
+    const n = safeText(p.name, "")
+    const e = safeText(p.email, "")
+    if (n && e) return `${n} (${e})`
+    return n || e || "—"
+}
+
 function normalizeList(payload: any): any[] {
     const raw = payload
     const arr =
@@ -198,6 +266,26 @@ function normalizeList(payload: any): any[] {
         raw?.result ??
         (Array.isArray(raw) ? raw : null)
     return Array.isArray(arr) ? arr : []
+}
+
+function computeSummary(criteria: Array<{ weight: string; score: number | null }>): EvalScoreSummary {
+    const rows = Array.isArray(criteria) ? criteria.length : 0
+    let scoredCount = 0
+    let totalWeight = 0
+    let weightedSum = 0
+
+    for (const r of criteria ?? []) {
+        const w = toNumber(r?.weight, 1)
+        const sc = typeof r?.score === "number" ? r.score : toNumber(r?.score, NaN)
+        if (Number.isFinite(sc)) {
+            scoredCount += 1
+            totalWeight += w
+            weightedSum += sc * w
+        }
+    }
+
+    const avg = totalWeight > 0 ? weightedSum / totalWeight : 0
+    return { rows, scoredCount, weightedAverage: avg }
 }
 
 export default function AdminEvaluationPage() {
@@ -231,6 +319,20 @@ export default function AdminEvaluationPage() {
     const [inspectTitle, setInspectTitle] = React.useState("")
     const [inspectMeta, setInspectMeta] = React.useState<Record<string, any> | null>(null)
     const [inspectAnswers, setInspectAnswers] = React.useState<any>(null)
+
+    // NEW: inspect staff evaluation (scores + group members + system/extras)
+    const [staffInspectOpen, setStaffInspectOpen] = React.useState(false)
+    const [staffInspectLoading, setStaffInspectLoading] = React.useState(false)
+    const [staffInspectTitle, setStaffInspectTitle] = React.useState("")
+    const [staffInspectItem, setStaffInspectItem] = React.useState<StaffOverviewItem | null>(null)
+    const [staffInspectTab, setStaffInspectTab] = React.useState<"scores" | "members" | "system">("scores")
+    const [staffInspectDetail, setStaffInspectDetail] = React.useState<AdminEvalDetail | null>(null)
+    const [staffInspectMembers, setStaffInspectMembers] = React.useState<Person[]>([])
+    const [staffInspectExtras, setStaffInspectExtras] = React.useState<any>(null)
+
+    const staffInspectSummary = React.useMemo(() => {
+        return computeSummary((staffInspectDetail?.criteria ?? []) as any)
+    }, [staffInspectDetail?.criteria])
 
     // confirm dialog
     const [confirmOpen, setConfirmOpen] = React.useState(false)
@@ -291,19 +393,10 @@ export default function AdminEvaluationPage() {
         setLoading(true)
         try {
             const [staffRes, studentRes, schedRes] = await Promise.all([
-                apiJson<{ total: number; items: StaffOverviewItem[] }>(
-                    "GET",
-                    "/api/admin/evaluations?type=staff&limit=500&offset=0"
-                ),
-                apiJson<{ total: number; items: StudentOverviewItem[] }>(
-                    "GET",
-                    "/api/admin/evaluations?type=student&limit=500&offset=0"
-                ),
+                apiJson<{ total: number; items: StaffOverviewItem[] }>("GET", "/api/admin/evaluations?type=staff&limit=500&offset=0"),
+                apiJson<{ total: number; items: StudentOverviewItem[] }>("GET", "/api/admin/evaluations?type=student&limit=500&offset=0"),
                 // IMPORTANT FIX: load schedules directly (so schedule dropdown works even if no evaluations exist yet)
-                apiJson<{ total: number; items: AdminScheduleItem[] }>(
-                    "GET",
-                    "/api/admin/schedules?limit=500&offset=0"
-                ),
+                apiJson<{ total: number; items: AdminScheduleItem[] }>("GET", "/api/admin/schedules?limit=500&offset=0"),
             ])
 
             if (!staffRes.ok) throw new Error(staffRes.error ?? "Failed to load staff evaluations")
@@ -481,6 +574,72 @@ export default function AdminEvaluationPage() {
         }
     }
 
+    // NEW: staff inspect (scores + members + system/extras)
+    async function inspectStaffEvaluation(item: StaffOverviewItem) {
+        setStaffInspectOpen(true)
+        setStaffInspectLoading(true)
+        setStaffInspectItem(item)
+        setStaffInspectTab("scores")
+        setStaffInspectDetail(null)
+        setStaffInspectMembers([])
+        setStaffInspectExtras(null)
+
+        setStaffInspectTitle(`Staff evaluation • ${scheduleLine(item.groupTitle, item.scheduledAt, item.room)}`)
+
+        const detailUrl = `/api/admin/evaluations/detail?id=${encodeURIComponent(item.id)}`
+        const membersUrl = `/api/evaluations/members?evaluationId=${encodeURIComponent(item.id)}`
+        const extrasUrl = `/api/evaluations/extras?evaluationId=${encodeURIComponent(item.id)}`
+
+        try {
+            const [d, m, x] = await Promise.allSettled([
+                apiJson<{ detail: AdminEvalDetail }>("GET", detailUrl),
+                apiJson<{ members: Person[] }>("GET", membersUrl),
+                apiJson<{ extras: any }>("GET", extrasUrl),
+            ])
+
+            const errs: string[] = []
+
+            if (d.status === "fulfilled" && d.value.ok) {
+                const detail = (d.value as any).detail ?? null
+                setStaffInspectDetail(detail)
+            } else {
+                errs.push(
+                    d.status === "fulfilled"
+                        ? safeText((d.value as any)?.error ?? (d.value as any)?.message, "Failed to load scores")
+                        : safeText(d.reason?.message, "Failed to load scores")
+                )
+            }
+
+            if (m.status === "fulfilled" && m.value.ok) {
+                setStaffInspectMembers(Array.isArray((m.value as any).members) ? (m.value as any).members : [])
+            } else {
+                errs.push(
+                    m.status === "fulfilled"
+                        ? safeText((m.value as any)?.error ?? (m.value as any)?.message, "Failed to load group members")
+                        : safeText(m.reason?.message, "Failed to load group members")
+                )
+            }
+
+            if (x.status === "fulfilled" && x.value.ok) {
+                setStaffInspectExtras((x.value as any).extras ?? null)
+            } else {
+                // extras is optional; don’t block, but notify once
+                errs.push(
+                    x.status === "fulfilled"
+                        ? safeText((x.value as any)?.error ?? (x.value as any)?.message, "Failed to load system data")
+                        : safeText(x.reason?.message, "Failed to load system data")
+                )
+            }
+
+            if (errs.length) {
+                // show only one toast to avoid spam
+                toast.error(errs[0])
+            }
+        } finally {
+            setStaffInspectLoading(false)
+        }
+    }
+
     async function setStaffLock(item: StaffOverviewItem, lock: boolean) {
         const desiredLockedAt = lock ? new Date().toISOString() : null
         const desiredStatus = lock ? "locked" : item.submittedAt ? "submitted" : "pending"
@@ -528,9 +687,7 @@ export default function AdminEvaluationPage() {
     async function unassignSingle(scheduleId: string, evaluatorId: string) {
         const res = await apiJson(
             "DELETE",
-            `/api/admin/evaluations/assign?scheduleId=${encodeURIComponent(scheduleId)}&evaluatorId=${encodeURIComponent(
-                evaluatorId
-            )}`
+            `/api/admin/evaluations/assign?scheduleId=${encodeURIComponent(scheduleId)}&evaluatorId=${encodeURIComponent(evaluatorId)}`
         )
         if (!res.ok) throw new Error(res.error ?? "Failed to unassign evaluator")
         toast.success((res as any).removed ? "Unassigned" : "Not removed (already submitted/locked)")
@@ -553,18 +710,14 @@ export default function AdminEvaluationPage() {
                                 <h1 className="text-xl font-semibold">Evaluation Management</h1>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                                Admin oversight: assign evaluators, view scores, and lock/unlock submissions.
+                                Admin oversight: assign evaluators, view scores (including group members + system data), and lock/unlock submissions.
                             </p>
                         </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" onClick={refreshAll} disabled={loading || refreshing}>
-                            {refreshing ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            ) : (
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                            )}
+                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                             Refresh
                         </Button>
 
@@ -599,7 +752,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 </CardTitle>
                                 <CardDescription>
-                                    Admins can open any record to view rubric scores and comments (read-only), and can lock/unlock if needed.
+                                    Admins can inspect any record to view rubric scores, group members, and system/extras (read-only), and can lock/unlock if needed.
                                 </CardDescription>
                             </CardHeader>
 
@@ -720,11 +873,7 @@ export default function AdminEvaluationPage() {
                                             Assign panelists (selected schedule)
                                         </Button>
 
-                                        <Button
-                                            className="w-full"
-                                            variant="outline"
-                                            onClick={() => openAssignDialog("single", staffScheduleFilter || "")}
-                                        >
+                                        <Button className="w-full" variant="outline" onClick={() => openAssignDialog("single", staffScheduleFilter || "")}>
                                             <UserPlus className="mr-2 h-4 w-4" />
                                             Assign single evaluator
                                         </Button>
@@ -769,9 +918,7 @@ export default function AdminEvaluationPage() {
                                                         const s = safeText(it.status, "").toLowerCase()
                                                         const isLocked = s === "locked"
                                                         const canUnassign =
-                                                            !it.submittedAt &&
-                                                            !it.lockedAt &&
-                                                            ["pending", "draft", ""].includes(s)
+                                                            !it.submittedAt && !it.lockedAt && ["pending", "draft", ""].includes(s)
 
                                                         return (
                                                             <TableRow key={it.id}>
@@ -817,11 +964,13 @@ export default function AdminEvaluationPage() {
 
                                                                 <TableCell className="align-top text-right">
                                                                     <div className="flex flex-wrap justify-end gap-2">
+                                                                        <Button size="sm" variant="outline" onClick={() => inspectStaffEvaluation(it)}>
+                                                                            <Eye className="mr-2 h-4 w-4" />
+                                                                            Inspect (scores)
+                                                                        </Button>
+
                                                                         <Button asChild size="sm" variant="outline">
-                                                                            <Link href={`/dashboard/admin/evaluation/${it.id}`}>
-                                                                                <Eye className="mr-2 h-4 w-4" />
-                                                                                View scores
-                                                                            </Link>
+                                                                            <Link href={`/dashboard/admin/evaluation/${it.id}`}>Open detail</Link>
                                                                         </Button>
 
                                                                         {isLocked ? (
@@ -1152,10 +1301,7 @@ export default function AdminEvaluationPage() {
 
                             <div className="space-y-2">
                                 <Label className="text-xs text-muted-foreground">Schedule</Label>
-                                <Select
-                                    value={assignScheduleId || CLEAR_SELECT_VALUE}
-                                    onValueChange={(v) => setAssignScheduleId(v === CLEAR_SELECT_VALUE ? "" : v)}
-                                >
+                                <Select value={assignScheduleId || CLEAR_SELECT_VALUE} onValueChange={(v) => setAssignScheduleId(v === CLEAR_SELECT_VALUE ? "" : v)}>
                                     <SelectTrigger>
                                         <SelectValue placeholder="Select schedule" />
                                     </SelectTrigger>
@@ -1173,10 +1319,7 @@ export default function AdminEvaluationPage() {
                             {assignMode === "single" ? (
                                 <div className="space-y-2">
                                     <Label className="text-xs text-muted-foreground">Evaluator (staff)</Label>
-                                    <Select
-                                        value={assignStaffId || CLEAR_SELECT_VALUE}
-                                        onValueChange={(v) => setAssignStaffId(v === CLEAR_SELECT_VALUE ? "" : v)}
-                                    >
+                                    <Select value={assignStaffId || CLEAR_SELECT_VALUE} onValueChange={(v) => setAssignStaffId(v === CLEAR_SELECT_VALUE ? "" : v)}>
                                         <SelectTrigger>
                                             <SelectValue placeholder={staffUsersLoading ? "Loading staff..." : "Select staff evaluator"} />
                                         </SelectTrigger>
@@ -1231,14 +1374,218 @@ export default function AdminEvaluationPage() {
                                 }}
                                 disabled={assignWorking}
                             >
-                                {assignWorking ? (
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : (
-                                    <UserPlus className="mr-2 h-4 w-4" />
-                                )}
+                                {assignWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
                                 Assign
                             </Button>
                         </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+
+                {/* NEW: Inspect Staff Evaluation (Scores + Members + System) */}
+                <Dialog open={staffInspectOpen} onOpenChange={setStaffInspectOpen}>
+                    <DialogContent className="sm:max-w-3xl">
+                        <DialogHeader>
+                            <DialogTitle>{staffInspectTitle || "Inspect staff evaluation"}</DialogTitle>
+                            <DialogDescription>
+                                View rubric scores, group members, and system/extras (read-only). Use “Open detail” for the full page.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {staffInspectLoading ? (
+                            <div className="space-y-2">
+                                <Skeleton className="h-6 w-full" />
+                                <Skeleton className="h-20 w-full" />
+                                <Skeleton className="h-64 w-full" />
+                            </div>
+                        ) : !staffInspectItem ? (
+                            <div className="rounded-md border p-6 text-sm text-muted-foreground">No record selected.</div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Status</div>
+                                        <div className="mt-1">{statusBadge(staffInspectDetail?.evaluation?.status ?? staffInspectItem.status)}</div>
+                                        <div className="mt-2 text-xs text-muted-foreground">Submitted</div>
+                                        <div className="mt-1 text-sm">{fmtDateTime(staffInspectDetail?.evaluation?.submittedAt ?? staffInspectItem.submittedAt) || "—"}</div>
+                                        <div className="mt-2 text-xs text-muted-foreground">Locked</div>
+                                        <div className="mt-1 text-sm">{fmtDateTime(staffInspectDetail?.evaluation?.lockedAt ?? staffInspectItem.lockedAt) || "—"}</div>
+                                    </div>
+
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Score summary</div>
+                                        <div className="mt-1 text-sm">
+                                            Rows: {staffInspectSummary.rows} · Scored: {staffInspectSummary.scoredCount}
+                                        </div>
+                                        <div className="mt-2 text-xs text-muted-foreground">Weighted average</div>
+                                        <div className="mt-1 text-xl font-semibold">
+                                            {staffInspectSummary.scoredCount > 0 ? staffInspectSummary.weightedAverage.toFixed(2) : "—"}
+                                        </div>
+                                        <div className="mt-2 text-xs text-muted-foreground">Evaluator</div>
+                                        <div className="mt-1 text-sm">{personLine(staffInspectItem.evaluatorName, staffInspectItem.evaluatorEmail)}</div>
+                                    </div>
+
+                                    <div className="rounded-md border p-3">
+                                        <div className="text-xs text-muted-foreground">Group</div>
+                                        <div className="mt-1 font-medium">{safeText(staffInspectItem.groupTitle, "—")}</div>
+                                        <div className="mt-1 text-sm text-muted-foreground">
+                                            {fmtDate(staffInspectItem.scheduledAt)} {fmtTime(staffInspectItem.scheduledAt)}
+                                            {staffInspectItem.room ? <> · Room {staffInspectItem.room}</> : null}
+                                        </div>
+                                        <div className="mt-2 text-xs text-muted-foreground">Counts</div>
+                                        <div className="mt-1 text-sm">
+                                            Students: {staffInspectMembers.length || (Number.isFinite(Number(staffInspectItem.studentCount)) ? staffInspectItem.studentCount : "—")} ·
+                                            Panelists: {Number.isFinite(Number(staffInspectItem.panelistCount)) ? staffInspectItem.panelistCount : "—"}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <Tabs value={staffInspectTab} onValueChange={(v) => setStaffInspectTab(v as any)}>
+                                    <TabsList className="grid w-full grid-cols-3">
+                                        <TabsTrigger value="scores" className="gap-2">
+                                            <Eye className="h-4 w-4" />
+                                            Scores
+                                        </TabsTrigger>
+                                        <TabsTrigger value="members" className="gap-2">
+                                            <Users className="h-4 w-4" />
+                                            Group members
+                                        </TabsTrigger>
+                                        <TabsTrigger value="system" className="gap-2">
+                                            <Cpu className="h-4 w-4" />
+                                            System
+                                        </TabsTrigger>
+                                    </TabsList>
+
+                                    <TabsContent value="scores" className="mt-3 space-y-3">
+                                        {!staffInspectDetail ? (
+                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
+                                                Scores were not loaded for this record.
+                                            </div>
+                                        ) : Array.isArray(staffInspectDetail.criteria) && staffInspectDetail.criteria.length > 0 ? (
+                                            <div className="rounded-md border">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead className="w-80">Criterion</TableHead>
+                                                            <TableHead className="w-24">Weight</TableHead>
+                                                            <TableHead className="w-28">Min–Max</TableHead>
+                                                            <TableHead className="w-24">Score</TableHead>
+                                                            <TableHead>Comment</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {staffInspectDetail.criteria.map((r) => {
+                                                            const w = toNumber(r.weight, 1)
+                                                            const sc = typeof r.score === "number" ? r.score : null
+                                                            return (
+                                                                <TableRow key={r.criterionId}>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="space-y-1">
+                                                                            <div className="font-medium">{safeText(r.criterion, "—")}</div>
+                                                                            {r.description ? (
+                                                                                <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
+                                                                            ) : null}
+                                                                        </div>
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
+                                                                    </TableCell>
+                                                                    <TableCell className="align-top">{sc ?? "—"}</TableCell>
+                                                                    <TableCell className="align-top">
+                                                                        <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            )
+                                                        })}
+                                                    </TableBody>
+                                                </Table>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
+                                                No rubric criteria returned for this evaluation.
+                                            </div>
+                                        )}
+                                    </TabsContent>
+
+                                    <TabsContent value="members" className="mt-3 space-y-3">
+                                        <div className="rounded-md border p-3">
+                                            <div className="text-sm font-semibold">Group members ({staffInspectMembers.length})</div>
+                                            <Separator className="my-2" />
+                                            {staffInspectMembers.length ? (
+                                                <ScrollArea className="h-56">
+                                                    <div className="space-y-2 pr-3">
+                                                        {staffInspectMembers.map((m) => (
+                                                            <div key={m.id} className="text-sm">
+                                                                {personLabel(m)}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </ScrollArea>
+                                            ) : (
+                                                <div className="text-sm text-muted-foreground">No members returned.</div>
+                                            )}
+                                        </div>
+                                    </TabsContent>
+
+                                    <TabsContent value="system" className="mt-3 space-y-3">
+                                        <div className="rounded-md border p-3">
+                                            <div className="text-sm font-semibold">System / Extras</div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                                This is whatever your app stored in <span className="font-medium">evaluation_extras.data</span>.
+                                            </div>
+                                            <Separator className="my-2" />
+                                            {staffInspectExtras ? (
+                                                <ScrollArea className="h-56 rounded-md border">
+                                                    <pre className="p-3 text-xs">{JSON.stringify(staffInspectExtras, null, 2)}</pre>
+                                                </ScrollArea>
+                                            ) : (
+                                                <div className="text-sm text-muted-foreground">No system data found for this evaluation.</div>
+                                            )}
+                                        </div>
+                                    </TabsContent>
+                                </Tabs>
+
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => {
+                                            if (!staffInspectItem) return
+                                            const s = safeText(staffInspectItem.status, "").toLowerCase()
+                                            const isLocked = s === "locked"
+                                            openConfirm(
+                                                isLocked ? "Unlock evaluation?" : "Lock evaluation?",
+                                                isLocked
+                                                    ? "This will remove the lock so it can be edited again."
+                                                    : "This will lock the evaluation to prevent further changes.",
+                                                async () => setStaffLock(staffInspectItem, !isLocked)
+                                            )
+                                        }}
+                                    >
+                                        {safeText(staffInspectItem.status, "").toLowerCase() === "locked" ? (
+                                            <>
+                                                <Unlock className="mr-2 h-4 w-4" />
+                                                Unlock
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Lock className="mr-2 h-4 w-4" />
+                                                Lock
+                                            </>
+                                        )}
+                                    </Button>
+
+                                    <Button asChild variant="outline">
+                                        <Link href={staffInspectItem ? `/dashboard/admin/evaluation/${staffInspectItem.id}` : "/dashboard/admin/evaluation"}>
+                                            Open detail
+                                        </Link>
+                                    </Button>
+
+                                    <Button onClick={() => setStaffInspectOpen(false)}>Close</Button>
+                                </div>
+                            </div>
+                        )}
+
+                        <DialogFooter />
                     </DialogContent>
                 </Dialog>
 
