@@ -1,7 +1,9 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { toast } from "sonner"
 import { RefreshCw, MessageSquare, Users, Layers, BarChart3, Info, Star } from "lucide-react"
 
@@ -74,6 +76,10 @@ type SummaryItem = {
     }
 }
 
+type EvalExtrasResp =
+    | { ok: true; extras: any }
+    | { ok: false; error?: string; message?: string }
+
 function safeText(v: any, fallback = "") {
     const s = String(v ?? "").trim()
     return s ? s : fallback
@@ -125,6 +131,46 @@ function formatDateTime(iso?: string | null) {
     return d.toLocaleString()
 }
 
+function pickPersonalFromExtras(extras: any, studentId: string): { score: number | null; comment: string | null } {
+    const mo = extras?.membersOverall?.[studentId]
+    const score = toNumber(mo?.score)
+    const comment =
+        typeof mo?.comment === "string"
+            ? mo.comment
+            : typeof mo?.feedback === "string"
+                ? mo.feedback
+                : typeof mo?.notes === "string"
+                    ? mo.notes
+                    : null
+    return { score, comment }
+}
+
+function averageNumbers(nums: Array<number | null | undefined>): number | null {
+    const valid = nums.filter((n) => typeof n === "number" && Number.isFinite(n)) as number[]
+    if (!valid.length) return null
+    const sum = valid.reduce((a, b) => a + b, 0)
+    return sum / valid.length
+}
+
+async function fetchEvalExtras(evaluationId: string): Promise<any | null> {
+    const urls = [
+        `/api/evaluations/extras?evaluationId=${encodeURIComponent(evaluationId)}`,
+        // fallback (in case you have a student-scoped endpoint)
+        `/api/student/evaluations/extras?evaluationId=${encodeURIComponent(evaluationId)}`,
+    ]
+
+    for (const url of urls) {
+        try {
+            const res = await fetch(url, { cache: "no-store" })
+            const data = (await res.json().catch(() => ({}))) as EvalExtrasResp
+            if (res.ok && (data as any)?.ok) return (data as any).extras ?? {}
+        } catch {
+            // try next
+        }
+    }
+    return null
+}
+
 export default function StudentEvaluationPage() {
     const { user, loading: authLoading } = useAuth()
 
@@ -132,6 +178,10 @@ export default function StudentEvaluationPage() {
     const [items, setItems] = React.useState<SummaryItem[]>([])
     const [selectedScheduleId, setSelectedScheduleId] = React.useState<string>("")
     const [error, setError] = React.useState<string>("")
+
+    // extras cache: evaluationId -> extras JSON
+    const [extrasByEvalId, setExtrasByEvalId] = React.useState<Record<string, any>>({})
+    const [extrasLoadingByEvalId, setExtrasLoadingByEvalId] = React.useState<Record<string, boolean>>({})
 
     // feedback form state
     const [rating, setRating] = React.useState<string>("")
@@ -177,6 +227,7 @@ export default function StudentEvaluationPage() {
     React.useEffect(() => {
         if (authLoading) return
         load()
+
     }, [authLoading])
 
     React.useEffect(() => {
@@ -184,8 +235,112 @@ export default function StudentEvaluationPage() {
         if (!it) return
         if (!selectedScheduleId) setSelectedScheduleId(it.schedule.id)
         hydrateFeedbackFromSelected(it)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [selectedScheduleId, selected?.schedule?.id])
+
+    // Load extras for selected schedule (only if needed to compute personal score)
+    React.useEffect(() => {
+        const studentId = safeText(user?.id, "")
+        const it = selected
+        if (!studentId) return
+        if (!it) return
+
+        const rows = it.panelistEvaluations ?? []
+        const missingPersonal = rows.filter((r) => toNumber(r?.scores?.personalScore) === null)
+
+        // If all already have personalScore, no need to fetch extras.
+        if (!missingPersonal.length) return
+
+        const toFetch = missingPersonal
+            .map((r) => safeText(r.evaluationId, ""))
+            .filter(Boolean)
+            .filter((eid) => !extrasByEvalId[eid] && !extrasLoadingByEvalId[eid])
+
+        if (!toFetch.length) return
+
+        let cancelled = false
+
+        async function run() {
+            setExtrasLoadingByEvalId((prev) => {
+                const next = { ...prev }
+                for (const eid of toFetch) next[eid] = true
+                return next
+            })
+
+            try {
+                const results = await Promise.all(
+                    toFetch.map(async (eid) => {
+                        const extras = await fetchEvalExtras(eid)
+                        return { eid, extras }
+                    })
+                )
+
+                if (cancelled) return
+
+                setExtrasByEvalId((prev) => {
+                    const next = { ...prev }
+                    for (const { eid, extras } of results) {
+                        if (extras) next[eid] = extras
+                    }
+                    return next
+                })
+            } finally {
+                if (cancelled) return
+                setExtrasLoadingByEvalId((prev) => {
+                    const next = { ...prev }
+                    for (const eid of toFetch) delete next[eid]
+                    return next
+                })
+            }
+        }
+
+        run()
+
+        return () => {
+            cancelled = true
+        }
+    }, [user?.id, selected?.schedule?.id, selected?.panelistEvaluations, extrasByEvalId, extrasLoadingByEvalId])
+
+    const enrichedPanelistRows = React.useMemo(() => {
+        const studentId = safeText(user?.id, "")
+        const rows = selected?.panelistEvaluations ?? []
+        if (!rows.length) return []
+
+        return rows.map((r) => {
+            const evalId = safeText(r.evaluationId, "")
+            const existingPersonalScore = toNumber(r?.scores?.personalScore)
+            const existingPersonalComment = typeof r?.comments?.personalComment === "string" ? r.comments.personalComment : null
+
+            if (existingPersonalScore !== null || existingPersonalComment) return r
+
+            const extras = evalId ? extrasByEvalId[evalId] : null
+            if (!extras || !studentId) return r
+
+            const picked = pickPersonalFromExtras(extras, studentId)
+            const nextScore = picked.score !== null ? picked.score : r?.scores?.personalScore
+            const nextComment = picked.comment ?? r?.comments?.personalComment
+
+            return {
+                ...r,
+                scores: { ...r.scores, personalScore: nextScore },
+                comments: { ...r.comments, personalComment: nextComment },
+            }
+        })
+    }, [selected?.panelistEvaluations, extrasByEvalId, user?.id])
+
+    const derivedSelectedScores = React.useMemo(() => {
+        const base = selected?.scores ?? { groupScore: null, systemScore: null, personalScore: null }
+
+        const groupAvg = averageNumbers(enrichedPanelistRows.map((r) => toNumber(r.scores.groupScore)))
+        const systemAvg = averageNumbers(enrichedPanelistRows.map((r) => toNumber(r.scores.systemScore)))
+        const personalAvg = averageNumbers(enrichedPanelistRows.map((r) => toNumber(r.scores.personalScore)))
+
+        return {
+            groupScore: toNumber(base.groupScore) !== null ? base.groupScore : groupAvg,
+            systemScore: toNumber(base.systemScore) !== null ? base.systemScore : systemAvg,
+            personalScore: toNumber(base.personalScore) !== null ? base.personalScore : personalAvg,
+        }
+    }, [selected?.scores, enrichedPanelistRows])
 
     async function saveFeedback(next: { rating: string; comment: string; clearStatusToPending?: boolean }) {
         if (!user?.id) {
@@ -262,6 +417,8 @@ export default function StudentEvaluationPage() {
     const role = safeText(user?.role, "").toLowerCase()
     const isStudent = role === "student"
 
+    const selectedScheduleLink = selected?.schedule?.id ? `/dashboard/student/evaluation/${selected.schedule.id}` : ""
+
     return (
         <DashboardLayout>
             <div className="space-y-6">
@@ -281,6 +438,11 @@ export default function StudentEvaluationPage() {
                             <RefreshCw className="mr-2 h-4 w-4" />
                             Refresh
                         </Button>
+                        {selectedScheduleLink ? (
+                            <Button asChild variant="default" disabled={loading || authLoading}>
+                                <Link href={selectedScheduleLink}>Open detail</Link>
+                            </Button>
+                        ) : null}
                     </div>
                 </div>
 
@@ -316,9 +478,7 @@ export default function StudentEvaluationPage() {
                         ) : items.length === 0 ? (
                             <Alert>
                                 <AlertTitle>No schedules found</AlertTitle>
-                                <AlertDescription>
-                                    You do not have a defense schedule assigned yet, or results are not available.
-                                </AlertDescription>
+                                <AlertDescription>You do not have a defense schedule assigned yet, or results are not available.</AlertDescription>
                             </Alert>
                         ) : (
                             <>
@@ -343,9 +503,7 @@ export default function StudentEvaluationPage() {
                                         <Label>Status</Label>
                                         <div className="flex items-center gap-2 rounded-md border p-3">
                                             {statusBadge(selected?.schedule?.status)}
-                                            <span className="text-sm text-muted-foreground">
-                                                Room: {safeText(selected?.schedule?.room, "—")}
-                                            </span>
+                                            <span className="text-sm text-muted-foreground">Room: {safeText(selected?.schedule?.room, "—")}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -362,8 +520,8 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Average from panelist submissions.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.groupScore)}</div>
-                                            <Progress value={scoreProgress(selected?.scores?.groupScore)} />
+                                            <div className="text-2xl font-semibold">{fmtScore(derivedSelectedScores.groupScore)}</div>
+                                            <Progress value={scoreProgress(derivedSelectedScores.groupScore)} />
                                         </CardContent>
                                     </Card>
 
@@ -376,8 +534,8 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Average system score (if provided).</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.systemScore)}</div>
-                                            <Progress value={scoreProgress(selected?.scores?.systemScore)} />
+                                            <div className="text-2xl font-semibold">{fmtScore(derivedSelectedScores.systemScore)}</div>
+                                            <Progress value={scoreProgress(derivedSelectedScores.systemScore)} />
                                         </CardContent>
                                     </Card>
 
@@ -390,8 +548,11 @@ export default function StudentEvaluationPage() {
                                             <CardDescription>Your personal score only.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-2">
-                                            <div className="text-2xl font-semibold">{fmtScore(selected?.scores?.personalScore)}</div>
-                                            <Progress value={scoreProgress(selected?.scores?.personalScore)} />
+                                            <div className="text-2xl font-semibold">{fmtScore(derivedSelectedScores.personalScore)}</div>
+                                            <Progress value={scoreProgress(derivedSelectedScores.personalScore)} />
+                                            {Object.values(extrasLoadingByEvalId).some(Boolean) ? (
+                                                <div className="text-xs text-muted-foreground">Loading personal scores…</div>
+                                            ) : null}
                                         </CardContent>
                                     </Card>
                                 </div>
@@ -411,17 +572,13 @@ export default function StudentEvaluationPage() {
                             <Card>
                                 <CardHeader>
                                     <CardTitle>Panelist breakdown</CardTitle>
-                                    <CardDescription>
-                                        Shows group/system and your personal score per evaluator (if available).
-                                    </CardDescription>
+                                    <CardDescription>Shows group/system and your personal score per evaluator (if available).</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-4">
-                                    {selected.panelistEvaluations.length === 0 ? (
+                                    {enrichedPanelistRows.length === 0 ? (
                                         <Alert>
                                             <AlertTitle>No panelist evaluations yet</AlertTitle>
-                                            <AlertDescription>
-                                                Your panelists may not have submitted results, or results are not published.
-                                            </AlertDescription>
+                                            <AlertDescription>Your panelists may not have submitted results, or results are not published.</AlertDescription>
                                         </Alert>
                                     ) : (
                                         <>
@@ -437,7 +594,7 @@ export default function StudentEvaluationPage() {
                                                         </TableRow>
                                                     </TableHeader>
                                                     <TableBody>
-                                                        {selected.panelistEvaluations.map((r) => (
+                                                        {enrichedPanelistRows.map((r) => (
                                                             <TableRow key={r.evaluationId}>
                                                                 <TableCell>
                                                                     <div className="font-medium">{safeText(r.evaluator.name, "—")}</div>
@@ -459,13 +616,11 @@ export default function StudentEvaluationPage() {
                                                     <AccordionContent>
                                                         <ScrollArea className="h-72 rounded-md border p-4">
                                                             <div className="space-y-4">
-                                                                {selected.panelistEvaluations.map((r) => (
+                                                                {enrichedPanelistRows.map((r) => (
                                                                     <div key={`${r.evaluationId}-c`} className="space-y-2">
                                                                         <div className="flex items-center justify-between gap-2">
                                                                             <div className="font-medium">{safeText(r.evaluator.name, "—")}</div>
-                                                                            <div className="text-xs text-muted-foreground">
-                                                                                Submitted: {formatDateTime(r.submittedAt)}
-                                                                            </div>
+                                                                            <div className="text-xs text-muted-foreground">Submitted: {formatDateTime(r.submittedAt)}</div>
                                                                         </div>
 
                                                                         <div className="grid gap-2 md:grid-cols-3">
@@ -561,9 +716,7 @@ export default function StudentEvaluationPage() {
                                             placeholder="Write your feedback here..."
                                             rows={6}
                                         />
-                                        <p className="text-xs text-muted-foreground">
-                                            Tip: Keep it constructive (what went well, what could improve).
-                                        </p>
+                                        <p className="text-xs text-muted-foreground">Tip: Keep it constructive (what went well, what could improve).</p>
                                     </div>
 
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -581,9 +734,7 @@ export default function StudentEvaluationPage() {
                                                 <AlertDialogContent>
                                                     <AlertDialogHeader>
                                                         <AlertDialogTitle>Clear your feedback?</AlertDialogTitle>
-                                                        <AlertDialogDescription>
-                                                            This will remove your rating and comment for this schedule.
-                                                        </AlertDialogDescription>
+                                                        <AlertDialogDescription>This will remove your rating and comment for this schedule.</AlertDialogDescription>
                                                     </AlertDialogHeader>
                                                     <AlertDialogFooter>
                                                         <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -601,9 +752,7 @@ export default function StudentEvaluationPage() {
                                             </AlertDialog>
                                         </div>
 
-                                        <div className="text-xs text-muted-foreground">
-                                            Your feedback is private (other students cannot see it).
-                                        </div>
+                                        <div className="text-xs text-muted-foreground">Your feedback is private (other students cannot see it).</div>
                                     </div>
                                 </CardContent>
                             </Card>
