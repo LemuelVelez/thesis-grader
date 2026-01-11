@@ -16,7 +16,6 @@ import {
     ShieldCheck,
     Trash2,
     Users,
-    X,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
@@ -451,7 +450,65 @@ export default function AdminScheduleDetailPage() {
     return (
         <DashboardLayout>
             <div className="space-y-6">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                {/* MOBILE HEADER (vertical) */}
+                <div className="md:hidden space-y-3">
+                    <div className="flex items-start gap-3">
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={() => router.push("/dashboard/admin/schedules")}
+                            aria-label="Back"
+                        >
+                            <ArrowLeft className="h-4 w-4" />
+                        </Button>
+
+                        <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <ShieldCheck className="h-5 w-5" />
+                                <h1 className="text-lg font-semibold">Schedule Details</h1>
+                                {schedule ? statusBadge(schedule.status) : null}
+                            </div>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                Admin may override schedule details and panel assignments (audit-backed).
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2">
+                        <Button variant="outline" onClick={refresh} disabled={loading || refreshing} className="w-full">
+                            {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            Refresh
+                        </Button>
+
+                        <div className="grid grid-cols-2 gap-2">
+                            <Button variant="outline" onClick={() => setOpenEdit(true)} disabled={!schedule} className="w-full">
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Edit
+                            </Button>
+
+                            <Button variant="outline" onClick={openPanelists} disabled={!schedule} className="w-full">
+                                <Users className="mr-2 h-4 w-4" />
+                                Panelists
+                            </Button>
+                        </div>
+
+                        <Button
+                            variant="destructive"
+                            onClick={() => {
+                                setDeleteReason("")
+                                setOpenDelete(true)
+                            }}
+                            disabled={!schedule}
+                            className="w-full"
+                        >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                        </Button>
+                    </div>
+                </div>
+
+                {/* DESKTOP HEADER (unchanged UI, md+) */}
+                <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-center gap-3">
                         <Button variant="outline" size="icon" onClick={() => router.push("/dashboard/admin/schedules")}>
                             <ArrowLeft className="h-4 w-4" />
@@ -499,6 +556,7 @@ export default function AdminScheduleDetailPage() {
                     </div>
                 </div>
 
+                {/* CONTENT */}
                 {loading ? (
                     <div className="space-y-3">
                         <Skeleton className="h-28 w-full" />
@@ -515,106 +573,208 @@ export default function AdminScheduleDetailPage() {
                         </CardContent>
                     </Card>
                 ) : (
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                        <Card className="lg:col-span-2">
-                            <CardHeader className="space-y-1">
-                                <CardTitle className="flex items-center gap-2">
-                                    <Calendar className="h-5 w-5" />
-                                    Overview
-                                </CardTitle>
-                                <CardDescription>Defense schedule information.</CardDescription>
-                            </CardHeader>
+                    <>
+                        {/* MOBILE CONTENT (vertical) */}
+                        <div className="md:hidden space-y-4">
+                            <Card>
+                                <CardHeader className="space-y-1">
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Calendar className="h-5 w-5" />
+                                        Overview
+                                    </CardTitle>
+                                    <CardDescription>Defense schedule information.</CardDescription>
+                                </CardHeader>
 
-                            <CardContent className="space-y-4">
-                                <div className="rounded-md border p-4">
-                                    <div className="text-sm text-muted-foreground">Group</div>
-                                    <div className="mt-1 text-lg font-semibold">{safeText(schedule.groupTitle, "—")}</div>
-                                    <div className="mt-1 text-sm text-muted-foreground">
-                                        {[safeText(schedule.program, ""), safeText(schedule.term, "")].filter(Boolean).join(" · ") || "—"}
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                <CardContent className="space-y-3">
                                     <div className="rounded-md border p-4">
-                                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                            <Calendar className="h-4 w-4" />
-                                            Date
+                                        <div className="text-sm text-muted-foreground">Group</div>
+                                        <div className="mt-1 text-base font-semibold">{safeText(schedule.groupTitle, "—")}</div>
+                                        <div className="mt-1 text-sm text-muted-foreground">
+                                            {[safeText(schedule.program, ""), safeText(schedule.term, "")].filter(Boolean).join(" · ") || "—"}
                                         </div>
-                                        <div className="mt-1 font-medium">{fmtDate(schedule.scheduledAt) || "—"}</div>
                                     </div>
 
-                                    <div className="rounded-md border p-4">
-                                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                            <Clock className="h-4 w-4" />
-                                            Time
-                                        </div>
-                                        <div className="mt-1 font-medium">{fmtTime(schedule.scheduledAt) || "—"}</div>
-                                    </div>
-
-                                    <div className="rounded-md border p-4">
-                                        <div className="text-sm text-muted-foreground">Room</div>
-                                        <div className="mt-1 font-medium">{safeText(schedule.room, "—")}</div>
-                                    </div>
-                                </div>
-
-                                <Separator />
-
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                    <div className="rounded-md border p-4">
-                                        <div className="text-sm text-muted-foreground">Created by</div>
-                                        <div className="mt-1 text-sm">{safeText(userLabel(createdByUser), "—")}</div>
-                                    </div>
-                                    <div className="rounded-md border p-4">
-                                        <div className="text-sm text-muted-foreground">Updated</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(schedule.updatedAt) || "—"}</div>
-                                    </div>
-                                </div>
-                            </CardContent>
-                        </Card>
-
-                        <Card>
-                            <CardHeader className="space-y-1">
-                                <CardTitle className="flex items-center gap-2">
-                                    <Users className="h-5 w-5" />
-                                    Panelists
-                                </CardTitle>
-                                <CardDescription>Assigned staff evaluators.</CardDescription>
-                            </CardHeader>
-
-                            <CardContent className="space-y-3">
-                                {panelists.length === 0 ? (
-                                    <div className="rounded-md border p-4 text-center text-sm text-muted-foreground">
-                                        No panelists assigned yet.
-                                    </div>
-                                ) : (
-                                    <div className="space-y-2">
-                                        {panelists.map((p) => (
-                                            <div key={p.staffId} className={cn("rounded-md border p-3")}>
-                                                <div className="truncate text-sm font-medium">
-                                                    {safeText(p.staffName, safeText(p.staffEmail, "Staff"))}
-                                                </div>
-                                                {p.staffEmail ? (
-                                                    <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
-                                                ) : null}
+                                    <div className="rounded-md border p-4 space-y-2">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                <Calendar className="h-4 w-4" />
+                                                Date
                                             </div>
-                                        ))}
+                                            <div className="text-sm font-medium">{fmtDate(schedule.scheduledAt) || "—"}</div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                <Clock className="h-4 w-4" />
+                                                Time
+                                            </div>
+                                            <div className="text-sm font-medium">{fmtTime(schedule.scheduledAt) || "—"}</div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="text-sm text-muted-foreground">Room</div>
+                                            <div className="text-sm font-medium">{safeText(schedule.room, "—")}</div>
+                                        </div>
                                     </div>
-                                )}
 
-                                <Button className="w-full" variant="outline" onClick={openPanelists}>
-                                    <Users className="mr-2 h-4 w-4" />
-                                    Manage panelists
-                                </Button>
+                                    <div className="rounded-md border p-4 space-y-2">
+                                        <div className="text-sm text-muted-foreground">Created by</div>
+                                        <div className="text-sm">{safeText(userLabel(createdByUser), "—")}</div>
+                                        <Separator />
+                                        <div className="text-sm text-muted-foreground">Updated</div>
+                                        <div className="text-sm">{fmtDateTime(schedule.updatedAt) || "—"}</div>
+                                    </div>
 
-                                <Button className="w-full" asChild variant="outline">
-                                    <Link href={`/dashboard/admin/evaluation?scheduleId=${encodeURIComponent(schedule.id)}`}>
-                                        <Eye className="mr-2 h-4 w-4" />
-                                        View evaluations
-                                    </Link>
-                                </Button>
-                            </CardContent>
-                        </Card>
-                    </div>
+                                    <Button className="w-full" asChild variant="outline">
+                                        <Link href={`/dashboard/admin/evaluation?scheduleId=${encodeURIComponent(schedule.id)}`}>
+                                            <Eye className="mr-2 h-4 w-4" />
+                                            View evaluations
+                                        </Link>
+                                    </Button>
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader className="space-y-1">
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Users className="h-5 w-5" />
+                                        Panelists
+                                    </CardTitle>
+                                    <CardDescription>Assigned staff evaluators.</CardDescription>
+                                </CardHeader>
+
+                                <CardContent className="space-y-3">
+                                    {panelists.length === 0 ? (
+                                        <div className="rounded-md border p-4 text-center text-sm text-muted-foreground">
+                                            No panelists assigned yet.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {panelists.map((p) => (
+                                                <div key={p.staffId} className={cn("rounded-md border p-3")}>
+                                                    <div className="truncate text-sm font-medium">
+                                                        {safeText(p.staffName, safeText(p.staffEmail, "Staff"))}
+                                                    </div>
+                                                    {p.staffEmail ? (
+                                                        <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
+                                                    ) : null}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    <Button className="w-full" variant="outline" onClick={openPanelists}>
+                                        <Users className="mr-2 h-4 w-4" />
+                                        Manage panelists
+                                    </Button>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        {/* DESKTOP CONTENT (unchanged UI, md+) */}
+                        <div className="hidden md:block">
+                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                                <Card className="lg:col-span-2">
+                                    <CardHeader className="space-y-1">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Calendar className="h-5 w-5" />
+                                            Overview
+                                        </CardTitle>
+                                        <CardDescription>Defense schedule information.</CardDescription>
+                                    </CardHeader>
+
+                                    <CardContent className="space-y-4">
+                                        <div className="rounded-md border p-4">
+                                            <div className="text-sm text-muted-foreground">Group</div>
+                                            <div className="mt-1 text-lg font-semibold">{safeText(schedule.groupTitle, "—")}</div>
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                {[safeText(schedule.program, ""), safeText(schedule.term, "")].filter(Boolean).join(" · ") || "—"}
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                            <div className="rounded-md border p-4">
+                                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                    <Calendar className="h-4 w-4" />
+                                                    Date
+                                                </div>
+                                                <div className="mt-1 font-medium">{fmtDate(schedule.scheduledAt) || "—"}</div>
+                                            </div>
+
+                                            <div className="rounded-md border p-4">
+                                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                    <Clock className="h-4 w-4" />
+                                                    Time
+                                                </div>
+                                                <div className="mt-1 font-medium">{fmtTime(schedule.scheduledAt) || "—"}</div>
+                                            </div>
+
+                                            <div className="rounded-md border p-4">
+                                                <div className="text-sm text-muted-foreground">Room</div>
+                                                <div className="mt-1 font-medium">{safeText(schedule.room, "—")}</div>
+                                            </div>
+                                        </div>
+
+                                        <Separator />
+
+                                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                            <div className="rounded-md border p-4">
+                                                <div className="text-sm text-muted-foreground">Created by</div>
+                                                <div className="mt-1 text-sm">{safeText(userLabel(createdByUser), "—")}</div>
+                                            </div>
+                                            <div className="rounded-md border p-4">
+                                                <div className="text-sm text-muted-foreground">Updated</div>
+                                                <div className="mt-1 text-sm">{fmtDateTime(schedule.updatedAt) || "—"}</div>
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="space-y-1">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Users className="h-5 w-5" />
+                                            Panelists
+                                        </CardTitle>
+                                        <CardDescription>Assigned staff evaluators.</CardDescription>
+                                    </CardHeader>
+
+                                    <CardContent className="space-y-3">
+                                        {panelists.length === 0 ? (
+                                            <div className="rounded-md border p-4 text-center text-sm text-muted-foreground">
+                                                No panelists assigned yet.
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {panelists.map((p) => (
+                                                    <div key={p.staffId} className={cn("rounded-md border p-3")}>
+                                                        <div className="truncate text-sm font-medium">
+                                                            {safeText(p.staffName, safeText(p.staffEmail, "Staff"))}
+                                                        </div>
+                                                        {p.staffEmail ? (
+                                                            <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
+                                                        ) : null}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <Button className="w-full" variant="outline" onClick={openPanelists}>
+                                            <Users className="mr-2 h-4 w-4" />
+                                            Manage panelists
+                                        </Button>
+
+                                        <Button className="w-full" asChild variant="outline">
+                                            <Link href={`/dashboard/admin/evaluation?scheduleId=${encodeURIComponent(schedule.id)}`}>
+                                                <Eye className="mr-2 h-4 w-4" />
+                                                View evaluations
+                                            </Link>
+                                        </Button>
+                                    </CardContent>
+                                </Card>
+                            </div>
+                        </div>
+                    </>
                 )}
 
                 {/* Delete schedule (AlertDialog) */}
@@ -760,9 +920,6 @@ export default function AdminScheduleDetailPage() {
                         <DialogHeader className="space-y-1">
                             <DialogTitle className="flex items-center justify-between gap-3">
                                 <span>Panelists</span>
-                                <Button variant="ghost" size="icon" onClick={() => setOpenPanel(false)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
                             </DialogTitle>
                             <DialogDescription>Admin override: changes are logged (reason required).</DialogDescription>
                         </DialogHeader>

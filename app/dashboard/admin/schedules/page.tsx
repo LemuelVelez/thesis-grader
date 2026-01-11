@@ -575,10 +575,53 @@ export default function AdminSchedulesPage() {
         }
     }
 
+    function clearFilters() {
+        setQ("")
+        setStatusFilter("")
+        setGroupFilter("")
+        setFromDate("")
+        setToDate("")
+    }
+
     return (
         <DashboardLayout>
             <div className="space-y-6">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                {/* MOBILE HEADER (vertical) */}
+                <div className="md:hidden space-y-3">
+                    <div className="flex items-start gap-3">
+                        <Button variant="outline" size="icon" onClick={() => router.push("/dashboard/admin")} aria-label="Back">
+                            <ArrowLeft className="h-4 w-4" />
+                        </Button>
+                        <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                                <ShieldCheck className="h-5 w-5" />
+                                <h1 className="text-lg font-semibold">Schedules</h1>
+                            </div>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                Admin view: oversee all defenses. Admin may override schedules and panel assignments (audit-backed).
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2">
+                        <Button variant="outline" onClick={refresh} disabled={loading || refreshing} className="w-full">
+                            {refreshing ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
+                            Refresh
+                        </Button>
+
+                        <Button onClick={openCreate} className="w-full">
+                            <Plus className="mr-2 h-4 w-4" />
+                            New schedule
+                        </Button>
+                    </div>
+                </div>
+
+                {/* DESKTOP HEADER (unchanged UI, md+) */}
+                <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-center gap-3">
                         <Button variant="outline" size="icon" onClick={() => router.push("/dashboard/admin")}>
                             <ArrowLeft className="h-4 w-4" />
@@ -621,6 +664,7 @@ export default function AdminSchedulesPage() {
                     </CardHeader>
 
                     <CardContent className="space-y-4">
+                        {/* Filters - already vertical on mobile */}
                         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
                             <div className="space-y-2 lg:col-span-2">
                                 <Label className="text-xs text-muted-foreground">Search</Label>
@@ -686,17 +730,7 @@ export default function AdminSchedulesPage() {
                             </div>
 
                             <div className="flex items-end md:col-span-2 lg:col-span-6">
-                                <Button
-                                    variant="outline"
-                                    className="w-full"
-                                    onClick={() => {
-                                        setQ("")
-                                        setStatusFilter("")
-                                        setGroupFilter("")
-                                        setFromDate("")
-                                        setToDate("")
-                                    }}
-                                >
+                                <Button variant="outline" className="w-full" onClick={clearFilters}>
                                     <Filter className="mr-2 h-4 w-4" />
                                     Clear filters
                                 </Button>
@@ -705,6 +739,7 @@ export default function AdminSchedulesPage() {
 
                         <Separator />
 
+                        {/* LOADING */}
                         {loading ? (
                             <div className="space-y-2">
                                 <Skeleton className="h-10 w-full" />
@@ -713,114 +748,218 @@ export default function AdminSchedulesPage() {
                                 <Skeleton className="h-10 w-full" />
                             </div>
                         ) : (
-                            <div className="rounded-md border">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead className="w-80">Group</TableHead>
-                                            <TableHead className="w-40">Status</TableHead>
-                                            <TableHead className="w-40">Date</TableHead>
-                                            <TableHead className="w-40">Time</TableHead>
-                                            <TableHead>Room</TableHead>
-                                            <TableHead className="w-44">Panel</TableHead>
-                                            <TableHead className="w-56">Updated</TableHead>
-                                            <TableHead className="w-56 text-right">Actions</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-
-                                    <TableBody>
-                                        {filtered.length === 0 ? (
-                                            <TableRow>
-                                                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
-                                                    No schedules found.
-                                                </TableCell>
-                                            </TableRow>
-                                        ) : (
-                                            filtered.map((sc) => {
-                                                const g = groupsById.get(sc.groupId)
-                                                const gName = safeText(sc.groupTitle, groupLabel(g, "Group"))
-                                                const sub = [safeText(sc.program, ""), safeText(sc.term, "")]
-                                                    .filter(Boolean)
-                                                    .join(" · ")
-
-                                                return (
-                                                    <TableRow key={sc.id}>
-                                                        <TableCell className="align-top">
-                                                            <div className="space-y-1">
-                                                                <div className="font-medium">{gName}</div>
-                                                                {sub ? <div className="text-xs text-muted-foreground">{sub}</div> : null}
+                            <>
+                                {/* MOBILE LIST (cards) */}
+                                <div className="md:hidden space-y-3">
+                                    {filtered.length === 0 ? (
+                                        <div className="rounded-md border p-6 text-center text-sm text-muted-foreground">
+                                            No schedules found.
+                                        </div>
+                                    ) : (
+                                        filtered.map((sc) => {
+                                            const g = groupsById.get(sc.groupId)
+                                            const gName = safeText(sc.groupTitle, groupLabel(g, "Group"))
+                                            const sub = [safeText(sc.program, ""), safeText(sc.term, "")]
+                                                .filter(Boolean)
+                                                .join(" · ")
+                                            return (
+                                                <Card key={sc.id}>
+                                                    <CardHeader className="space-y-1">
+                                                        <div className="flex flex-col items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <CardTitle className="truncate text-base">{gName}</CardTitle>
+                                                                {sub ? (
+                                                                    <CardDescription className="truncate">{sub}</CardDescription>
+                                                                ) : (
+                                                                    <CardDescription>—</CardDescription>
+                                                                )}
                                                             </div>
-                                                        </TableCell>
+                                                            <div className="shrink-0">{statusBadge(sc.status)}</div>
+                                                        </div>
+                                                    </CardHeader>
 
-                                                        <TableCell className="align-top">{statusBadge(sc.status)}</TableCell>
-
-                                                        <TableCell className="align-top">
-                                                            <div className="flex items-center gap-2">
+                                                    <CardContent className="space-y-3">
+                                                        <div className="grid grid-cols-1 gap-2">
+                                                            <div className="flex items-center gap-2 text-sm">
                                                                 <Calendar className="h-4 w-4 text-muted-foreground" />
-                                                                <span>{fmtDate(sc.scheduledAt) || "—"}</span>
+                                                                <span className="text-muted-foreground">Date:</span>
+                                                                <span className="font-medium">{fmtDate(sc.scheduledAt) || "—"}</span>
                                                             </div>
-                                                        </TableCell>
-
-                                                        <TableCell className="align-top">
-                                                            <div className="flex items-center gap-2">
+                                                            <div className="flex items-center gap-2 text-sm">
                                                                 <Clock className="h-4 w-4 text-muted-foreground" />
-                                                                <span>{fmtTime(sc.scheduledAt) || "—"}</span>
+                                                                <span className="text-muted-foreground">Time:</span>
+                                                                <span className="font-medium">{fmtTime(sc.scheduledAt) || "—"}</span>
                                                             </div>
-                                                        </TableCell>
+                                                            <div className="flex items-center gap-2 text-sm">
+                                                                <span className="text-muted-foreground">Room:</span>
+                                                                <span className="font-medium">{safeText(sc.room, "—")}</span>
+                                                            </div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                Updated: {fmtDateTime(sc.updatedAt) || "—"}
+                                                            </div>
+                                                        </div>
 
-                                                        <TableCell className="align-top">{safeText(sc.room, "—")}</TableCell>
-
-                                                        <TableCell className="align-top">
-                                                            <Button size="sm" variant="outline" onClick={() => openPanelists(sc)}>
+                                                        <div className="grid grid-cols-1 gap-2">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                className="w-full"
+                                                                onClick={() => openPanelists(sc)}
+                                                            >
                                                                 <Users className="mr-2 h-4 w-4" />
-                                                                Manage
+                                                                Manage panelists
                                                             </Button>
-                                                        </TableCell>
 
-                                                        <TableCell className="align-top">{fmtDateTime(sc.updatedAt) || "—"}</TableCell>
-
-                                                        <TableCell className="align-top text-right">
-                                                            <div className="flex justify-end gap-2">
-                                                                <TooltipProvider>
-                                                                    <Tooltip>
-                                                                        <TooltipTrigger asChild>
-                                                                            <Button asChild size="sm" variant="outline">
-                                                                                <Link href={`/dashboard/admin/schedules/${sc.id}`}>
-                                                                                    <Eye className="mr-2 h-4 w-4" />
-                                                                                    View
-                                                                                </Link>
-                                                                            </Button>
-                                                                        </TooltipTrigger>
-                                                                        <TooltipContent>Open schedule details</TooltipContent>
-                                                                    </Tooltip>
-                                                                </TooltipProvider>
-
-                                                                <Button size="sm" variant="outline" onClick={() => openEdit(sc)}>
-                                                                    <Pencil className="mr-2 h-4 w-4" />
-                                                                    Edit
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <Button asChild size="sm" variant="outline" className="w-full">
+                                                                    <Link href={`/dashboard/admin/schedules/${sc.id}`}>
+                                                                        <Eye className="mr-2 h-4 w-4" />
+                                                                        View
+                                                                    </Link>
                                                                 </Button>
 
                                                                 <Button
                                                                     size="sm"
-                                                                    variant="destructive"
-                                                                    onClick={() => {
-                                                                        setDeleteTarget(sc)
-                                                                        setDeleteReason("")
-                                                                        setOpenDelete(true)
-                                                                    }}
+                                                                    variant="outline"
+                                                                    className="w-full"
+                                                                    onClick={() => openEdit(sc)}
                                                                 >
-                                                                    <Trash2 className="mr-2 h-4 w-4" />
-                                                                    Delete
+                                                                    <Pencil className="mr-2 h-4 w-4" />
+                                                                    Edit
                                                                 </Button>
                                                             </div>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                )
-                                            })
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </div>
+
+                                                            <Button
+                                                                size="sm"
+                                                                variant="destructive"
+                                                                className="w-full"
+                                                                onClick={() => {
+                                                                    setDeleteTarget(sc)
+                                                                    setDeleteReason("")
+                                                                    setOpenDelete(true)
+                                                                }}
+                                                            >
+                                                                <Trash2 className="mr-2 h-4 w-4" />
+                                                                Delete
+                                                            </Button>
+                                                        </div>
+                                                    </CardContent>
+                                                </Card>
+                                            )
+                                        })
+                                    )}
+                                </div>
+
+                                {/* DESKTOP TABLE (unchanged UI, md+) */}
+                                <div className="hidden md:block rounded-md border">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead className="w-80">Group</TableHead>
+                                                <TableHead className="w-40">Status</TableHead>
+                                                <TableHead className="w-40">Date</TableHead>
+                                                <TableHead className="w-40">Time</TableHead>
+                                                <TableHead>Room</TableHead>
+                                                <TableHead className="w-44">Panel</TableHead>
+                                                <TableHead className="w-56">Updated</TableHead>
+                                                <TableHead className="w-56 text-right">Actions</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+
+                                        <TableBody>
+                                            {filtered.length === 0 ? (
+                                                <TableRow>
+                                                    <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                                                        No schedules found.
+                                                    </TableCell>
+                                                </TableRow>
+                                            ) : (
+                                                filtered.map((sc) => {
+                                                    const g = groupsById.get(sc.groupId)
+                                                    const gName = safeText(sc.groupTitle, groupLabel(g, "Group"))
+                                                    const sub = [safeText(sc.program, ""), safeText(sc.term, "")]
+                                                        .filter(Boolean)
+                                                        .join(" · ")
+
+                                                    return (
+                                                        <TableRow key={sc.id}>
+                                                            <TableCell className="align-top">
+                                                                <div className="space-y-1">
+                                                                    <div className="font-medium">{gName}</div>
+                                                                    {sub ? <div className="text-xs text-muted-foreground">{sub}</div> : null}
+                                                                </div>
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">{statusBadge(sc.status)}</TableCell>
+
+                                                            <TableCell className="align-top">
+                                                                <div className="flex items-center gap-2">
+                                                                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                                                                    <span>{fmtDate(sc.scheduledAt) || "—"}</span>
+                                                                </div>
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">
+                                                                <div className="flex items-center gap-2">
+                                                                    <Clock className="h-4 w-4 text-muted-foreground" />
+                                                                    <span>{fmtTime(sc.scheduledAt) || "—"}</span>
+                                                                </div>
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">{safeText(sc.room, "—")}</TableCell>
+
+                                                            <TableCell className="align-top">
+                                                                <Button size="sm" variant="outline" onClick={() => openPanelists(sc)}>
+                                                                    <Users className="mr-2 h-4 w-4" />
+                                                                    Manage
+                                                                </Button>
+                                                            </TableCell>
+
+                                                            <TableCell className="align-top">{fmtDateTime(sc.updatedAt) || "—"}</TableCell>
+
+                                                            <TableCell className="align-top text-right">
+                                                                <div className="flex justify-end gap-2">
+                                                                    <TooltipProvider>
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Button asChild size="sm" variant="outline">
+                                                                                    <Link href={`/dashboard/admin/schedules/${sc.id}`}>
+                                                                                        <Eye className="mr-2 h-4 w-4" />
+                                                                                        View
+                                                                                    </Link>
+                                                                                </Button>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent>Open schedule details</TooltipContent>
+                                                                        </Tooltip>
+                                                                    </TooltipProvider>
+
+                                                                    <Button size="sm" variant="outline" onClick={() => openEdit(sc)}>
+                                                                        <Pencil className="mr-2 h-4 w-4" />
+                                                                        Edit
+                                                                    </Button>
+
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="destructive"
+                                                                        onClick={() => {
+                                                                            setDeleteTarget(sc)
+                                                                            setDeleteReason("")
+                                                                            setOpenDelete(true)
+                                                                        }}
+                                                                    >
+                                                                        <Trash2 className="mr-2 h-4 w-4" />
+                                                                        Delete
+                                                                    </Button>
+                                                                </div>
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    )
+                                                })
+                                            )}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                            </>
                         )}
                     </CardContent>
                 </Card>
