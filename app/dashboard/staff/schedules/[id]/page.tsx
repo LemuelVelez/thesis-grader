@@ -36,7 +36,7 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -95,6 +95,10 @@ type StaffOption = {
     email: string
     role?: string | null
 }
+
+type AvatarJsonOk = { ok: true; url: string | null; avatar_key?: string | null }
+type AvatarJsonErr = { ok: false; message?: string }
+type AvatarJsonResponse = AvatarJsonOk | AvatarJsonErr
 
 function formatDateTime(v: string) {
     const d = new Date(v)
@@ -178,6 +182,14 @@ function normalizeStaff(users: any[]): StaffOption[] {
     return Array.from(map.values())
 }
 
+function safeInitials(nameOrEmail: string) {
+    const s = String(nameOrEmail || "").trim()
+    if (!s) return "U"
+    const parts = s.split(/\s+/).filter(Boolean)
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+    return `${parts[0][0] ?? ""}${parts[parts.length - 1][0] ?? ""}`.toUpperCase()
+}
+
 export default function StaffScheduleDetailsPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
@@ -212,6 +224,9 @@ export default function StaffScheduleDetailsPage() {
     const [staffOptions, setStaffOptions] = React.useState<StaffOption[]>([])
     const [selectedStaff, setSelectedStaff] = React.useState<StaffOption | null>(null)
 
+    // ✅ resolved avatar urls for panelists (use /api/users/:id/avatar?format=json)
+    const [panelistAvatarUrl, setPanelistAvatarUrl] = React.useState<Record<string, string>>({})
+
     React.useEffect(() => {
         if (!loading && (!user || user.role !== "staff")) {
             router.replace("/auth/login")
@@ -220,11 +235,11 @@ export default function StaffScheduleDetailsPage() {
 
     const fetchThesisGroupById = React.useCallback(
         async (gid: string): Promise<ThesisGroupOption | null> => {
-            const params = new URLSearchParams()
-            params.set("resource", "groups")
-            params.set("id", gid)
+            const params2 = new URLSearchParams()
+            params2.set("resource", "groups")
+            params2.set("id", gid)
 
-            const res = await api.request<ThesisGroupByIdResponse>(`/api/thesis?${params.toString()}`)
+            const res = await api.request<ThesisGroupByIdResponse>(`/api/thesis?${params2.toString()}`)
             if (!res || (res as any).ok !== true) return null
             const ok = res as ThesisGroupByIdOk
             return normalizeGroup(ok.group)
@@ -240,6 +255,48 @@ export default function StaffScheduleDetailsPage() {
         const pRes = await api.request<PanelistsGetResponse>(`/api/schedule?${pParams.toString()}`)
         setPanelists(pRes && (pRes as any).ok === true ? (pRes as PanelistsGetOk).panelists : [])
     }, [api, id])
+
+    const hydratePanelistAvatars = React.useCallback(
+        async (list: Panelist[]) => {
+            const ids = Array.from(new Set(list.map((p) => String(p.staffId || "").trim()).filter(Boolean)))
+            if (!ids.length) return
+
+            const missing = ids.filter((uid) => !panelistAvatarUrl[uid])
+            if (!missing.length) return
+
+            try {
+                const pairs = await Promise.all(
+                    missing.map(async (uid) => {
+                        try {
+                            const res = await api.request<AvatarJsonResponse>(
+                                `/api/users/${encodeURIComponent(uid)}/avatar?format=json`
+                            )
+                            const url = res && (res as any).ok === true ? String((res as any).url ?? "") : ""
+                            return [uid, url] as const
+                        } catch {
+                            return [uid, ""] as const
+                        }
+                    })
+                )
+
+                setPanelistAvatarUrl((prev) => {
+                    const next = { ...prev }
+                    for (const [uid, url] of pairs) {
+                        if (url) next[uid] = url
+                    }
+                    return next
+                })
+            } catch {
+                // ignore
+            }
+        },
+        [api, panelistAvatarUrl]
+    )
+
+    React.useEffect(() => {
+        if (!panelists.length) return
+        hydratePanelistAvatars(panelists)
+    }, [panelists, hydratePanelistAvatars])
 
     const load = React.useCallback(async () => {
         if (!id) return
@@ -262,6 +319,9 @@ export default function StaffScheduleDetailsPage() {
             setRoom(s.room ?? "")
             setStatus(s.status ?? "scheduled")
 
+            // refresh panelists + avatar urls (best-effort)
+            setPanelists([])
+            setPanelistAvatarUrl({})
             await fetchPanelists()
 
             const g = await fetchThesisGroupById(s.groupId)
@@ -271,6 +331,7 @@ export default function StaffScheduleDetailsPage() {
             setSchedule(null)
             setPanelists([])
             setGroup(null)
+            setPanelistAvatarUrl({})
         } finally {
             setBusy(false)
         }
@@ -351,7 +412,7 @@ export default function StaffScheduleDetailsPage() {
                 p1.set("role", "staff")
                 candidates.push({ path: "/api/admin/users", params: p1 })
 
-                // 2) fallback: profiles route (if your backend exposes users there)
+                // 2) fallback: profiles route
                 const p2 = new URLSearchParams()
                 p2.set("resource", "users")
                 p2.set("limit", "50")
@@ -365,8 +426,6 @@ export default function StaffScheduleDetailsPage() {
                 for (const c of candidates) {
                     try {
                         const res = await api.request<any>(`${c.path}?${c.params.toString()}`)
-
-                        // accept a few common shapes
                         const list =
                             (res?.ok === true && (res.users ?? res.items ?? res.data ?? res.profiles ?? res.staff)) ||
                             (Array.isArray(res) ? res : null)
@@ -386,10 +445,7 @@ export default function StaffScheduleDetailsPage() {
                     return
                 }
 
-                const normalized = normalizeStaff(found)
-                    // if role exists, keep staff only
-                    .filter((u) => !u.role || String(u.role).toLowerCase() === "staff")
-
+                const normalized = normalizeStaff(found).filter((u) => !u.role || String(u.role).toLowerCase() === "staff")
                 setStaffOptions(normalized)
             } catch (e: any) {
                 setStaffOptions([])
@@ -640,7 +696,11 @@ export default function StaffScheduleDetailsPage() {
                                                     Reload
                                                 </Button>
                                                 <Button onClick={save} disabled={saving}>
-                                                    {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                                    {saving ? (
+                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                        <Save className="mr-2 h-4 w-4" />
+                                                    )}
                                                     Save changes
                                                 </Button>
                                             </div>
@@ -789,65 +849,72 @@ export default function StaffScheduleDetailsPage() {
                                                     ) : (
                                                         <ScrollArea className="h-80 rounded-md border">
                                                             <div className="p-3 space-y-2">
-                                                                {panelists.map((p) => (
-                                                                    <div
-                                                                        key={p.staffId}
-                                                                        className={cn(
-                                                                            "flex items-center justify-between gap-3 rounded-md border bg-background p-3",
-                                                                            "hover:bg-muted/40"
-                                                                        )}
-                                                                    >
-                                                                        <div className="flex items-center gap-3">
-                                                                            <Avatar className="h-9 w-9">
-                                                                                <AvatarFallback>
-                                                                                    {(p.staffName || "S").slice(0, 1).toUpperCase()}
-                                                                                </AvatarFallback>
-                                                                            </Avatar>
-                                                                            <div className="min-w-0">
-                                                                                <div className="truncate text-sm font-medium">{p.staffName}</div>
-                                                                                <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
-                                                                                <div className="mt-1 flex items-center gap-2">
-                                                                                    <Badge variant="outline" className="text-[10px]">
-                                                                                        {p.staffId}
-                                                                                    </Badge>
-                                                                                    <Button
-                                                                                        variant="ghost"
-                                                                                        size="sm"
-                                                                                        className="h-7 px-2"
-                                                                                        onClick={() => copy(p.staffId)}
-                                                                                    >
-                                                                                        <ClipboardCopy className="mr-1 h-3.5 w-3.5" />
-                                                                                        Copy
-                                                                                    </Button>
+                                                                {panelists.map((p) => {
+                                                                    const img = panelistAvatarUrl[String(p.staffId || "").trim()] || ""
+                                                                    return (
+                                                                        <div
+                                                                            key={p.staffId}
+                                                                            className={cn(
+                                                                                "flex items-center justify-between gap-3 rounded-md border bg-background p-3",
+                                                                                "hover:bg-muted/40"
+                                                                            )}
+                                                                        >
+                                                                            <div className="flex items-center gap-3">
+                                                                                <Avatar className="h-9 w-9">
+                                                                                    {img ? (
+                                                                                        <AvatarImage src={img} alt={p.staffName || p.staffEmail} className="object-cover" />
+                                                                                    ) : null}
+                                                                                    <AvatarFallback>
+                                                                                        {safeInitials(p.staffName || p.staffEmail)}
+                                                                                    </AvatarFallback>
+                                                                                </Avatar>
+
+                                                                                <div className="min-w-0">
+                                                                                    <div className="truncate text-sm font-medium">{p.staffName}</div>
+                                                                                    <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
+                                                                                    <div className="mt-1 flex items-center gap-2">
+                                                                                        <Badge variant="outline" className="text-xs">
+                                                                                            {p.staffId}
+                                                                                        </Badge>
+                                                                                        <Button
+                                                                                            variant="ghost"
+                                                                                            size="sm"
+                                                                                            className="h-7 px-2"
+                                                                                            onClick={() => copy(p.staffId)}
+                                                                                        >
+                                                                                            <ClipboardCopy className="mr-1 h-3.5 w-3.5" />
+                                                                                            Copy
+                                                                                        </Button>
+                                                                                    </div>
                                                                                 </div>
                                                                             </div>
-                                                                        </div>
 
-                                                                        <AlertDialog>
-                                                                            <AlertDialogTrigger asChild>
-                                                                                <Button variant="outline" size="sm" className="shrink-0">
-                                                                                    <MinusCircle className="mr-2 h-4 w-4" />
-                                                                                    Remove
-                                                                                </Button>
-                                                                            </AlertDialogTrigger>
-                                                                            <AlertDialogContent>
-                                                                                <AlertDialogHeader>
-                                                                                    <AlertDialogTitle>Remove panelist?</AlertDialogTitle>
-                                                                                    <AlertDialogDescription>
-                                                                                        This will remove{" "}
-                                                                                        <span className="font-medium">{p.staffName}</span> from this schedule.
-                                                                                    </AlertDialogDescription>
-                                                                                </AlertDialogHeader>
-                                                                                <AlertDialogFooter>
-                                                                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                                                    <AlertDialogAction onClick={() => removePanelist(p.staffId)}>
+                                                                            <AlertDialog>
+                                                                                <AlertDialogTrigger asChild>
+                                                                                    <Button variant="outline" size="sm" className="shrink-0">
+                                                                                        <MinusCircle className="mr-2 h-4 w-4" />
                                                                                         Remove
-                                                                                    </AlertDialogAction>
-                                                                                </AlertDialogFooter>
-                                                                            </AlertDialogContent>
-                                                                        </AlertDialog>
-                                                                    </div>
-                                                                ))}
+                                                                                    </Button>
+                                                                                </AlertDialogTrigger>
+                                                                                <AlertDialogContent>
+                                                                                    <AlertDialogHeader>
+                                                                                        <AlertDialogTitle>Remove panelist?</AlertDialogTitle>
+                                                                                        <AlertDialogDescription>
+                                                                                            This will remove{" "}
+                                                                                            <span className="font-medium">{p.staffName}</span> from this schedule.
+                                                                                        </AlertDialogDescription>
+                                                                                    </AlertDialogHeader>
+                                                                                    <AlertDialogFooter>
+                                                                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                                                        <AlertDialogAction onClick={() => removePanelist(p.staffId)}>
+                                                                                            Remove
+                                                                                        </AlertDialogAction>
+                                                                                    </AlertDialogFooter>
+                                                                                </AlertDialogContent>
+                                                                            </AlertDialog>
+                                                                        </div>
+                                                                    )
+                                                                })}
                                                             </div>
                                                         </ScrollArea>
                                                     )}
