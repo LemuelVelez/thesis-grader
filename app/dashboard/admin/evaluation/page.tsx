@@ -696,6 +696,10 @@ export default function AdminEvaluationPage() {
 
     const selectedScheduleForActions = activeTab === "staff" ? staffScheduleFilter : studentScheduleFilter
 
+    // staff inspect footer helpers (stable + safe)
+    const staffInspectFooterStatus = safeText(staffInspectDetail?.evaluation?.status ?? staffInspectItem?.status ?? "", "").toLowerCase()
+    const staffInspectFooterIsLocked = staffInspectFooterStatus === "locked"
+
     return (
         <DashboardLayout>
             <div className="space-y-6">
@@ -1383,209 +1387,213 @@ export default function AdminEvaluationPage() {
 
                 {/* NEW: Inspect Staff Evaluation (Scores + Members + System) */}
                 <Dialog open={staffInspectOpen} onOpenChange={setStaffInspectOpen}>
-                    <DialogContent className="sm:max-w-3xl">
-                        <DialogHeader>
+                    {/* ✅ FIX: bound dialog height + make body scrollable */}
+                    <DialogContent className="sm:max-w-3xl max-h-[90svh] overflow-hidden flex flex-col min-h-0">
+                        <DialogHeader className="shrink-0">
                             <DialogTitle>{staffInspectTitle || "Inspect staff evaluation"}</DialogTitle>
                             <DialogDescription>
                                 View rubric scores, group members, and system/extras (read-only). Use “Open detail” for the full page.
                             </DialogDescription>
                         </DialogHeader>
 
-                        {staffInspectLoading ? (
-                            <div className="space-y-2">
-                                <Skeleton className="h-6 w-full" />
-                                <Skeleton className="h-20 w-full" />
-                                <Skeleton className="h-64 w-full" />
-                            </div>
-                        ) : !staffInspectItem ? (
-                            <div className="rounded-md border p-6 text-sm text-muted-foreground">No record selected.</div>
-                        ) : (
-                            <div className="space-y-4">
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Status</div>
-                                        <div className="mt-1">{statusBadge(staffInspectDetail?.evaluation?.status ?? staffInspectItem.status)}</div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Submitted</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(staffInspectDetail?.evaluation?.submittedAt ?? staffInspectItem.submittedAt) || "—"}</div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Locked</div>
-                                        <div className="mt-1 text-sm">{fmtDateTime(staffInspectDetail?.evaluation?.lockedAt ?? staffInspectItem.lockedAt) || "—"}</div>
+                        <ScrollArea className="flex-1 min-h-0">
+                            <div className="space-y-4 pr-4">
+                                {staffInspectLoading ? (
+                                    <div className="space-y-2">
+                                        <Skeleton className="h-6 w-full" />
+                                        <Skeleton className="h-20 w-full" />
+                                        <Skeleton className="h-64 w-full" />
                                     </div>
-
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Score summary</div>
-                                        <div className="mt-1 text-sm">
-                                            Rows: {staffInspectSummary.rows} · Scored: {staffInspectSummary.scoredCount}
-                                        </div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Weighted average</div>
-                                        <div className="mt-1 text-xl font-semibold">
-                                            {staffInspectSummary.scoredCount > 0 ? staffInspectSummary.weightedAverage.toFixed(2) : "—"}
-                                        </div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Evaluator</div>
-                                        <div className="mt-1 text-sm">{personLine(staffInspectItem.evaluatorName, staffInspectItem.evaluatorEmail)}</div>
-                                    </div>
-
-                                    <div className="rounded-md border p-3">
-                                        <div className="text-xs text-muted-foreground">Group</div>
-                                        <div className="mt-1 font-medium">{safeText(staffInspectItem.groupTitle, "—")}</div>
-                                        <div className="mt-1 text-sm text-muted-foreground">
-                                            {fmtDate(staffInspectItem.scheduledAt)} {fmtTime(staffInspectItem.scheduledAt)}
-                                            {staffInspectItem.room ? <> · Room {staffInspectItem.room}</> : null}
-                                        </div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Counts</div>
-                                        <div className="mt-1 text-sm">
-                                            Students: {staffInspectMembers.length || (Number.isFinite(Number(staffInspectItem.studentCount)) ? staffInspectItem.studentCount : "—")} ·
-                                            Panelists: {Number.isFinite(Number(staffInspectItem.panelistCount)) ? staffInspectItem.panelistCount : "—"}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <Tabs value={staffInspectTab} onValueChange={(v) => setStaffInspectTab(v as any)}>
-                                    <TabsList className="grid w-full grid-cols-3">
-                                        <TabsTrigger value="scores" className="gap-2">
-                                            <Eye className="h-4 w-4" />
-                                            Scores
-                                        </TabsTrigger>
-                                        <TabsTrigger value="members" className="gap-2">
-                                            <Users className="h-4 w-4" />
-                                            Group members
-                                        </TabsTrigger>
-                                        <TabsTrigger value="system" className="gap-2">
-                                            <Cpu className="h-4 w-4" />
-                                            System
-                                        </TabsTrigger>
-                                    </TabsList>
-
-                                    <TabsContent value="scores" className="mt-3 space-y-3">
-                                        {!staffInspectDetail ? (
-                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                                Scores were not loaded for this record.
+                                ) : !staffInspectItem ? (
+                                    <div className="rounded-md border p-6 text-sm text-muted-foreground">No record selected.</div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                            <div className="rounded-md border p-3">
+                                                <div className="text-xs text-muted-foreground">Status</div>
+                                                <div className="mt-1">{statusBadge(staffInspectDetail?.evaluation?.status ?? staffInspectItem.status)}</div>
+                                                <div className="mt-2 text-xs text-muted-foreground">Submitted</div>
+                                                <div className="mt-1 text-sm">
+                                                    {fmtDateTime(staffInspectDetail?.evaluation?.submittedAt ?? staffInspectItem.submittedAt) || "—"}
+                                                </div>
+                                                <div className="mt-2 text-xs text-muted-foreground">Locked</div>
+                                                <div className="mt-1 text-sm">
+                                                    {fmtDateTime(staffInspectDetail?.evaluation?.lockedAt ?? staffInspectItem.lockedAt) || "—"}
+                                                </div>
                                             </div>
-                                        ) : Array.isArray(staffInspectDetail.criteria) && staffInspectDetail.criteria.length > 0 ? (
-                                            <div className="rounded-md border">
-                                                <Table>
-                                                    <TableHeader>
-                                                        <TableRow>
-                                                            <TableHead className="w-80">Criterion</TableHead>
-                                                            <TableHead className="w-24">Weight</TableHead>
-                                                            <TableHead className="w-28">Min–Max</TableHead>
-                                                            <TableHead className="w-24">Score</TableHead>
-                                                            <TableHead>Comment</TableHead>
-                                                        </TableRow>
-                                                    </TableHeader>
-                                                    <TableBody>
-                                                        {staffInspectDetail.criteria.map((r) => {
-                                                            const w = toNumber(r.weight, 1)
-                                                            const sc = typeof r.score === "number" ? r.score : null
-                                                            return (
-                                                                <TableRow key={r.criterionId}>
-                                                                    <TableCell className="align-top">
-                                                                        <div className="space-y-1">
-                                                                            <div className="font-medium">{safeText(r.criterion, "—")}</div>
-                                                                            {r.description ? (
-                                                                                <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
-                                                                            ) : null}
-                                                                        </div>
-                                                                    </TableCell>
-                                                                    <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
-                                                                    <TableCell className="align-top">
-                                                                        {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
-                                                                    </TableCell>
-                                                                    <TableCell className="align-top">{sc ?? "—"}</TableCell>
-                                                                    <TableCell className="align-top">
-                                                                        <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
-                                                                    </TableCell>
+
+                                            <div className="rounded-md border p-3">
+                                                <div className="text-xs text-muted-foreground">Score summary</div>
+                                                <div className="mt-1 text-sm">
+                                                    Rows: {staffInspectSummary.rows} · Scored: {staffInspectSummary.scoredCount}
+                                                </div>
+                                                <div className="mt-2 text-xs text-muted-foreground">Weighted average</div>
+                                                <div className="mt-1 text-xl font-semibold">
+                                                    {staffInspectSummary.scoredCount > 0 ? staffInspectSummary.weightedAverage.toFixed(2) : "—"}
+                                                </div>
+                                                <div className="mt-2 text-xs text-muted-foreground">Evaluator</div>
+                                                <div className="mt-1 text-sm">{personLine(staffInspectItem.evaluatorName, staffInspectItem.evaluatorEmail)}</div>
+                                            </div>
+
+                                            <div className="rounded-md border p-3">
+                                                <div className="text-xs text-muted-foreground">Group</div>
+                                                <div className="mt-1 font-medium">{safeText(staffInspectItem.groupTitle, "—")}</div>
+                                                <div className="mt-1 text-sm text-muted-foreground">
+                                                    {fmtDate(staffInspectItem.scheduledAt)} {fmtTime(staffInspectItem.scheduledAt)}
+                                                    {staffInspectItem.room ? <> · Room {staffInspectItem.room}</> : null}
+                                                </div>
+                                                <div className="mt-2 text-xs text-muted-foreground">Counts</div>
+                                                <div className="mt-1 text-sm">
+                                                    Students:{" "}
+                                                    {staffInspectMembers.length ||
+                                                        (Number.isFinite(Number(staffInspectItem.studentCount)) ? staffInspectItem.studentCount : "—")}{" "}
+                                                    · Panelists:{" "}
+                                                    {Number.isFinite(Number(staffInspectItem.panelistCount)) ? staffInspectItem.panelistCount : "—"}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <Tabs value={staffInspectTab} onValueChange={(v) => setStaffInspectTab(v as any)}>
+                                            <TabsList className="grid w-full grid-cols-3">
+                                                <TabsTrigger value="scores" className="gap-2">
+                                                    <Eye className="h-4 w-4" />
+                                                    Scores
+                                                </TabsTrigger>
+                                                <TabsTrigger value="members" className="gap-2">
+                                                    <Users className="h-4 w-4" />
+                                                    Group members
+                                                </TabsTrigger>
+                                                <TabsTrigger value="system" className="gap-2">
+                                                    <Cpu className="h-4 w-4" />
+                                                    System
+                                                </TabsTrigger>
+                                            </TabsList>
+
+                                            <TabsContent value="scores" className="mt-3 space-y-3">
+                                                {!staffInspectDetail ? (
+                                                    <div className="rounded-md border p-6 text-sm text-muted-foreground">Scores were not loaded for this record.</div>
+                                                ) : Array.isArray(staffInspectDetail.criteria) && staffInspectDetail.criteria.length > 0 ? (
+                                                    <div className="rounded-md border overflow-x-auto">
+                                                        <Table>
+                                                            <TableHeader>
+                                                                <TableRow>
+                                                                    <TableHead className="w-80">Criterion</TableHead>
+                                                                    <TableHead className="w-24">Weight</TableHead>
+                                                                    <TableHead className="w-28">Min–Max</TableHead>
+                                                                    <TableHead className="w-24">Score</TableHead>
+                                                                    <TableHead>Comment</TableHead>
                                                                 </TableRow>
-                                                            )
-                                                        })}
-                                                    </TableBody>
-                                                </Table>
-                                            </div>
-                                        ) : (
-                                            <div className="rounded-md border p-6 text-sm text-muted-foreground">
-                                                No rubric criteria returned for this evaluation.
-                                            </div>
-                                        )}
-                                    </TabsContent>
-
-                                    <TabsContent value="members" className="mt-3 space-y-3">
-                                        <div className="rounded-md border p-3">
-                                            <div className="text-sm font-semibold">Group members ({staffInspectMembers.length})</div>
-                                            <Separator className="my-2" />
-                                            {staffInspectMembers.length ? (
-                                                <ScrollArea className="h-56">
-                                                    <div className="space-y-2 pr-3">
-                                                        {staffInspectMembers.map((m) => (
-                                                            <div key={m.id} className="text-sm">
-                                                                {personLabel(m)}
-                                                            </div>
-                                                        ))}
+                                                            </TableHeader>
+                                                            <TableBody>
+                                                                {staffInspectDetail.criteria.map((r) => {
+                                                                    const w = toNumber(r.weight, 1)
+                                                                    const sc = typeof r.score === "number" ? r.score : null
+                                                                    return (
+                                                                        <TableRow key={r.criterionId}>
+                                                                            <TableCell className="align-top">
+                                                                                <div className="space-y-1">
+                                                                                    <div className="font-medium">{safeText(r.criterion, "—")}</div>
+                                                                                    {r.description ? (
+                                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
+                                                                                    ) : null}
+                                                                                </div>
+                                                                            </TableCell>
+                                                                            <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
+                                                                            <TableCell className="align-top">
+                                                                                {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
+                                                                            </TableCell>
+                                                                            <TableCell className="align-top">{sc ?? "—"}</TableCell>
+                                                                            <TableCell className="align-top">
+                                                                                <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
+                                                                            </TableCell>
+                                                                        </TableRow>
+                                                                    )
+                                                                })}
+                                                            </TableBody>
+                                                        </Table>
                                                     </div>
-                                                </ScrollArea>
-                                            ) : (
-                                                <div className="text-sm text-muted-foreground">No members returned.</div>
-                                            )}
-                                        </div>
-                                    </TabsContent>
+                                                ) : (
+                                                    <div className="rounded-md border p-6 text-sm text-muted-foreground">No rubric criteria returned for this evaluation.</div>
+                                                )}
+                                            </TabsContent>
 
-                                    <TabsContent value="system" className="mt-3 space-y-3">
-                                        <div className="rounded-md border p-3">
-                                            <div className="text-sm font-semibold">System / Extras</div>
-                                            <div className="mt-1 text-xs text-muted-foreground">
-                                                This is whatever your app stored in <span className="font-medium">evaluation_extras.data</span>.
-                                            </div>
-                                            <Separator className="my-2" />
-                                            {staffInspectExtras ? (
-                                                <ScrollArea className="h-56 rounded-md border">
-                                                    <pre className="p-3 text-xs">{JSON.stringify(staffInspectExtras, null, 2)}</pre>
-                                                </ScrollArea>
-                                            ) : (
-                                                <div className="text-sm text-muted-foreground">No system data found for this evaluation.</div>
-                                            )}
-                                        </div>
-                                    </TabsContent>
-                                </Tabs>
+                                            <TabsContent value="members" className="mt-3 space-y-3">
+                                                <div className="rounded-md border p-3">
+                                                    <div className="text-sm font-semibold">Group members ({staffInspectMembers.length})</div>
+                                                    <Separator className="my-2" />
+                                                    {staffInspectMembers.length ? (
+                                                        <ScrollArea className="h-48 sm:h-56">
+                                                            <div className="space-y-2 pr-3">
+                                                                {staffInspectMembers.map((m) => (
+                                                                    <div key={m.id} className="text-sm">
+                                                                        {personLabel(m)}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </ScrollArea>
+                                                    ) : (
+                                                        <div className="text-sm text-muted-foreground">No members returned.</div>
+                                                    )}
+                                                </div>
+                                            </TabsContent>
 
-                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => {
-                                            if (!staffInspectItem) return
-                                            const s = safeText(staffInspectItem.status, "").toLowerCase()
-                                            const isLocked = s === "locked"
-                                            openConfirm(
-                                                isLocked ? "Unlock evaluation?" : "Lock evaluation?",
-                                                isLocked
-                                                    ? "This will remove the lock so it can be edited again."
-                                                    : "This will lock the evaluation to prevent further changes.",
-                                                async () => setStaffLock(staffInspectItem, !isLocked)
-                                            )
-                                        }}
-                                    >
-                                        {safeText(staffInspectItem.status, "").toLowerCase() === "locked" ? (
-                                            <>
-                                                <Unlock className="mr-2 h-4 w-4" />
-                                                Unlock
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Lock className="mr-2 h-4 w-4" />
-                                                Lock
-                                            </>
-                                        )}
-                                    </Button>
-
-                                    <Button asChild variant="outline">
-                                        <Link href={staffInspectItem ? `/dashboard/admin/evaluation/${staffInspectItem.id}` : "/dashboard/admin/evaluation"}>
-                                            Open detail
-                                        </Link>
-                                    </Button>
-
-                                    <Button onClick={() => setStaffInspectOpen(false)}>Close</Button>
-                                </div>
+                                            <TabsContent value="system" className="mt-3 space-y-3">
+                                                <div className="rounded-md border p-3">
+                                                    <div className="text-sm font-semibold">System / Extras</div>
+                                                    <div className="mt-1 text-xs text-muted-foreground">
+                                                        This is whatever your app stored in <span className="font-medium">evaluation_extras.data</span>.
+                                                    </div>
+                                                    <Separator className="my-2" />
+                                                    {staffInspectExtras ? (
+                                                        <ScrollArea className="h-48 sm:h-56 rounded-md border">
+                                                            <pre className="p-3 text-xs">{JSON.stringify(staffInspectExtras, null, 2)}</pre>
+                                                        </ScrollArea>
+                                                    ) : (
+                                                        <div className="text-sm text-muted-foreground">No system data found for this evaluation.</div>
+                                                    )}
+                                                </div>
+                                            </TabsContent>
+                                        </Tabs>
+                                    </div>
+                                )}
                             </div>
-                        )}
+                        </ScrollArea>
 
-                        <DialogFooter />
+                        <DialogFooter className="shrink-0">
+                            <Button
+                                variant="outline"
+                                onClick={() => {
+                                    if (!staffInspectItem) return
+                                    const isLocked = staffInspectFooterIsLocked
+                                    openConfirm(
+                                        isLocked ? "Unlock evaluation?" : "Lock evaluation?",
+                                        isLocked ? "This will remove the lock so it can be edited again." : "This will lock the evaluation to prevent further changes.",
+                                        async () => setStaffLock(staffInspectItem, !isLocked)
+                                    )
+                                }}
+                                disabled={!staffInspectItem}
+                            >
+                                {staffInspectFooterIsLocked ? (
+                                    <>
+                                        <Unlock className="mr-2 h-4 w-4" />
+                                        Unlock
+                                    </>
+                                ) : (
+                                    <>
+                                        <Lock className="mr-2 h-4 w-4" />
+                                        Lock
+                                    </>
+                                )}
+                            </Button>
+
+                            <Button asChild variant="outline" disabled={!staffInspectItem}>
+                                <Link href={staffInspectItem ? `/dashboard/admin/evaluation/${staffInspectItem.id}` : "/dashboard/admin/evaluation"}>
+                                    Open detail
+                                </Link>
+                            </Button>
+
+                            <Button onClick={() => setStaffInspectOpen(false)}>Close</Button>
+                        </DialogFooter>
                     </DialogContent>
                 </Dialog>
 

@@ -155,6 +155,24 @@ function readCssVar(name: string, fallback: string) {
     return v || fallback
 }
 
+function ChartScroller(props: {
+    width: number
+    height: number
+    hint?: string
+    children: React.ReactNode
+}) {
+    return (
+        <div className="space-y-2">
+            <div className="w-full overflow-x-auto">
+                <div style={{ width: props.width, height: props.height }}>
+                    {props.children}
+                </div>
+            </div>
+            {props.hint ? <div className="text-xs text-muted-foreground">{props.hint}</div> : null}
+        </div>
+    )
+}
+
 export default function AdminDashboardPage() {
     const router = useRouter()
     const { loading, user } = useAuth()
@@ -346,147 +364,302 @@ export default function AdminDashboardPage() {
     return (
         <DashboardLayout title="Admin Dashboard">
             <div className="space-y-6">
-                {/* Header */}
-                <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                    <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                            <Shield className="h-4 w-4" />
-                            <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
-                            <Badge variant="secondary">Admin</Badge>
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                            Snapshot of Users, Thesis, Reports, and Audit activity.
-                        </p>
-                    </div>
-
-                    <div className="grid w-full gap-3 md:w-auto md:grid-cols-6">
-                        <div className="md:col-span-2">
-                            <Label>Date range preset</Label>
-                            <div className="mt-2 flex gap-2">
-                                <Button
-                                    type="button"
-                                    variant={preset === "7" ? "default" : "outline"}
-                                    size="sm"
-                                    onClick={() => setPreset("7")}
-                                    disabled={busy}
-                                >
-                                    7d
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant={preset === "30" ? "default" : "outline"}
-                                    size="sm"
-                                    onClick={() => setPreset("30")}
-                                    disabled={busy}
-                                >
-                                    30d
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant={preset === "90" ? "default" : "outline"}
-                                    size="sm"
-                                    onClick={() => setPreset("90")}
-                                    disabled={busy}
-                                >
-                                    90d
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant={preset === "custom" ? "default" : "outline"}
-                                    size="sm"
-                                    onClick={() => setPreset("custom")}
-                                    disabled={busy}
-                                >
-                                    Custom
-                                </Button>
+                {/* ========================= */}
+                {/* MOBILE HEADER (xs/sm)     */}
+                {/* ========================= */}
+                <div className="md:hidden space-y-4">
+                    <Card>
+                        <CardHeader className="space-y-2">
+                            <div className="flex items-center gap-2">
+                                <Shield className="h-4 w-4" />
+                                <CardTitle className="text-lg">Overview</CardTitle>
+                                <Badge variant="secondary">Admin</Badge>
                             </div>
+                            <CardDescription>
+                                Snapshot of Users, Thesis, Reports, and Audit activity.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="space-y-2">
+                                <Label>Date range preset</Label>
+                                <div className="grid grid-cols-4 gap-2">
+                                    <Button
+                                        type="button"
+                                        variant={preset === "7" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("7")}
+                                        disabled={busy}
+                                    >
+                                        7d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "30" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("30")}
+                                        disabled={busy}
+                                    >
+                                        30d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "90" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("90")}
+                                        disabled={busy}
+                                    >
+                                        90d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "custom" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("custom")}
+                                        disabled={busy}
+                                    >
+                                        Custom
+                                    </Button>
+                                </div>
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="space-y-2">
+                                    <Label>From</Label>
+                                    <Input
+                                        className="native-date"
+                                        type="date"
+                                        value={from}
+                                        onChange={(e) => {
+                                            setPreset("custom")
+                                            setFrom(e.target.value)
+                                        }}
+                                        disabled={busy}
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>To</Label>
+                                    <Input
+                                        className="native-date"
+                                        type="date"
+                                        value={to}
+                                        onChange={(e) => {
+                                            setPreset("custom")
+                                            setTo(e.target.value)
+                                        }}
+                                        disabled={busy}
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>Program (optional)</Label>
+                                    <Input
+                                        value={program}
+                                        onChange={(e) => setProgram(e.target.value)}
+                                        placeholder="e.g., BSCS"
+                                        disabled={busy}
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>Term (optional)</Label>
+                                    <Input
+                                        value={term}
+                                        onChange={(e) => setTerm(e.target.value)}
+                                        placeholder="e.g., AY 2025–2026"
+                                        disabled={busy}
+                                    />
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Button onClick={refresh} disabled={busy}>
+                                        <RefreshCw className="mr-2 h-4 w-4" />
+                                        Refresh overview
+                                    </Button>
+
+                                    <Button variant="outline" onClick={() => router.refresh()} disabled={busy}>
+                                        Refresh UI
+                                    </Button>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/users">
+                                            <Users className="mr-2 h-4 w-4" />
+                                            Users
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/thesis">
+                                            <BookOpen className="mr-2 h-4 w-4" />
+                                            Thesis
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/reports">
+                                            <FileText className="mr-2 h-4 w-4" />
+                                            Reports
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/audit">
+                                            <Activity className="mr-2 h-4 w-4" />
+                                            Audit
+                                        </Link>
+                                    </Button>
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* ========================= */}
+                {/* DESKTOP HEADER (md+)      */}
+                {/* (kept as-is; hidden on xs) */}
+                {/* ========================= */}
+                <div className="hidden md:block">
+                    {/* Header */}
+                    <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                        <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                                <Shield className="h-4 w-4" />
+                                <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
+                                <Badge variant="secondary">Admin</Badge>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                                Snapshot of Users, Thesis, Reports, and Audit activity.
+                            </p>
                         </div>
 
-                        <div className="md:col-span-2">
-                            <Label>From</Label>
-                            <Input
-                                className="mt-2 native-date"
-                                type="date"
-                                value={from}
-                                onChange={(e) => {
-                                    setPreset("custom")
-                                    setFrom(e.target.value)
-                                }}
-                                disabled={busy}
-                            />
-                        </div>
+                        <div className="grid w-full gap-3 md:w-auto md:grid-cols-6">
+                            <div className="md:col-span-2">
+                                <Label>Date range preset</Label>
+                                <div className="mt-2 flex gap-2">
+                                    <Button
+                                        type="button"
+                                        variant={preset === "7" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("7")}
+                                        disabled={busy}
+                                    >
+                                        7d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "30" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("30")}
+                                        disabled={busy}
+                                    >
+                                        30d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "90" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("90")}
+                                        disabled={busy}
+                                    >
+                                        90d
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={preset === "custom" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setPreset("custom")}
+                                        disabled={busy}
+                                    >
+                                        Custom
+                                    </Button>
+                                </div>
+                            </div>
 
-                        <div className="md:col-span-2">
-                            <Label>To</Label>
-                            <Input
-                                className="mt-2 native-date"
-                                type="date"
-                                value={to}
-                                onChange={(e) => {
-                                    setPreset("custom")
-                                    setTo(e.target.value)
-                                }}
-                                disabled={busy}
-                            />
-                        </div>
+                            <div className="md:col-span-2">
+                                <Label>From</Label>
+                                <Input
+                                    className="mt-2 native-date"
+                                    type="date"
+                                    value={from}
+                                    onChange={(e) => {
+                                        setPreset("custom")
+                                        setFrom(e.target.value)
+                                    }}
+                                    disabled={busy}
+                                />
+                            </div>
 
-                        <div className="md:col-span-3">
-                            <Label>Program (optional)</Label>
-                            <Input
-                                className="mt-2"
-                                value={program}
-                                onChange={(e) => setProgram(e.target.value)}
-                                placeholder="e.g., BSCS"
-                                disabled={busy}
-                            />
-                        </div>
+                            <div className="md:col-span-2">
+                                <Label>To</Label>
+                                <Input
+                                    className="mt-2 native-date"
+                                    type="date"
+                                    value={to}
+                                    onChange={(e) => {
+                                        setPreset("custom")
+                                        setTo(e.target.value)
+                                    }}
+                                    disabled={busy}
+                                />
+                            </div>
 
-                        <div className="md:col-span-3">
-                            <Label>Term (optional)</Label>
-                            <Input
-                                className="mt-2"
-                                value={term}
-                                onChange={(e) => setTerm(e.target.value)}
-                                placeholder="e.g., AY 2025–2026"
-                                disabled={busy}
-                            />
-                        </div>
+                            <div className="md:col-span-3">
+                                <Label>Program (optional)</Label>
+                                <Input
+                                    className="mt-2"
+                                    value={program}
+                                    onChange={(e) => setProgram(e.target.value)}
+                                    placeholder="e.g., BSCS"
+                                    disabled={busy}
+                                />
+                            </div>
 
-                        <div className="md:col-span-6 flex flex-wrap items-center gap-2">
-                            <Button onClick={refresh} disabled={busy}>
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Refresh overview
-                            </Button>
+                            <div className="md:col-span-3">
+                                <Label>Term (optional)</Label>
+                                <Input
+                                    className="mt-2"
+                                    value={term}
+                                    onChange={(e) => setTerm(e.target.value)}
+                                    placeholder="e.g., AY 2025–2026"
+                                    disabled={busy}
+                                />
+                            </div>
 
-                            <Button variant="outline" onClick={() => router.refresh()} disabled={busy}>
-                                Refresh UI
-                            </Button>
-
-                            <div className="ml-auto flex flex-wrap gap-2">
-                                <Button variant="secondary" asChild>
-                                    <Link href="/dashboard/admin/users">
-                                        <Users className="mr-2 h-4 w-4" />
-                                        Users
-                                    </Link>
+                            <div className="md:col-span-6 flex flex-wrap items-center gap-2">
+                                <Button onClick={refresh} disabled={busy}>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Refresh overview
                                 </Button>
-                                <Button variant="secondary" asChild>
-                                    <Link href="/dashboard/admin/thesis">
-                                        <BookOpen className="mr-2 h-4 w-4" />
-                                        Thesis
-                                    </Link>
+
+                                <Button variant="outline" onClick={() => router.refresh()} disabled={busy}>
+                                    Refresh UI
                                 </Button>
-                                <Button variant="secondary" asChild>
-                                    <Link href="/dashboard/admin/reports">
-                                        <FileText className="mr-2 h-4 w-4" />
-                                        Reports
-                                    </Link>
-                                </Button>
-                                <Button variant="secondary" asChild>
-                                    <Link href="/dashboard/admin/audit">
-                                        <Activity className="mr-2 h-4 w-4" />
-                                        Audit
-                                    </Link>
-                                </Button>
+
+                                <div className="ml-auto flex flex-wrap gap-2">
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/users">
+                                            <Users className="mr-2 h-4 w-4" />
+                                            Users
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/thesis">
+                                            <BookOpen className="mr-2 h-4 w-4" />
+                                            Thesis
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/reports">
+                                            <FileText className="mr-2 h-4 w-4" />
+                                            Reports
+                                        </Link>
+                                    </Button>
+                                    <Button variant="secondary" asChild>
+                                        <Link href="/dashboard/admin/audit">
+                                            <Activity className="mr-2 h-4 w-4" />
+                                            Audit
+                                        </Link>
+                                    </Button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -552,238 +725,245 @@ export default function AdminDashboardPage() {
                     </Card>
                 </div>
 
-                {/* Tabs of Overviews (Users / Thesis / Reports / Audit) */}
-                <Tabs defaultValue="users" className="w-full">
-                    <TabsList className="w-full justify-start">
-                        <TabsTrigger value="users">Users</TabsTrigger>
-                        <TabsTrigger value="thesis">Thesis</TabsTrigger>
-                        <TabsTrigger value="reports">Reports</TabsTrigger>
-                        <TabsTrigger value="audit">Audit</TabsTrigger>
-                    </TabsList>
-
-                    {/* Users Overview */}
-                    <TabsContent value="users" className="space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
+                {/* ========================= */}
+                {/* MOBILE SECTIONS (xs/sm)   */}
+                {/* (vertical, no Tabs)       */}
+                {/* ========================= */}
+                <div className="md:hidden space-y-4">
+                    {/* Users */}
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="flex items-center gap-2">
+                                <Users className="h-4 w-4" />
+                                Users
+                            </CardTitle>
+                            <CardDescription>Role & status distributions + quick breakdown.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle className="flex items-center gap-2">
-                                        <Users className="h-4 w-4" />
-                                        Users by role
-                                    </CardTitle>
+                                    <CardTitle className="text-base">Users by role</CardTitle>
                                     <CardDescription>Distribution of accounts across roles.</CardDescription>
                                 </CardHeader>
-                                <CardContent className="h-72">
+                                <CardContent>
                                     {busy || !s ? (
-                                        <Skeleton className="h-full w-full" />
+                                        <Skeleton className="h-64 w-full" />
                                     ) : (
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <PieChart>
-                                                <RechartsTooltip />
-                                                <Legend wrapperStyle={{ color: C.foreground }} />
-                                                <Pie
-                                                    data={usersRolePie}
-                                                    dataKey="value"
-                                                    nameKey="name"
-                                                    innerRadius={45}
-                                                    outerRadius={80}
-                                                >
-                                                    {usersRolePie.map((_, idx) => (
-                                                        <Cell
-                                                            key={idx}
-                                                            fill={idx === 0 ? C.chart1 : idx === 1 ? C.chart2 : C.chart3}
-                                                        />
-                                                    ))}
-                                                </Pie>
-                                            </PieChart>
-                                        </ResponsiveContainer>
+                                        <ChartScroller width={420} height={260} hint="Swipe horizontally if needed.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart>
+                                                    <RechartsTooltip />
+                                                    <Legend wrapperStyle={{ color: C.foreground }} />
+                                                    <Pie
+                                                        data={usersRolePie}
+                                                        dataKey="value"
+                                                        nameKey="name"
+                                                        innerRadius={45}
+                                                        outerRadius={80}
+                                                    >
+                                                        {usersRolePie.map((_, idx) => (
+                                                            <Cell
+                                                                key={idx}
+                                                                fill={idx === 0 ? C.chart1 : idx === 1 ? C.chart2 : C.chart3}
+                                                            />
+                                                        ))}
+                                                    </Pie>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
                                     )}
                                 </CardContent>
                             </Card>
 
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle className="flex items-center gap-2">
-                                        <BarChart3 className="h-4 w-4" />
-                                        Users by status
-                                    </CardTitle>
+                                    <CardTitle className="text-base">Users by status</CardTitle>
                                     <CardDescription>Active vs disabled accounts.</CardDescription>
                                 </CardHeader>
-                                <CardContent className="h-72">
+                                <CardContent>
                                     {busy || !s ? (
-                                        <Skeleton className="h-full w-full" />
+                                        <Skeleton className="h-64 w-full" />
                                     ) : (
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <PieChart>
-                                                <RechartsTooltip />
-                                                <Legend wrapperStyle={{ color: C.foreground }} />
-                                                <Pie
-                                                    data={usersStatusPie}
-                                                    dataKey="value"
-                                                    nameKey="name"
-                                                    innerRadius={45}
-                                                    outerRadius={80}
-                                                >
-                                                    {usersStatusPie.map((_, idx) => (
-                                                        <Cell key={idx} fill={idx === 0 ? C.chart1 : C.destructive} />
-                                                    ))}
-                                                </Pie>
-                                            </PieChart>
-                                        </ResponsiveContainer>
+                                        <ChartScroller width={420} height={260} hint="Swipe horizontally if needed.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart>
+                                                    <RechartsTooltip />
+                                                    <Legend wrapperStyle={{ color: C.foreground }} />
+                                                    <Pie
+                                                        data={usersStatusPie}
+                                                        dataKey="value"
+                                                        nameKey="name"
+                                                        innerRadius={45}
+                                                        outerRadius={80}
+                                                    >
+                                                        {usersStatusPie.map((_, idx) => (
+                                                            <Cell key={idx} fill={idx === 0 ? C.chart1 : C.destructive} />
+                                                        ))}
+                                                    </Pie>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
                                     )}
                                 </CardContent>
                             </Card>
-                        </div>
 
-                        <Card>
-                            <CardHeader className="pb-2">
-                                <CardTitle>Quick breakdown</CardTitle>
-                                <CardDescription>Matches Manage Users overview.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="flex flex-wrap items-center gap-2">
-                                <Badge variant="secondary">student: {s?.users.byRole.student ?? 0}</Badge>
-                                <Badge variant="secondary">staff: {s?.users.byRole.staff ?? 0}</Badge>
-                                <Badge variant="secondary">admin: {s?.users.byRole.admin ?? 0}</Badge>
-                                <Badge variant="outline">active: {s?.users.byStatus.active ?? 0}</Badge>
-                                <Badge variant="outline">disabled: {s?.users.byStatus.disabled ?? 0}</Badge>
-
-                                <div className="ml-auto">
-                                    <Button asChild variant="secondary">
-                                        <Link href="/dashboard/admin/users">Open Manage Users</Link>
-                                    </Button>
+                            <div className="space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                    <Badge variant="secondary">student: {s?.users.byRole.student ?? 0}</Badge>
+                                    <Badge variant="secondary">staff: {s?.users.byRole.staff ?? 0}</Badge>
+                                    <Badge variant="secondary">admin: {s?.users.byRole.admin ?? 0}</Badge>
+                                    <Badge variant="outline">active: {s?.users.byStatus.active ?? 0}</Badge>
+                                    <Badge variant="outline">disabled: {s?.users.byStatus.disabled ?? 0}</Badge>
                                 </div>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
+                                <Button asChild variant="secondary" className="w-full">
+                                    <Link href="/dashboard/admin/users">Open Manage Users</Link>
+                                </Button>
+                            </div>
+                        </CardContent>
+                    </Card>
 
-                    {/* Thesis Overview */}
-                    <TabsContent value="thesis" className="space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
+                    {/* Thesis */}
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="flex items-center gap-2">
+                                <BookOpen className="h-4 w-4" />
+                                Thesis
+                            </CardTitle>
+                            <CardDescription>Program distribution and defenses trend.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle className="flex items-center gap-2">
-                                        <BookOpen className="h-4 w-4" />
-                                        Thesis groups by program
-                                    </CardTitle>
+                                    <CardTitle className="text-base">Thesis groups by program</CardTitle>
                                     <CardDescription>Top programs (up to 12). Respects Program/Term filters.</CardDescription>
                                 </CardHeader>
-                                <CardContent className="h-80">
+                                <CardContent>
                                     {busy || !s ? (
-                                        <Skeleton className="h-full w-full" />
+                                        <Skeleton className="h-72 w-full" />
                                     ) : thesisProgramBar.length === 0 ? (
-                                        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                        <div className="text-sm text-muted-foreground">
                                             No thesis groups found for this range/filter.
                                         </div>
                                     ) : (
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <BarChart data={thesisProgramBar}>
-                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
-                                                <XAxis
-                                                    dataKey="program"
-                                                    tick={{ fontSize: 12, fill: C.mutedForeground }}
-                                                    interval={0}
-                                                    angle={-20}
-                                                    height={60}
-                                                />
-                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
-                                                <RechartsTooltip />
-                                                <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
-                                            </BarChart>
-                                        </ResponsiveContainer>
+                                        <ChartScroller width={760} height={320} hint="Swipe horizontally to view the full chart.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={thesisProgramBar}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="program"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                        interval={0}
+                                                        angle={-20}
+                                                        height={60}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
                                     )}
                                 </CardContent>
                             </Card>
 
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle>Defenses by month</CardTitle>
-                                    <CardDescription>Matches the Reports → Defenses tab overview.</CardDescription>
+                                    <CardTitle className="text-base">Defenses by month</CardTitle>
+                                    <CardDescription>Matches the Reports → Defenses overview.</CardDescription>
                                 </CardHeader>
-                                <CardContent className="h-80">
+                                <CardContent>
                                     {busy || !s ? (
-                                        <Skeleton className="h-full w-full" />
+                                        <Skeleton className="h-72 w-full" />
                                     ) : defensesByMonthLine.length === 0 ? (
-                                        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                                            No defense schedules in this range.
-                                        </div>
+                                        <div className="text-sm text-muted-foreground">No defense schedules in this range.</div>
                                     ) : (
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <LineChart data={defensesByMonthLine}>
-                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
-                                                <XAxis dataKey="month" tick={{ fontSize: 12, fill: C.mutedForeground }} />
-                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
-                                                <RechartsTooltip />
-                                                <Line
-                                                    type="monotone"
-                                                    dataKey="count"
-                                                    stroke={C.chart1}
-                                                    strokeWidth={2}
-                                                    dot={false}
-                                                />
-                                            </LineChart>
-                                        </ResponsiveContainer>
+                                        <ChartScroller width={720} height={320} hint="Swipe horizontally to view the full chart.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={defensesByMonthLine}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="month"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Line
+                                                        type="monotone"
+                                                        dataKey="count"
+                                                        stroke={C.chart1}
+                                                        strokeWidth={2}
+                                                        dot={false}
+                                                    />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
                                     )}
                                 </CardContent>
                             </Card>
-                        </div>
 
-                        <Card>
-                            <CardHeader className="pb-2">
-                                <CardTitle>Thesis snapshot</CardTitle>
-                                <CardDescription>Matches Thesis dashboard totals.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="flex flex-wrap items-center gap-2">
-                                <Badge variant="secondary">groups: {s?.thesis.groups_total ?? 0}</Badge>
-                                <Badge variant="secondary">memberships: {s?.thesis.memberships_total ?? 0}</Badge>
-                                <Badge variant="outline">unassigned adviser: {s?.thesis.unassigned_adviser ?? 0}</Badge>
-
-                                <div className="ml-auto">
-                                    <Button asChild variant="secondary">
-                                        <Link href="/dashboard/admin/thesis">Open Thesis Records</Link>
-                                    </Button>
+                            <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">groups: {s?.thesis.groups_total ?? 0}</Badge>
+                                    <Badge variant="secondary">memberships: {s?.thesis.memberships_total ?? 0}</Badge>
+                                    <Badge variant="outline">unassigned adviser: {s?.thesis.unassigned_adviser ?? 0}</Badge>
                                 </div>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
 
-                    {/* Reports Overview */}
-                    <TabsContent value="reports" className="space-y-4">
-                        <Card>
-                            <CardHeader className="pb-2">
-                                <CardTitle>Audit activity (daily)</CardTitle>
-                                <CardDescription>Daily counts across the selected range.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="h-80">
-                                {busy || !s ? (
-                                    <Skeleton className="h-full w-full" />
-                                ) : auditDailyArea.length === 0 ? (
-                                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                                        No audit activity in this range.
-                                    </div>
-                                ) : (
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <AreaChart data={auditDailyArea}>
-                                            <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
-                                            <XAxis dataKey="day" tick={{ fontSize: 12, fill: C.mutedForeground }} />
-                                            <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
-                                            <RechartsTooltip />
-                                            <Area
-                                                type="monotone"
-                                                dataKey="count"
-                                                stroke={C.chart2}
-                                                fill={C.chart2}
-                                                fillOpacity={0.2}
-                                            />
-                                        </AreaChart>
-                                    </ResponsiveContainer>
-                                )}
-                            </CardContent>
-                        </Card>
+                                <Button asChild variant="secondary" className="w-full">
+                                    <Link href="/dashboard/admin/thesis">Open Thesis Records</Link>
+                                </Button>
+                            </div>
+                        </CardContent>
+                    </Card>
 
-                        <div className="grid gap-4 md:grid-cols-2">
+                    {/* Reports */}
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="flex items-center gap-2">
+                                <FileText className="h-4 w-4" />
+                                Reports
+                            </CardTitle>
+                            <CardDescription>Audit activity + evaluation/defense totals.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle>Evaluations (range)</CardTitle>
-                                    <CardDescription>Panel vs Student evaluation totals.</CardDescription>
+                                    <CardTitle className="text-base">Audit activity (daily)</CardTitle>
+                                    <CardDescription>Daily counts across the selected range.</CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                    {busy || !s ? (
+                                        <Skeleton className="h-72 w-full" />
+                                    ) : auditDailyArea.length === 0 ? (
+                                        <div className="text-sm text-muted-foreground">No audit activity in this range.</div>
+                                    ) : (
+                                        <ChartScroller width={760} height={320} hint="Swipe horizontally to view the full chart.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <AreaChart data={auditDailyArea}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="day"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Area
+                                                        type="monotone"
+                                                        dataKey="count"
+                                                        stroke={C.chart2}
+                                                        fill={C.chart2}
+                                                        fillOpacity={0.2}
+                                                    />
+                                                </AreaChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle className="text-base">Evaluations (range)</CardTitle>
+                                    <CardDescription>Panel vs Student totals.</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-2">
                                     <div className="flex flex-wrap gap-2">
@@ -793,73 +973,77 @@ export default function AdminDashboardPage() {
                                     <div className="text-sm text-muted-foreground">
                                         Full breakdown is available in <span className="font-medium text-foreground">Reports</span>.
                                     </div>
-
-                                    <div className="pt-2">
-                                        <Button asChild variant="secondary">
-                                            <Link href="/dashboard/admin/reports">Open Reports</Link>
-                                        </Button>
-                                    </div>
+                                    <Button asChild variant="secondary" className="w-full">
+                                        <Link href="/dashboard/admin/reports">Open Reports</Link>
+                                    </Button>
                                 </CardContent>
                             </Card>
 
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle>Defenses (range)</CardTitle>
+                                    <CardTitle className="text-base">Defenses (range)</CardTitle>
                                     <CardDescription>Counts captured for the selected range & filters.</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-2">
                                     <Badge variant="secondary">total: {s?.defenses.total_in_range ?? 0}</Badge>
                                     <div className="text-sm text-muted-foreground">
-                                        Filter by Program/Term above to match the Thesis/Defenses slice you need.
+                                        Filter by Program/Term above to match the slice you need.
                                     </div>
                                 </CardContent>
                             </Card>
-                        </div>
-                    </TabsContent>
+                        </CardContent>
+                    </Card>
 
-                    {/* Audit Overview */}
-                    <TabsContent value="audit" className="space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
+                    {/* Audit */}
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="flex items-center gap-2">
+                                <Activity className="h-4 w-4" />
+                                Audit
+                            </CardTitle>
+                            <CardDescription>Top actions + top actors in the selected range.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle>Top actions</CardTitle>
-                                    <CardDescription>Most common audit actions in the range (top 10).</CardDescription>
+                                    <CardTitle className="text-base">Top actions</CardTitle>
+                                    <CardDescription>Most common audit actions (top 10).</CardDescription>
                                 </CardHeader>
-                                <CardContent className="h-80">
+                                <CardContent>
                                     {busy || !s ? (
-                                        <Skeleton className="h-full w-full" />
+                                        <Skeleton className="h-72 w-full" />
                                     ) : auditTopActionsBar.length === 0 ? (
-                                        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                                            No audit activity in this range.
-                                        </div>
+                                        <div className="text-sm text-muted-foreground">No audit activity in this range.</div>
                                     ) : (
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <BarChart data={auditTopActionsBar}>
-                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
-                                                <XAxis
-                                                    dataKey="action"
-                                                    tick={{ fontSize: 12, fill: C.mutedForeground }}
-                                                    interval={0}
-                                                    angle={-20}
-                                                    height={70}
-                                                />
-                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
-                                                <RechartsTooltip />
-                                                <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
-                                            </BarChart>
-                                        </ResponsiveContainer>
+                                        <ChartScroller width={820} height={320} hint="Swipe horizontally to view the full chart.">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={auditTopActionsBar}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="action"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                        interval={0}
+                                                        angle={-20}
+                                                        height={70}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        </ChartScroller>
                                     )}
                                 </CardContent>
                             </Card>
 
                             <Card>
                                 <CardHeader className="pb-2">
-                                    <CardTitle>Top actors</CardTitle>
+                                    <CardTitle className="text-base">Top actors</CardTitle>
                                     <CardDescription>Most active staff/admin based on audit volume.</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
                                     {busy || !s ? (
-                                        <Skeleton className="h-60 w-full" />
+                                        <Skeleton className="h-56 w-full" />
                                     ) : (s.audit.topActors ?? []).length === 0 ? (
                                         <div className="text-sm text-muted-foreground">No actor activity in this range.</div>
                                     ) : (
@@ -879,29 +1063,385 @@ export default function AdminDashboardPage() {
                                         </div>
                                     )}
 
-                                    <div className="pt-2">
+                                    <Button asChild variant="secondary" className="w-full">
+                                        <Link href="/dashboard/admin/audit">Open Audit Logs</Link>
+                                    </Button>
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle className="text-base">Audit tip</CardTitle>
+                                    <CardDescription>
+                                        Use Audit filters (action/entity/actor/date) to drill into specific events and view JSON details.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">range: {s?.range.from ?? from} → {s?.range.to ?? to}</Badge>
+                                    <Badge variant="outline">total: {s?.audit.total_in_range ?? 0}</Badge>
+                                </CardContent>
+                            </Card>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* ========================= */}
+                {/* DESKTOP TABS (md+)        */}
+                {/* (kept; hidden on xs/sm)   */}
+                {/* ========================= */}
+                <div className="hidden md:block">
+                    {/* Tabs of Overviews (Users / Thesis / Reports / Audit) */}
+                    <Tabs defaultValue="users" className="w-full">
+                        <TabsList className="w-full justify-start">
+                            <TabsTrigger value="users">Users</TabsTrigger>
+                            <TabsTrigger value="thesis">Thesis</TabsTrigger>
+                            <TabsTrigger value="reports">Reports</TabsTrigger>
+                            <TabsTrigger value="audit">Audit</TabsTrigger>
+                        </TabsList>
+
+                        {/* Users Overview */}
+                        <TabsContent value="users" className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Users className="h-4 w-4" />
+                                            Users by role
+                                        </CardTitle>
+                                        <CardDescription>Distribution of accounts across roles.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="h-72">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-full w-full" />
+                                        ) : (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart>
+                                                    <RechartsTooltip />
+                                                    <Legend wrapperStyle={{ color: C.foreground }} />
+                                                    <Pie
+                                                        data={usersRolePie}
+                                                        dataKey="value"
+                                                        nameKey="name"
+                                                        innerRadius={45}
+                                                        outerRadius={80}
+                                                    >
+                                                        {usersRolePie.map((_, idx) => (
+                                                            <Cell
+                                                                key={idx}
+                                                                fill={idx === 0 ? C.chart1 : idx === 1 ? C.chart2 : C.chart3}
+                                                            />
+                                                        ))}
+                                                    </Pie>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        )}
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <BarChart3 className="h-4 w-4" />
+                                            Users by status
+                                        </CardTitle>
+                                        <CardDescription>Active vs disabled accounts.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="h-72">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-full w-full" />
+                                        ) : (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart>
+                                                    <RechartsTooltip />
+                                                    <Legend wrapperStyle={{ color: C.foreground }} />
+                                                    <Pie
+                                                        data={usersStatusPie}
+                                                        dataKey="value"
+                                                        nameKey="name"
+                                                        innerRadius={45}
+                                                        outerRadius={80}
+                                                    >
+                                                        {usersStatusPie.map((_, idx) => (
+                                                            <Cell key={idx} fill={idx === 0 ? C.chart1 : C.destructive} />
+                                                        ))}
+                                                    </Pie>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle>Quick breakdown</CardTitle>
+                                    <CardDescription>Matches Manage Users overview.</CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">student: {s?.users.byRole.student ?? 0}</Badge>
+                                    <Badge variant="secondary">staff: {s?.users.byRole.staff ?? 0}</Badge>
+                                    <Badge variant="secondary">admin: {s?.users.byRole.admin ?? 0}</Badge>
+                                    <Badge variant="outline">active: {s?.users.byStatus.active ?? 0}</Badge>
+                                    <Badge variant="outline">disabled: {s?.users.byStatus.disabled ?? 0}</Badge>
+
+                                    <div className="ml-auto">
                                         <Button asChild variant="secondary">
-                                            <Link href="/dashboard/admin/audit">Open Audit Logs</Link>
+                                            <Link href="/dashboard/admin/users">Open Manage Users</Link>
                                         </Button>
                                     </div>
                                 </CardContent>
                             </Card>
-                        </div>
+                        </TabsContent>
 
-                        <Card>
-                            <CardHeader className="pb-2">
-                                <CardTitle>Audit tip</CardTitle>
-                                <CardDescription>
-                                    Use Audit filters (action/entity/actor/date) to drill into specific events and view JSON details.
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent className="flex flex-wrap items-center gap-2">
-                                <Badge variant="secondary">range: {s?.range.from ?? from} → {s?.range.to ?? to}</Badge>
-                                <Badge variant="outline">total: {s?.audit.total_in_range ?? 0}</Badge>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-                </Tabs>
+                        {/* Thesis Overview */}
+                        <TabsContent value="thesis" className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <BookOpen className="h-4 w-4" />
+                                            Thesis groups by program
+                                        </CardTitle>
+                                        <CardDescription>Top programs (up to 12). Respects Program/Term filters.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="h-80">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-full w-full" />
+                                        ) : thesisProgramBar.length === 0 ? (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                No thesis groups found for this range/filter.
+                                            </div>
+                                        ) : (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={thesisProgramBar}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="program"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                        interval={0}
+                                                        angle={-20}
+                                                        height={60}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        )}
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle>Defenses by month</CardTitle>
+                                        <CardDescription>Matches the Reports → Defenses tab overview.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="h-80">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-full w-full" />
+                                        ) : defensesByMonthLine.length === 0 ? (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                No defense schedules in this range.
+                                            </div>
+                                        ) : (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={defensesByMonthLine}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis dataKey="month" tick={{ fontSize: 12, fill: C.mutedForeground }} />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Line
+                                                        type="monotone"
+                                                        dataKey="count"
+                                                        stroke={C.chart1}
+                                                        strokeWidth={2}
+                                                        dot={false}
+                                                    />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle>Thesis snapshot</CardTitle>
+                                    <CardDescription>Matches Thesis dashboard totals.</CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">groups: {s?.thesis.groups_total ?? 0}</Badge>
+                                    <Badge variant="secondary">memberships: {s?.thesis.memberships_total ?? 0}</Badge>
+                                    <Badge variant="outline">unassigned adviser: {s?.thesis.unassigned_adviser ?? 0}</Badge>
+
+                                    <div className="ml-auto">
+                                        <Button asChild variant="secondary">
+                                            <Link href="/dashboard/admin/thesis">Open Thesis Records</Link>
+                                        </Button>
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Reports Overview */}
+                        <TabsContent value="reports" className="space-y-4">
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle>Audit activity (daily)</CardTitle>
+                                    <CardDescription>Daily counts across the selected range.</CardDescription>
+                                </CardHeader>
+                                <CardContent className="h-80">
+                                    {busy || !s ? (
+                                        <Skeleton className="h-full w-full" />
+                                    ) : auditDailyArea.length === 0 ? (
+                                        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                            No audit activity in this range.
+                                        </div>
+                                    ) : (
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <AreaChart data={auditDailyArea}>
+                                                <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                <XAxis dataKey="day" tick={{ fontSize: 12, fill: C.mutedForeground }} />
+                                                <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                <RechartsTooltip />
+                                                <Area
+                                                    type="monotone"
+                                                    dataKey="count"
+                                                    stroke={C.chart2}
+                                                    fill={C.chart2}
+                                                    fillOpacity={0.2}
+                                                />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle>Evaluations (range)</CardTitle>
+                                        <CardDescription>Panel vs Student evaluation totals.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2">
+                                        <div className="flex flex-wrap gap-2">
+                                            <Badge variant="secondary">panel: {s?.evaluations.panel.total_in_range ?? 0}</Badge>
+                                            <Badge variant="secondary">student: {s?.evaluations.student.total_in_range ?? 0}</Badge>
+                                        </div>
+                                        <div className="text-sm text-muted-foreground">
+                                            Full breakdown is available in{" "}
+                                            <span className="font-medium text-foreground">Reports</span>.
+                                        </div>
+
+                                        <div className="pt-2">
+                                            <Button asChild variant="secondary">
+                                                <Link href="/dashboard/admin/reports">Open Reports</Link>
+                                            </Button>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle>Defenses (range)</CardTitle>
+                                        <CardDescription>Counts captured for the selected range & filters.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2">
+                                        <Badge variant="secondary">total: {s?.defenses.total_in_range ?? 0}</Badge>
+                                        <div className="text-sm text-muted-foreground">
+                                            Filter by Program/Term above to match the Thesis/Defenses slice you need.
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+                        </TabsContent>
+
+                        {/* Audit Overview */}
+                        <TabsContent value="audit" className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle>Top actions</CardTitle>
+                                        <CardDescription>Most common audit actions in the range (top 10).</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="h-80">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-full w-full" />
+                                        ) : auditTopActionsBar.length === 0 ? (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                No audit activity in this range.
+                                            </div>
+                                        ) : (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={auditTopActionsBar}>
+                                                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
+                                                    <XAxis
+                                                        dataKey="action"
+                                                        tick={{ fontSize: 12, fill: C.mutedForeground }}
+                                                        interval={0}
+                                                        angle={-20}
+                                                        height={70}
+                                                    />
+                                                    <YAxis allowDecimals={false} tick={{ fill: C.mutedForeground }} />
+                                                    <RechartsTooltip />
+                                                    <Bar dataKey="count" fill={C.chart1} radius={[6, 6, 0, 0]} />
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        )}
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="pb-2">
+                                        <CardTitle>Top actors</CardTitle>
+                                        <CardDescription>Most active staff/admin based on audit volume.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="space-y-3">
+                                        {busy || !s ? (
+                                            <Skeleton className="h-60 w-full" />
+                                        ) : (s.audit.topActors ?? []).length === 0 ? (
+                                            <div className="text-sm text-muted-foreground">No actor activity in this range.</div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {(s.audit.topActors ?? []).slice(0, 6).map((r) => (
+                                                    <div key={r.actor_id} className="flex items-center justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="truncate text-sm font-medium">{r.actor_name ?? "Unknown"}</div>
+                                                            <div className="truncate text-xs text-muted-foreground">{r.actor_email ?? ""}</div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            {r.role ? <Badge variant="outline">{r.role}</Badge> : null}
+                                                            <Badge variant="secondary">{r.count}</Badge>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div className="pt-2">
+                                            <Button asChild variant="secondary">
+                                                <Link href="/dashboard/admin/audit">Open Audit Logs</Link>
+                                            </Button>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <CardTitle>Audit tip</CardTitle>
+                                    <CardDescription>
+                                        Use Audit filters (action/entity/actor/date) to drill into specific events and view JSON details.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">range: {s?.range.from ?? from} → {s?.range.to ?? to}</Badge>
+                                    <Badge variant="outline">total: {s?.audit.total_in_range ?? 0}</Badge>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+                    </Tabs>
+                </div>
             </div>
         </DashboardLayout>
     )
