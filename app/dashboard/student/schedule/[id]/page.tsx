@@ -66,6 +66,10 @@ type ThesisGroupByIdOk = { ok: true; group: any }
 type ThesisGroupByIdErr = { ok: false; message?: string }
 type ThesisGroupByIdResponse = ThesisGroupByIdOk | ThesisGroupByIdErr
 
+type AvatarJsonOk = { ok: true; url: string | null; avatar_key?: string | null }
+type AvatarJsonErr = { ok: false; message?: string }
+type AvatarJsonResponse = AvatarJsonOk | AvatarJsonErr
+
 function formatDateTime(v: string) {
     const d = new Date(v)
     if (Number.isNaN(d.getTime())) return v
@@ -118,12 +122,6 @@ function normalizeGroup(group: any): ThesisGroupOption | null {
     }
 }
 
-function avatarSrc(userId: string) {
-    const id = String(userId ?? "").trim()
-    if (!id) return ""
-    return `/api/users/${encodeURIComponent(id)}/avatar`
-}
-
 export default function StudentScheduleDetailsPage() {
     const router = useRouter()
     const params = useParams<{ id: string }>()
@@ -140,6 +138,9 @@ export default function StudentScheduleDetailsPage() {
     const [group, setGroup] = React.useState<ThesisGroupOption | null>(null)
 
     const [tab, setTab] = React.useState("details")
+
+    // ✅ store resolved (presigned/external) URLs here so <img> does NOT need auth headers
+    const [panelistAvatarUrl, setPanelistAvatarUrl] = React.useState<Record<string, string>>({})
 
     React.useEffect(() => {
         if (!loading && (!user || String(user.role ?? "").toLowerCase() !== "student")) {
@@ -178,6 +179,47 @@ export default function StudentScheduleDetailsPage() {
         }
     }, [api, id])
 
+    const hydratePanelistAvatars = React.useCallback(
+        async (list: Panelist[]) => {
+            const ids = Array.from(new Set(list.map((p) => String(p.staffId || "").trim()).filter(Boolean)))
+            if (!ids.length) return
+
+            // Only fetch those we don't already have (or are empty)
+            const missing = ids.filter((uid) => !panelistAvatarUrl[uid])
+            if (!missing.length) return
+
+            try {
+                const pairs = await Promise.all(
+                    missing.map(async (uid) => {
+                        try {
+                            const res = await api.request<AvatarJsonResponse>(`/api/users/${encodeURIComponent(uid)}/avatar?format=json`)
+                            const url = res && (res as any).ok === true ? String((res as any).url ?? "") : ""
+                            return [uid, url] as const
+                        } catch {
+                            return [uid, ""] as const
+                        }
+                    })
+                )
+
+                setPanelistAvatarUrl((prev) => {
+                    const next = { ...prev }
+                    for (const [uid, url] of pairs) {
+                        if (url) next[uid] = url
+                    }
+                    return next
+                })
+            } catch {
+                // ignore
+            }
+        },
+        [api, panelistAvatarUrl]
+    )
+
+    React.useEffect(() => {
+        if (!panelists.length) return
+        hydratePanelistAvatars(panelists)
+    }, [panelists, hydratePanelistAvatars])
+
     const load = React.useCallback(async () => {
         if (!id) return
         setBusy(true)
@@ -195,6 +237,10 @@ export default function StudentScheduleDetailsPage() {
             const s = (sRes as ScheduleGetOk).schedule
             setSchedule(s)
 
+            // reset panelists + avatar urls on reload
+            setPanelists([])
+            setPanelistAvatarUrl({})
+
             await fetchPanelists()
 
             // enrich with group info (best-effort)
@@ -205,6 +251,7 @@ export default function StudentScheduleDetailsPage() {
             setSchedule(null)
             setPanelists([])
             setGroup(null)
+            setPanelistAvatarUrl({})
         } finally {
             setBusy(false)
         }
@@ -407,42 +454,44 @@ export default function StudentScheduleDetailsPage() {
                                             ) : (
                                                 <ScrollArea className="h-80 rounded-md border">
                                                     <div className="p-3 space-y-2">
-                                                        {panelists.map((p) => (
-                                                            <div
-                                                                key={`${p.scheduleId}-${p.staffId}`}
-                                                                className={cn(
-                                                                    "flex items-center justify-between gap-3 rounded-md border bg-background p-3",
-                                                                    "hover:bg-muted/40"
-                                                                )}
-                                                            >
-                                                                <div className="flex items-center gap-3">
-                                                                    <Avatar className="h-9 w-9">
-                                                                        <AvatarImage
-                                                                            src={avatarSrc(p.staffId)}
-                                                                            alt={p.staffName || p.staffEmail}
-                                                                        />
-                                                                        <AvatarFallback>
-                                                                            {safeInitials(p.staffName || p.staffEmail)}
-                                                                        </AvatarFallback>
-                                                                    </Avatar>
-
-                                                                    <div className="min-w-0">
-                                                                        <div className="truncate text-sm font-medium">{p.staffName}</div>
-                                                                        <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
-                                                                    </div>
-                                                                </div>
-
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    className="shrink-0"
-                                                                    onClick={() => copy(p.staffEmail || p.staffId)}
+                                                        {panelists.map((p) => {
+                                                            const img = panelistAvatarUrl[String(p.staffId || "").trim()] || ""
+                                                            return (
+                                                                <div
+                                                                    key={`${p.scheduleId}-${p.staffId}`}
+                                                                    className={cn(
+                                                                        "flex items-center justify-between gap-3 rounded-md border bg-background p-3",
+                                                                        "hover:bg-muted/40"
+                                                                    )}
                                                                 >
-                                                                    <ClipboardCopy className="mr-2 h-4 w-4" />
-                                                                    Copy
-                                                                </Button>
-                                                            </div>
-                                                        ))}
+                                                                    <div className="flex items-center gap-3">
+                                                                        <Avatar className="h-9 w-9">
+                                                                            {img ? (
+                                                                                <AvatarImage src={img} alt={p.staffName || p.staffEmail} className="object-cover" />
+                                                                            ) : null}
+                                                                            <AvatarFallback>
+                                                                                {safeInitials(p.staffName || p.staffEmail)}
+                                                                            </AvatarFallback>
+                                                                        </Avatar>
+
+                                                                        <div className="min-w-0">
+                                                                            <div className="truncate text-sm font-medium">{p.staffName}</div>
+                                                                            <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <Button
+                                                                        variant="outline"
+                                                                        size="sm"
+                                                                        className="shrink-0"
+                                                                        onClick={() => copy(p.staffEmail || p.staffId)}
+                                                                    >
+                                                                        <ClipboardCopy className="mr-2 h-4 w-4" />
+                                                                        Copy
+                                                                    </Button>
+                                                                </div>
+                                                            )
+                                                        })}
                                                     </div>
                                                 </ScrollArea>
                                             )}
