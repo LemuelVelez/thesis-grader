@@ -46,9 +46,7 @@ function pickNumberFrom(obj: any, paths: Array<string[]>) {
     const o = asObj(obj)
     for (const path of paths) {
         let cur: any = o
-        for (const k of path) {
-            cur = cur?.[k]
-        }
+        for (const k of path) cur = cur?.[k]
         const n = toNumber(cur)
         if (n !== null) return n
     }
@@ -59,18 +57,80 @@ function pickStringFrom(obj: any, paths: Array<string[]>) {
     const o = asObj(obj)
     for (const path of paths) {
         let cur: any = o
-        for (const k of path) {
-            cur = cur?.[k]
-        }
+        for (const k of path) cur = cur?.[k]
         const s = toStr(cur)
         if (s) return s
     }
     return null
 }
 
+function avg(nums: Array<number | null>) {
+    const x = nums.filter((n) => typeof n === "number" && Number.isFinite(n)) as number[]
+    if (!x.length) return null
+    return x.reduce((a, b) => a + b, 0) / x.length
+}
+
+/**
+ * NEW: compute member overall from membersCriteria map:
+ * membersCriteria[studentId][criterionId] = {score, comment} OR number
+ */
+function computeMemberFromMembersCriteria(extras: any, studentId: string): { score: number | null; comment: string | null } | null {
+    const ex = asObj(extras)
+    const mc = ex.membersCriteria ?? ex.memberCriteria ?? ex.members_criteria ?? null
+    if (!mc || typeof mc !== "object" || Array.isArray(mc)) return null
+
+    const perStudent = (mc as any)[studentId] ?? (mc as any)[String(studentId)]
+    if (!perStudent || typeof perStudent !== "object" || Array.isArray(perStudent)) return null
+
+    const vals: number[] = []
+    for (const v of Object.values(perStudent)) {
+        if (typeof v === "number" || typeof v === "string") {
+            const n = toNumber(v)
+            if (n !== null) vals.push(n)
+            continue
+        }
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+            const n = toNumber((v as any).score)
+            if (n !== null) vals.push(n)
+        }
+    }
+
+    if (!vals.length) return null
+    const score = vals.reduce((a, b) => a + b, 0) / vals.length
+    return { score, comment: null }
+}
+
+/**
+ * UPDATED: include your real JSON keys:
+ * - membersOverall[studentId] => {score, comment} OR number
+ * - fallback: membersCriteria[studentId][criterionId].score => avg
+ */
 function extractMemberEntry(extras: any, studentId: string): { score: number | null; comment: string | null } | null {
     const ex = asObj(extras)
 
+    // 1) membersOverall (YOUR STRUCTURE)
+    const mo = ex.membersOverall ?? ex.memberOverall ?? ex.members_overall ?? null
+    if (mo && typeof mo === "object" && !Array.isArray(mo)) {
+        const hit = (mo as any)[studentId] ?? (mo as any)[String(studentId)]
+        if (hit !== undefined) {
+            if (typeof hit === "number" || typeof hit === "string") {
+                return { score: toNumber(hit), comment: null }
+            }
+            if (hit && typeof hit === "object" && !Array.isArray(hit)) {
+                const score =
+                    pickNumberFrom(hit, [["score"], ["total"], ["value"], ["points"], ["memberScore"], ["finalScore"]]) ?? null
+                const comment =
+                    pickStringFrom(hit, [["comment"], ["remarks"], ["note"], ["text"], ["message"], ["feedback"]]) ?? null
+                return { score, comment }
+            }
+        }
+    }
+
+    // 2) membersCriteria fallback (avg)
+    const fromCriteria = computeMemberFromMembersCriteria(ex, studentId)
+    if (fromCriteria && fromCriteria.score !== null) return fromCriteria
+
+    // 3) other legacy containers (kept)
     const containers = [
         ex.members,
         ex.memberScores,
@@ -92,22 +152,9 @@ function extractMemberEntry(extras: any, studentId: string): { score: number | n
                 }
                 if (hit && typeof hit === "object" && !Array.isArray(hit)) {
                     const score =
-                        pickNumberFrom(hit, [
-                            ["score"],
-                            ["total"],
-                            ["value"],
-                            ["points"],
-                            ["memberScore"],
-                            ["finalScore"],
-                        ]) ?? null
+                        pickNumberFrom(hit, [["score"], ["total"], ["value"], ["points"], ["memberScore"], ["finalScore"]]) ?? null
                     const comment =
-                        pickStringFrom(hit, [
-                            ["comment"],
-                            ["remarks"],
-                            ["note"],
-                            ["text"],
-                            ["message"],
-                        ]) ?? null
+                        pickStringFrom(hit, [["comment"], ["remarks"], ["note"], ["text"], ["message"]]) ?? null
                     return { score, comment }
                 }
             }
@@ -123,58 +170,25 @@ function extractMemberEntry(extras: any, studentId: string): { score: number | n
             })
             if (found) {
                 const score =
-                    pickNumberFrom(found, [
-                        ["score"],
-                        ["total"],
-                        ["value"],
-                        ["points"],
-                        ["memberScore"],
-                        ["finalScore"],
-                    ]) ?? null
+                    pickNumberFrom(found, [["score"], ["total"], ["value"], ["points"], ["memberScore"], ["finalScore"]]) ?? null
                 const comment =
-                    pickStringFrom(found, [
-                        ["comment"],
-                        ["remarks"],
-                        ["note"],
-                        ["text"],
-                        ["message"],
-                    ]) ?? null
+                    pickStringFrom(found, [["comment"], ["remarks"], ["note"], ["text"], ["message"]]) ?? null
                 return { score, comment }
             }
         }
     }
 
-    // sometimes stored as extras.personal or extras.member (single) but still keyed differently
+    // sometimes stored as extras.personal or extras.member (single)
     const fallback = ex.personal ?? ex.member ?? null
     if (fallback && typeof fallback === "object" && !Array.isArray(fallback)) {
-        // If it’s already “for the current student” in your design
         const score =
-            pickNumberFrom(fallback, [
-                ["score"],
-                ["total"],
-                ["value"],
-                ["points"],
-                ["memberScore"],
-                ["finalScore"],
-            ]) ?? null
+            pickNumberFrom(fallback, [["score"], ["total"], ["value"], ["points"], ["memberScore"], ["finalScore"]]) ?? null
         const comment =
-            pickStringFrom(fallback, [
-                ["comment"],
-                ["remarks"],
-                ["note"],
-                ["text"],
-                ["message"],
-            ]) ?? null
+            pickStringFrom(fallback, [["comment"], ["remarks"], ["note"], ["text"], ["message"]]) ?? null
         if (score !== null || comment) return { score, comment }
     }
 
     return null
-}
-
-function avg(nums: Array<number | null>) {
-    const x = nums.filter((n) => typeof n === "number" && Number.isFinite(n)) as number[]
-    if (!x.length) return null
-    return x.reduce((a, b) => a + b, 0) / x.length
 }
 
 export async function GET(req: NextRequest) {
@@ -285,7 +299,7 @@ export async function GET(req: NextRequest) {
             seBySchedule.set(String((r as any).scheduleId), r)
         }
 
-        // 5) build per-schedule summary
+        // 5) group eval rows by schedule
         const evalsBySchedule = new Map<string, any[]>()
         for (const r of evalRows ?? []) {
             const sid = String((r as any).scheduleId ?? "")
@@ -342,23 +356,16 @@ export async function GET(req: NextRequest) {
                         ["ai", "comment"],
                     ]) ?? null
 
+                // IMPORTANT: now supports membersOverall + membersCriteria
                 const member = extractMemberEntry(extras, studentId)
                 const personalScore =
                     member?.score ??
-                    pickNumberFrom(extras, [
-                        ["personalScore"],
-                        ["individualScore"],
-                        ["memberScore"],
-                    ]) ??
+                    pickNumberFrom(extras, [["personalScore"], ["individualScore"], ["memberScore"]]) ??
                     null
 
                 const personalComment =
                     member?.comment ??
-                    pickStringFrom(extras, [
-                        ["personalComment"],
-                        ["individualComment"],
-                        ["memberComment"],
-                    ]) ??
+                    pickStringFrom(extras, [["personalComment"], ["individualComment"], ["memberComment"]]) ??
                     null
 
                 return {
@@ -384,9 +391,9 @@ export async function GET(req: NextRequest) {
                 }
             })
 
-            const aggGroup = avg(panelistEvaluations.map((x: any) => x.scores.groupScore))
-            const aggSystem = avg(panelistEvaluations.map((x: any) => x.scores.systemScore))
-            const aggPersonal = avg(panelistEvaluations.map((x: any) => x.scores.personalScore))
+            const aggGroup = avg(panelistEvaluations.map((x: any) => toNumber(x.scores.groupScore)))
+            const aggSystem = avg(panelistEvaluations.map((x: any) => toNumber(x.scores.systemScore)))
+            const aggPersonal = avg(panelistEvaluations.map((x: any) => toNumber(x.scores.personalScore)))
 
             return {
                 schedule: {

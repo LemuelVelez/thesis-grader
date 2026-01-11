@@ -173,10 +173,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         return svgOk(placeholderSvg("U"))
     }
 
-    // allow admin OR self
-    const actorId = String((actor as any)?.id ?? "")
+    // ✅ allow authenticated roles to read avatars (so students can see panelists/staff avatars)
     const role = String((actor as any)?.role ?? "").toLowerCase()
-    const canRead = role === "admin" || actorId === id
+    const canRead = role === "admin" || role === "staff" || role === "student"
 
     if (!canRead) {
         if (wantsJson(req)) return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 })

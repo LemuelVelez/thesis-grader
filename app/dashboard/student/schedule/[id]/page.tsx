@@ -13,7 +13,7 @@ import { useApi } from "@/hooks/use-api"
 import { cn } from "@/lib/utils"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -116,6 +116,12 @@ function normalizeGroup(group: any): ThesisGroupOption | null {
         program: group?.program ?? null,
         term: group?.term ?? null,
     }
+}
+
+function avatarSrc(userId: string) {
+    const id = String(userId ?? "").trim()
+    if (!id) return ""
+    return `/api/users/${encodeURIComponent(id)}/avatar`
 }
 
 export default function StudentScheduleDetailsPage() {
@@ -411,8 +417,15 @@ export default function StudentScheduleDetailsPage() {
                                                             >
                                                                 <div className="flex items-center gap-3">
                                                                     <Avatar className="h-9 w-9">
-                                                                        <AvatarFallback>{safeInitials(p.staffName || p.staffEmail)}</AvatarFallback>
+                                                                        <AvatarImage
+                                                                            src={avatarSrc(p.staffId)}
+                                                                            alt={p.staffName || p.staffEmail}
+                                                                        />
+                                                                        <AvatarFallback>
+                                                                            {safeInitials(p.staffName || p.staffEmail)}
+                                                                        </AvatarFallback>
                                                                     </Avatar>
+
                                                                     <div className="min-w-0">
                                                                         <div className="truncate text-sm font-medium">{p.staffName}</div>
                                                                         <div className="truncate text-xs text-muted-foreground">{p.staffEmail}</div>
