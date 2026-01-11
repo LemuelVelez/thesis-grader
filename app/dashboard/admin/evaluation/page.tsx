@@ -696,7 +696,6 @@ export default function AdminEvaluationPage() {
 
     const selectedScheduleForActions = activeTab === "staff" ? staffScheduleFilter : studentScheduleFilter
 
-    // staff inspect footer helpers (stable + safe)
     const staffInspectFooterStatus = safeText(staffInspectDetail?.evaluation?.status ?? staffInspectItem?.status ?? "", "").toLowerCase()
     const staffInspectFooterIsLocked = staffInspectFooterStatus === "locked"
 
@@ -1387,7 +1386,7 @@ export default function AdminEvaluationPage() {
 
                 {/* NEW: Inspect Staff Evaluation (Scores + Members + System) */}
                 <Dialog open={staffInspectOpen} onOpenChange={setStaffInspectOpen}>
-                    {/* ✅ FIX: bound dialog height + make body scrollable */}
+                    {/* ✅ FIX: keep footer visible; scroll ONLY the body; table itself has capped height */}
                     <DialogContent className="sm:max-w-3xl max-h-[90svh] overflow-hidden flex flex-col min-h-0">
                         <DialogHeader className="shrink-0">
                             <DialogTitle>{staffInspectTitle || "Inspect staff evaluation"}</DialogTitle>
@@ -1396,8 +1395,9 @@ export default function AdminEvaluationPage() {
                             </DialogDescription>
                         </DialogHeader>
 
-                        <ScrollArea className="flex-1 min-h-0">
-                            <div className="space-y-4 pr-4">
+                        {/* body scroll */}
+                        <div className="flex-1 min-h-0 overflow-y-auto pr-4">
+                            <div className="space-y-4 pb-2">
                                 {staffInspectLoading ? (
                                     <div className="space-y-2">
                                         <Skeleton className="h-6 w-full" />
@@ -1473,44 +1473,47 @@ export default function AdminEvaluationPage() {
                                                 {!staffInspectDetail ? (
                                                     <div className="rounded-md border p-6 text-sm text-muted-foreground">Scores were not loaded for this record.</div>
                                                 ) : Array.isArray(staffInspectDetail.criteria) && staffInspectDetail.criteria.length > 0 ? (
-                                                    <div className="rounded-md border overflow-x-auto">
-                                                        <Table>
-                                                            <TableHeader>
-                                                                <TableRow>
-                                                                    <TableHead className="w-80">Criterion</TableHead>
-                                                                    <TableHead className="w-24">Weight</TableHead>
-                                                                    <TableHead className="w-28">Min–Max</TableHead>
-                                                                    <TableHead className="w-24">Score</TableHead>
-                                                                    <TableHead>Comment</TableHead>
-                                                                </TableRow>
-                                                            </TableHeader>
-                                                            <TableBody>
-                                                                {staffInspectDetail.criteria.map((r) => {
-                                                                    const w = toNumber(r.weight, 1)
-                                                                    const sc = typeof r.score === "number" ? r.score : null
-                                                                    return (
-                                                                        <TableRow key={r.criterionId}>
-                                                                            <TableCell className="align-top">
-                                                                                <div className="space-y-1">
-                                                                                    <div className="font-medium">{safeText(r.criterion, "—")}</div>
-                                                                                    {r.description ? (
-                                                                                        <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
-                                                                                    ) : null}
-                                                                                </div>
-                                                                            </TableCell>
-                                                                            <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
-                                                                            <TableCell className="align-top">
-                                                                                {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
-                                                                            </TableCell>
-                                                                            <TableCell className="align-top">{sc ?? "—"}</TableCell>
-                                                                            <TableCell className="align-top">
-                                                                                <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
-                                                                            </TableCell>
-                                                                        </TableRow>
-                                                                    )
-                                                                })}
-                                                            </TableBody>
-                                                        </Table>
+                                                    <div className="rounded-md border overflow-hidden">
+                                                        {/* ✅ FIX: cap table height + scroll inside, so footer never gets pushed */}
+                                                        <div className="max-h-[45svh] overflow-auto">
+                                                            <Table>
+                                                                <TableHeader>
+                                                                    <TableRow>
+                                                                        <TableHead className="w-80">Criterion</TableHead>
+                                                                        <TableHead className="w-24">Weight</TableHead>
+                                                                        <TableHead className="w-28">Min–Max</TableHead>
+                                                                        <TableHead className="w-24">Score</TableHead>
+                                                                        <TableHead>Comment</TableHead>
+                                                                    </TableRow>
+                                                                </TableHeader>
+                                                                <TableBody>
+                                                                    {staffInspectDetail.criteria.map((r) => {
+                                                                        const w = toNumber(r.weight, 1)
+                                                                        const sc = typeof r.score === "number" ? r.score : null
+                                                                        return (
+                                                                            <TableRow key={r.criterionId}>
+                                                                                <TableCell className="align-top">
+                                                                                    <div className="space-y-1">
+                                                                                        <div className="font-medium">{safeText(r.criterion, "—")}</div>
+                                                                                        {r.description ? (
+                                                                                            <div className="text-xs text-muted-foreground">{safeText(r.description, "")}</div>
+                                                                                        ) : null}
+                                                                                    </div>
+                                                                                </TableCell>
+                                                                                <TableCell className="align-top">{Number.isFinite(w) ? w : "—"}</TableCell>
+                                                                                <TableCell className="align-top">
+                                                                                    {toNumber(r.minScore, 0)}–{toNumber(r.maxScore, 0)}
+                                                                                </TableCell>
+                                                                                <TableCell className="align-top">{sc ?? "—"}</TableCell>
+                                                                                <TableCell className="align-top">
+                                                                                    <div className="whitespace-pre-wrap text-sm">{safeText(r.comment, "—")}</div>
+                                                                                </TableCell>
+                                                                            </TableRow>
+                                                                        )
+                                                                    })}
+                                                                </TableBody>
+                                                            </Table>
+                                                        </div>
                                                     </div>
                                                 ) : (
                                                     <div className="rounded-md border p-6 text-sm text-muted-foreground">No rubric criteria returned for this evaluation.</div>
@@ -1557,7 +1560,7 @@ export default function AdminEvaluationPage() {
                                     </div>
                                 )}
                             </div>
-                        </ScrollArea>
+                        </div>
 
                         <DialogFooter className="shrink-0">
                             <Button
