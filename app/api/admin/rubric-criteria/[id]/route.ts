@@ -5,8 +5,9 @@ import { RubricCriteriaController } from "@/controllers/rubric-criteria.controll
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+// ✅ Match Next.js route handler context typing for dynamic segments
 type RouteContext = {
-    params?: { id?: string }
+    params: Promise<{ id: string }>
 }
 
 function errorJson(err: any, fallback: string) {
@@ -14,10 +15,11 @@ function errorJson(err: any, fallback: string) {
     return NextResponse.json({ error: err?.message ?? fallback }, { status })
 }
 
-function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): string {
-    const fromParams = ctx?.params?.id
-    if (fromParams) return String(fromParams)
+async function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): Promise<string> {
+    const { id } = await ctx.params
+    if (id) return String(id)
 
+    // Fallback (defensive)
     const parts = req.nextUrl.pathname.split("/").filter(Boolean)
     const last = parts[parts.length - 1] ?? ""
     return String(last)
@@ -26,7 +28,7 @@ function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): string {
 // ✅ GET /api/admin/rubric-criteria/:id
 export async function GET(req: NextRequest, ctx: RouteContext) {
     try {
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const data = await (RubricCriteriaController.getById as any)(id)
@@ -38,7 +40,7 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
 
 export async function PUT(req: NextRequest, ctx: RouteContext) {
     try {
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }
@@ -57,7 +59,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
 
 export async function DELETE(req: NextRequest, ctx: RouteContext) {
     try {
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id) {
             return NextResponse.json({ error: "Missing id" }, { status: 400 })
         }
