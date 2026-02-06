@@ -2,6 +2,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { env } from "@/lib/env"
+import { ensureS3CorsForDirectUploads } from "@/lib/s3-cors"
 
 let client: S3Client | null = null
 
@@ -34,6 +35,9 @@ export async function createPresignedPutUrl(opts: {
     contentType: string
     expiresInSeconds?: number
 }) {
+    // ✅ Ensure bucket CORS once for whole app before generating direct-upload URLs
+    await ensureS3CorsForDirectUploads()
+
     const s3 = getS3Client()
     const cmd = new PutObjectCommand({
         Bucket: env.S3_BUCKET_NAME,
