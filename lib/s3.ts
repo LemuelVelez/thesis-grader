@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { env } from "@/lib/env"
@@ -10,7 +11,7 @@ export function getS3Client() {
     // If running on IAM role in prod, credentials can be omitted.
     const hasStaticCreds = !!env.AWS_ACCESS_KEY_ID && !!env.AWS_SECRET_ACCESS_KEY
 
-    client = new S3Client({
+    const config: ConstructorParameters<typeof S3Client>[0] = {
         region: env.AWS_REGION,
         credentials: hasStaticCreds
             ? {
@@ -18,9 +19,13 @@ export function getS3Client() {
                 secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
             }
             : undefined,
-        // forcePathStyle: false, // keep default virtual-host style (matches your example URL)
-    })
+    }
 
+        // Reduces extra checksum signing headers/params on presigned PUT URLs
+        // which helps avoid stricter browser preflight/header mismatches.
+        ; (config as any).requestChecksumCalculation = "WHEN_REQUIRED"
+
+    client = new S3Client(config)
     return client
 }
 
