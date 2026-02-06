@@ -5,7 +5,7 @@ import { EvaluationsController } from "@/controllers/evaluations.controller"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-type RouteContext = { params: { id: string } }
+type RouteContext = { params: Promise<{ id: string }> }
 
 function errorJson(err: any, fallback: string) {
     const status = err?.status ?? err?.statusCode ?? 500
@@ -20,7 +20,7 @@ async function callUpdate(fn: any, id: string, body: any) {
 
 export async function GET(_req: NextRequest, ctx: RouteContext) {
     try {
-        const id = ctx.params.id
+        const { id } = await ctx.params
         if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const data = await (EvaluationsController.getById as any)(id)
@@ -32,7 +32,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 
 export async function PUT(req: NextRequest, ctx: RouteContext) {
     try {
-        const id = ctx.params.id
+        const { id } = await ctx.params
         if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const body = await req.json().catch(() => null)
@@ -48,7 +48,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
 
 export async function DELETE(_req: NextRequest, ctx: RouteContext) {
     try {
-        const id = ctx.params.id
+        const { id } = await ctx.params
         if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 })
 
         const data = await (EvaluationsController.delete as any)(id)
