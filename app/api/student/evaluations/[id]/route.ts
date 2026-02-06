@@ -6,8 +6,10 @@ import { UsersController } from "@/controllers/users.controller"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+type RouteParams = { id: string }
+
 type RouteContext = {
-    params?: { id?: string }
+    params: Promise<RouteParams>
 }
 
 function errorJson(err: any, fallback: string) {
@@ -15,9 +17,14 @@ function errorJson(err: any, fallback: string) {
     return NextResponse.json({ error: err?.message ?? fallback }, { status })
 }
 
-function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): string {
-    const fromParams = ctx?.params?.id
-    if (fromParams) return String(fromParams)
+async function getIdFromCtxOrPath(req: NextRequest, ctx: RouteContext): Promise<string> {
+    try {
+        const params = await ctx.params
+        const fromParams = params?.id
+        if (fromParams) return String(fromParams)
+    } catch {
+        // fallback to path parsing below
+    }
 
     const parts = req.nextUrl.pathname.split("/").filter(Boolean)
     const last = parts[parts.length - 1]
@@ -85,7 +92,7 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
 
         await requireUser(userId)
 
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id.trim()) return NextResponse.json({ error: "Invalid id" }, { status: 400 })
 
         const result = await tryInvoke(StudentEvaluationsController.get, [
@@ -108,7 +115,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
 
         await requireUser(userId)
 
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id.trim()) return NextResponse.json({ error: "Invalid id" }, { status: 400 })
 
         const body = await safeJson(req)
@@ -133,7 +140,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
 
         const user = await requireUser(userId)
 
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id.trim()) return NextResponse.json({ error: "Invalid id" }, { status: 400 })
 
         const body = await safeJson(req)
@@ -181,7 +188,7 @@ export async function DELETE(req: NextRequest, ctx: RouteContext) {
 
         await requireUser(userId)
 
-        const id = getIdFromCtxOrPath(req, ctx)
+        const id = await getIdFromCtxOrPath(req, ctx)
         if (!id.trim()) return NextResponse.json({ error: "Invalid id" }, { status: 400 })
 
         const result = await tryInvoke(StudentEvaluationsController.delete, [
