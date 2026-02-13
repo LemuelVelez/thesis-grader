@@ -29,6 +29,7 @@ function roleBasePath(role: string | null | undefined) {
     if (r === "student") return "/dashboard/student"
     if (r === "staff") return "/dashboard/staff"
     if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
     return "/dashboard"
 }
 
@@ -37,7 +38,7 @@ export default function Header() {
     const [sheetOpen, setSheetOpen] = useState(false)
 
     const { user } = useAuth()
-    const appHref = user ? roleBasePath(user.role) : "/login"
+    const appHref = user ? roleBasePath(user.role) : "/auth/login"
     const appLabel = user ? "Go to dashboard" : "Open app"
 
     const sectionIds = useMemo(() => nav.map((n) => n.href.replace("#", "")), [])
@@ -150,7 +151,7 @@ export default function Header() {
                                         className={cn("justify-start", activeHref === item.href && "font-semibold")}
                                         onClick={() => {
                                             setActiveHref(item.href)
-                                            setSheetOpen(false) // ✅ close sheet after click
+                                            setSheetOpen(false)
                                         }}
                                     >
                                         <Link href={item.href}>{item.label}</Link>
@@ -162,7 +163,7 @@ export default function Header() {
                                 <Button
                                     asChild
                                     onClick={() => {
-                                        setSheetOpen(false) // ✅ close sheet after click
+                                        setSheetOpen(false)
                                     }}
                                 >
                                     <Link href={appHref} className="inline-flex items-center justify-between">

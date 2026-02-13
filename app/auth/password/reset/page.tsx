@@ -13,7 +13,24 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent } from "@/components/ui/card"
 
-type ResetResponse = { ok: true } | { ok: false; message?: string }
+type AuthUser = {
+    id: string
+    name: string
+    email: string
+    role: string
+    avatar_key: string | null
+}
+
+type ResetResponse = { message?: string; user?: AuthUser } | { error?: string; message?: string }
+
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
+    return "/dashboard"
+}
 
 export default function ResetPasswordPage() {
     const router = useRouter()
@@ -45,19 +62,23 @@ export default function ResetPasswordPage() {
             const res = await fetch("/api/auth/reset-password", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token, password }),
+                body: JSON.stringify({ token, newPassword: password }),
             })
 
             const data = (await res.json().catch(() => ({}))) as ResetResponse
 
-            if (!res.ok || !data || (data as any).ok === false) {
-                const msg = (data as any)?.message ?? "Unable to reset password."
+            if (!res.ok || (typeof data === "object" && data && "error" in data && data.error)) {
+                const msg = (data as any)?.error ?? (data as any)?.message ?? "Unable to reset password."
                 toast.error(msg, { id: tId })
                 return
             }
 
-            toast.success("Password updated. Please sign in.", { id: tId })
-            router.replace("/auth/login")
+            toast.success("Password updated.", { id: tId })
+
+            const redirectPath =
+                data && "user" in data && data.user?.role ? roleBasePath(data.user.role) : "/auth/login"
+
+            router.replace(redirectPath)
             router.refresh()
         } catch {
             toast.error("Network error. Please try again.", { id: tId })

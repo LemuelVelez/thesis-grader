@@ -3,7 +3,8 @@
 
 import Image from "next/image"
 import Link from "next/link"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -11,13 +12,55 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent } from "@/components/ui/card"
 
-type ForgotResponse = { ok: true; message?: string } | { ok: false; message?: string }
+type AuthUser = {
+    id: string
+    name: string
+    email: string
+    role: string
+    avatar_key: string | null
+}
+
+type MeResponse = { user: AuthUser } | { error?: string }
+type ForgotResponse = { message?: string } | { error?: string }
+
+function roleBasePath(role: string | null | undefined) {
+    const r = String(role ?? "").toLowerCase()
+    if (r === "student") return "/dashboard/student"
+    if (r === "staff") return "/dashboard/staff"
+    if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
+    return "/dashboard"
+}
 
 export default function ForgotPasswordPage() {
+    const router = useRouter()
     const [email, setEmail] = useState("")
     const [submitting, setSubmitting] = useState(false)
 
     const canSubmit = useMemo(() => email.trim().length > 0 && !submitting, [email, submitting])
+
+    // Already authenticated users should not stay on auth utility pages.
+    useEffect(() => {
+        let mounted = true
+
+            ; (async () => {
+                try {
+                    const res = await fetch("/api/auth/me", { method: "GET", cache: "no-store" })
+                    const data = (await res.json().catch(() => ({}))) as MeResponse
+                    if (!mounted) return
+
+                    if (res.ok && "user" in data && data.user) {
+                        router.replace(roleBasePath(data.user.role))
+                    }
+                } catch {
+                    // ignore
+                }
+            })()
+
+        return () => {
+            mounted = false
+        }
+    }, [router])
 
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault()
@@ -35,15 +78,13 @@ export default function ForgotPasswordPage() {
 
             const data = (await res.json().catch(() => ({}))) as ForgotResponse
 
-            // API always responds ok:true (to avoid enumeration), but keep this robust.
-            if (!res.ok || !data || (data as any).ok === false) {
-                const msg = (data as any)?.message ?? "Unable to send reset link."
+            if (!res.ok || (typeof data === "object" && data && "error" in data && data.error)) {
+                const msg = (data as any)?.error ?? (data as any)?.message ?? "Unable to send reset link."
                 toast.error(msg, { id: tId })
                 return
             }
 
             toast.success((data as any)?.message ?? "If your email exists, a reset link will be sent.", { id: tId })
-
             setEmail("")
         } catch {
             toast.error("Network error. Please try again.", { id: tId })

@@ -15,12 +15,13 @@ function roleBasePath(role: string | null | undefined) {
     if (r === "student") return "/dashboard/student"
     if (r === "staff") return "/dashboard/staff"
     if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
     return "/dashboard"
 }
 
 export default function Hero() {
     const { user } = useAuth()
-    const appHref = user ? roleBasePath(user.role) : "/login"
+    const appHref = user ? roleBasePath(user.role) : "/auth/login"
     const startLabel = user ? "Go to dashboard" : "Get started"
 
     return (
@@ -110,7 +111,6 @@ export default function Hero() {
 
                         <Card className="overflow-hidden">
                             <CardContent className="p-0">
-                                {/* Rounded corners ensured here */}
                                 <div className="relative aspect-4/3 w-full overflow-hidden rounded-xl">
                                     <Image
                                         src="/Hero.svg"
@@ -167,7 +167,6 @@ export default function Hero() {
 
                     <Card className="overflow-hidden">
                         <CardContent className="p-0">
-                            {/* Rounded corners ensured here */}
                             <div className="relative aspect-4/3 w-full overflow-hidden rounded-xl">
                                 <Image
                                     src="/Hero.svg"

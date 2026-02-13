@@ -2,7 +2,7 @@
 
 import Image from "next/image"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Eye, EyeOff } from "lucide-react"
@@ -12,30 +12,46 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent } from "@/components/ui/card"
 
-type MeResponse =
-    | {
-        ok: true
-        user: { id: string; name: string; email: string; role: string; avatar_key: string | null }
-    }
-    | { ok: false }
+type AuthUser = {
+    id: string
+    name: string
+    email: string
+    role: string
+    avatar_key: string | null
+}
 
-type LoginResponse =
-    | {
-        ok: true
-        user: { id: string; name: string; email: string; role: string; avatar_key: string | null }
-    }
-    | { ok: false; message?: string }
+type MeResponse = { user: AuthUser } | { error?: string }
+type LoginResponse = { message?: string; user: AuthUser } | { error?: string; message?: string }
 
-function roleBasePath(role: string) {
+function roleBasePath(role: string | null | undefined) {
     const r = String(role ?? "").toLowerCase()
     if (r === "student") return "/dashboard/student"
     if (r === "staff") return "/dashboard/staff"
     if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
     return "/dashboard"
+}
+
+function sanitizeNextPath(nextRaw: string | null): string | null {
+    if (!nextRaw) return null
+    const next = nextRaw.trim()
+    if (!next.startsWith("/")) return null
+    if (next.startsWith("//")) return null
+    if (next.startsWith("/auth/login")) return null
+    return next
+}
+
+function pickErrorMessage(data: unknown, fallback: string): string {
+    if (!data || typeof data !== "object") return fallback
+    const rec = data as Record<string, unknown>
+    if (typeof rec.error === "string" && rec.error.trim()) return rec.error
+    if (typeof rec.message === "string" && rec.message.trim()) return rec.message
+    return fallback
 }
 
 export default function LoginPage() {
     const router = useRouter()
+    const searchParams = useSearchParams()
 
     const [email, setEmail] = useState("")
     const [password, setPassword] = useState("")
@@ -44,30 +60,35 @@ export default function LoginPage() {
     const [submitting, setSubmitting] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
+    const nextPath = useMemo(() => sanitizeNextPath(searchParams.get("next")), [searchParams])
+
     const canSubmit = useMemo(() => {
         return email.trim().length > 0 && password.length > 0 && !submitting
     }, [email, password, submitting])
 
-    // If already logged in, redirect to role dashboard.
+    // If already logged in, redirect to `next` or role dashboard.
     useEffect(() => {
         let mounted = true
+
             ; (async () => {
                 try {
                     const res = await fetch("/api/auth/me", { method: "GET", cache: "no-store" })
-                    const data = (await res.json()) as MeResponse
+                    const data = (await res.json().catch(() => ({}))) as MeResponse
                     if (!mounted) return
-                    if (data.ok) {
+
+                    if (res.ok && "user" in data && data.user) {
                         toast.info("You are already signed in.")
-                        router.replace(roleBasePath(data.user.role))
+                        router.replace(nextPath ?? roleBasePath(data.user.role))
                     }
                 } catch {
                     // ignore
                 }
             })()
+
         return () => {
             mounted = false
         }
-    }, [router])
+    }, [router, nextPath])
 
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault()
@@ -79,25 +100,23 @@ export default function LoginPage() {
         const tId = toast.loading("Signing in...")
 
         try {
-            // Login on POST /api/auth/me (sets cookie)
-            const res = await fetch("/api/auth/me", {
+            const res = await fetch("/api/auth/login", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
             })
 
-            const data = (await res.json()) as LoginResponse
+            const data = (await res.json().catch(() => ({}))) as LoginResponse
 
-            if (!res.ok || !data.ok) {
-                const msg = data && "message" in data && data.message ? data.message : "Login failed"
+            if (!res.ok || !("user" in data)) {
+                const msg = pickErrorMessage(data, "Login failed.")
                 setError(msg)
                 toast.error(msg, { id: tId })
                 return
             }
 
             toast.success(`Welcome, ${data.user.name}!`, { id: tId })
-
-            router.replace(roleBasePath(data.user.role))
+            router.replace(nextPath ?? roleBasePath(data.user.role))
             router.refresh()
         } catch {
             const msg = "Network error. Please try again."
