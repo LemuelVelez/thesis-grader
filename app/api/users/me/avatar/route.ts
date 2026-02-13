@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveDatabaseServices } from '../../../../../database/services/resolver';
 import type { DatabaseServices } from '../../../../../database/services/Services';
 import type { UserRow } from '../../../../../database/models/Model';
-import { createPresignedPutUrl } from '@/lib/s3';
+import { createPresignedGetUrl, createPresignedPutUrl } from '@/lib/s3';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -124,6 +124,51 @@ function buildAvatarKey(userId: string, filename: string): string {
     const stamp = Date.now();
     const rand = randomBytes(8).toString('hex');
     return `avatars/${userId}/${stamp}-${rand}${ext}`;
+}
+
+export async function GET(req: NextRequest): Promise<NextResponse> {
+    try {
+        const services = await resolveDatabaseServices();
+        const user = await resolveAuthedUser(req, services);
+
+        if (!user) {
+            const res = json(401, { error: 'Unauthorized.' });
+            clearSessionCookie(res);
+            return res;
+        }
+
+        const avatarKey = trimToString(
+            (user as unknown as { avatar_key?: unknown }).avatar_key ?? null,
+        );
+
+        if (!avatarKey) {
+            return json(200, {
+                item: {
+                    id: user.id,
+                    avatar_key: null,
+                    url: null,
+                },
+            });
+        }
+
+        const url = await createPresignedGetUrl({
+            key: avatarKey,
+            expiresInSeconds: 300,
+        });
+
+        return json(200, {
+            item: {
+                id: user.id,
+                avatar_key: avatarKey,
+                url,
+            },
+        });
+    } catch (error) {
+        return json(500, {
+            error: 'Failed to load avatar.',
+            message: error instanceof Error ? error.message : 'Unknown error.',
+        });
+    }
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
