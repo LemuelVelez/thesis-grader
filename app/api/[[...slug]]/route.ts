@@ -1,323 +1,68 @@
-import { NextResponse } from 'next/server';
-import { createApiRouteHandlers } from '../../../database/routes/Route';
-import type { DatabaseServices } from '../../../database/services/Services';
+import { NextRequest, NextResponse } from 'next/server';
+import {
+    createApiRouteHandlers,
+    type AuthRouteContext,
+    type AuthRouteHandler,
+} from '../../../database/routes/Route';
 
 export const runtime = 'nodejs';
 
-type DatabaseServicesResolver = () => DatabaseServices | Promise<DatabaseServices>;
-type ZeroArgFactory = () => unknown | Promise<unknown>;
+const handlers = createApiRouteHandlers();
 
-type GlobalDatabaseServiceRegistry = typeof globalThis & {
-    __thesisGraderDbServices?: DatabaseServices;
-    __thesisGraderDbServicesResolver?: DatabaseServicesResolver;
-
-    // Legacy/alternate keys found in older bootstraps
-    __databaseServices?: unknown;
-    __databaseServicesResolver?: unknown;
-    __dbServices?: unknown;
-    __dbServicesResolver?: unknown;
-    __thesisGraderServices?: unknown;
-    __thesisGraderServicesResolver?: unknown;
-    databaseServices?: unknown;
-    databaseServicesResolver?: unknown;
-    dbServices?: unknown;
-    dbServicesResolver?: unknown;
-    services?: unknown;
-
-    // Optional globally-exposed factories
-    createDatabaseServices?: unknown;
-    getDatabaseServices?: unknown;
-    createDbServices?: unknown;
-    getDbServices?: unknown;
-    createServices?: unknown;
-    getServices?: unknown;
-    initDatabaseServices?: unknown;
-    makeDatabaseServices?: unknown;
-
-    // Route-level one-time import attempt flag
-    __thesisGraderDbImportAttempted?: boolean;
-};
-
-function getAppBaseUrl(): string {
-    const appUrl =
-        process.env.APP_URL?.trim() ||
-        process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-        (process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
-            : 'http://localhost:3000');
-
-    const normalized = appUrl.trim();
-    return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+function normalizeSegment(value: string): string {
+    return value.trim().toLowerCase().replace(/[_\s]+/g, '-');
 }
 
-async function sendPasswordResetEmailSafe(payload: {
-    to: string;
-    name: string;
-    resetUrl: string;
-}): Promise<void> {
-    try {
-        const emailModule = await import('@/lib/email');
-        if (typeof emailModule.sendPasswordResetEmail === 'function') {
-            await emailModule.sendPasswordResetEmail(payload);
-        }
-    } catch (error) {
-        // Do not fail auth routes when email/env is not configured.
-        console.error('Password reset email dispatch failed:', error);
-    }
+async function getFirstSegment(ctx: AuthRouteContext): Promise<string | null> {
+    const params = await ctx?.params;
+    const slug = params?.slug ?? [];
+
+    if (!Array.isArray(slug) || slug.length === 0) return null;
+
+    const first = slug[0];
+    if (typeof first !== 'string') return null;
+
+    const normalized = normalizeSegment(first);
+    return normalized.length > 0 ? normalized : null;
 }
 
-function isDatabaseServices(value: unknown): value is DatabaseServices {
-    if (!value || typeof value !== 'object') return false;
-
-    const maybe = value as Partial<DatabaseServices>;
-    const users = maybe.users as { findByEmail?: unknown; findById?: unknown } | undefined;
-    const sessions = maybe.sessions as { findByTokenHash?: unknown } | undefined;
-
-    return (
-        typeof maybe.transaction === 'function' &&
-        !!users &&
-        typeof users.findByEmail === 'function' &&
-        typeof users.findById === 'function' &&
-        !!sessions &&
-        typeof sessions.findByTokenHash === 'function'
-    );
-}
-
-function cacheResolvedServices(
-    g: GlobalDatabaseServiceRegistry,
-    services: DatabaseServices,
-): DatabaseServices {
-    g.__thesisGraderDbServices = services;
-    g.__thesisGraderDbServicesResolver = async () => services;
-    return services;
-}
-
-async function tryResolveFromResolver(
-    candidate: unknown,
-): Promise<DatabaseServices | null> {
-    if (typeof candidate !== 'function') return null;
-    const resolved = await (candidate as () => unknown | Promise<unknown>)();
-    return isDatabaseServices(resolved) ? resolved : null;
-}
-
-async function tryResolveFromFactory(
-    candidate: unknown,
-): Promise<DatabaseServices | null> {
-    if (typeof candidate !== 'function') return null;
-
-    // Only call zero-arg factories to avoid unsafe invocation.
-    const fn = candidate as ZeroArgFactory;
-    if (fn.length > 0) return null;
-
-    const resolved = await fn();
-    return isDatabaseServices(resolved) ? resolved : null;
-}
-
-async function tryResolveFromModule(specifier: string): Promise<DatabaseServices | null> {
-    try {
-        const mod = (await import(specifier)) as Record<string, unknown>;
-
-        // 1) Known object exports
-        const objectExportKeys = [
-            'default',
-            'databaseServices',
-            'dbServices',
-            'services',
-            'database',
-            'db',
-        ] as const;
-
-        for (const key of objectExportKeys) {
-            const value = mod[key];
-            if (isDatabaseServices(value)) return value;
-        }
-
-        // 2) Known factory/resolver exports
-        const functionExportKeys = [
-            'default',
-            'getDatabaseServices',
-            'createDatabaseServices',
-            'getDbServices',
-            'createDbServices',
-            'getServices',
-            'createServices',
-            'initDatabaseServices',
-            'makeDatabaseServices',
-            'buildDatabaseServices',
-            'resolveDatabaseServices',
-        ] as const;
-
-        for (const key of functionExportKeys) {
-            const candidate = mod[key];
-            const resolved = await tryResolveFromFactory(candidate);
-            if (resolved) return resolved;
-        }
-
-        return null;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Robust resolver that supports:
- * - canonical globals
- * - legacy globals/factories
- * - one-time dynamic module discovery for common DB bootstrap files
- */
-async function resolveDatabaseServices(): Promise<DatabaseServices> {
-    const g = globalThis as GlobalDatabaseServiceRegistry;
-
-    // 1) Canonical resolver
-    if (typeof g.__thesisGraderDbServicesResolver === 'function') {
-        const resolved = await g.__thesisGraderDbServicesResolver();
-        if (isDatabaseServices(resolved)) return cacheResolvedServices(g, resolved);
-    }
-
-    // 2) Canonical singleton
-    if (isDatabaseServices(g.__thesisGraderDbServices)) {
-        return cacheResolvedServices(g, g.__thesisGraderDbServices);
-    }
-
-    // 3) Legacy resolvers
-    const legacyResolvers: unknown[] = [
-        g.__databaseServicesResolver,
-        g.__dbServicesResolver,
-        g.__thesisGraderServicesResolver,
-        g.databaseServicesResolver,
-        g.dbServicesResolver,
-    ];
-
-    for (const candidate of legacyResolvers) {
-        const resolved = await tryResolveFromResolver(candidate);
-        if (resolved) return cacheResolvedServices(g, resolved);
-    }
-
-    // 4) Legacy singletons
-    const legacyServices: unknown[] = [
-        g.__databaseServices,
-        g.__dbServices,
-        g.__thesisGraderServices,
-        g.databaseServices,
-        g.dbServices,
-        g.services,
-    ];
-
-    for (const candidate of legacyServices) {
-        if (isDatabaseServices(candidate)) {
-            return cacheResolvedServices(g, candidate);
-        }
-    }
-
-    // 5) Global factories
-    const globalFactories: unknown[] = [
-        g.createDatabaseServices,
-        g.getDatabaseServices,
-        g.createDbServices,
-        g.getDbServices,
-        g.createServices,
-        g.getServices,
-        g.initDatabaseServices,
-        g.makeDatabaseServices,
-    ];
-
-    for (const factory of globalFactories) {
-        const resolved = await tryResolveFromFactory(factory);
-        if (resolved) return cacheResolvedServices(g, resolved);
-    }
-
-    // 6) One-time dynamic module discovery
-    if (!g.__thesisGraderDbImportAttempted) {
-        g.__thesisGraderDbImportAttempted = true;
-
-        const moduleSpecifiers = [
-            // relative to app/api/[[...slug]]/route.ts
-            '../../../database/services/index',
-            '../../../database/services',
-            '../../../database/index',
-            '../../../database',
-            '../../../lib/database',
-            '../../../lib/db',
-            '../../../server/database',
-            '../../../server/db',
-
-            // tsconfig alias-based
-            '@/database/services/index',
-            '@/database/services',
-            '@/database/index',
-            '@/database',
-            '@/lib/database',
-            '@/lib/db',
-            '@/server/database',
-            '@/server/db',
-        ];
-
-        for (const specifier of moduleSpecifiers) {
-            const resolved = await tryResolveFromModule(specifier);
-            if (resolved) return cacheResolvedServices(g, resolved);
-        }
-    }
-
-    throw new Error(
-        'DatabaseServices resolver is not configured. Register services via setDatabaseServicesResolver(...), expose globalThis.__thesisGraderDbServices, or export a zero-arg database services factory/singleton from a common database module.',
-    );
-}
-
-const handlers = createApiRouteHandlers({
-    resolveServices: resolveDatabaseServices,
-    auth: {
-        onPasswordResetRequested: async ({ email, token, user }) => {
-            const resetUrl = `${getAppBaseUrl()}/auth/password/reset?token=${encodeURIComponent(token)}`;
-            await sendPasswordResetEmailSafe({
-                to: email,
-                name: user.name,
-                resetUrl,
-            });
+function authNamespaceDisabled(): NextResponse {
+    return NextResponse.json(
+        {
+            error: 'Auth route not found.',
+            message: 'Authentication routes are served only from explicit /api/auth/* routes.',
         },
-    },
-    onError: async (error) => {
-        const message = error instanceof Error ? error.message : 'Unknown error.';
+        { status: 404 },
+    );
+}
 
-        if (/DatabaseServices resolver is not configured/i.test(message)) {
-            return NextResponse.json(
-                {
-                    error: 'Service unavailable.',
-                    message:
-                        'Database services are not configured. Register a DatabaseServices resolver or expose a DatabaseServices singleton globally before calling /api endpoints.',
-                },
-                { status: 503 },
-            );
-        }
+async function dispatchNonAuth(
+    handler: AuthRouteHandler,
+    req: NextRequest,
+    ctx: AuthRouteContext,
+): Promise<Response> {
+    const first = await getFirstSegment(ctx);
+    if (first === 'auth') {
+        return authNamespaceDisabled();
+    }
 
-        // Common database/network outage patterns -> 503
-        if (
-            /(ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|connection timed out|could not connect|timeout expired|database is unavailable|the database system is starting up|terminating connection)/i.test(
-                message,
-            )
-        ) {
-            return NextResponse.json(
-                {
-                    error: 'Service unavailable.',
-                    message:
-                        'Database connection is unavailable. Check DATABASE_URL, database host/port reachability, and DB container/server health.',
-                },
-                { status: 503 },
-            );
-        }
+    return handler(req, ctx);
+}
 
-        return NextResponse.json(
-            {
-                error: 'Internal server error.',
-                message,
-            },
-            { status: 500 },
-        );
-    },
-});
+export const GET = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.GET, req, ctx);
 
-export const GET = handlers.GET;
-export const POST = handlers.POST;
-export const PUT = handlers.PUT;
-export const PATCH = handlers.PATCH;
-export const DELETE = handlers.DELETE;
-export const OPTIONS = handlers.OPTIONS;
+export const POST = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.POST, req, ctx);
+
+export const PUT = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.PUT, req, ctx);
+
+export const PATCH = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.PATCH, req, ctx);
+
+export const DELETE = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.DELETE, req, ctx);
+
+export const OPTIONS = (req: NextRequest, ctx: AuthRouteContext) =>
+    dispatchNonAuth(handlers.OPTIONS, req, ctx);
