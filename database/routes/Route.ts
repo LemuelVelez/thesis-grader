@@ -541,6 +541,27 @@ async function dispatchAdminRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
+    // /api/admin/rankings
+    if (tail.length === 1 && tail[0] === 'rankings') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit'));
+        const items = await services.v_thesis_group_rankings.leaderboard(limit);
+        return json200({ items });
+    }
+
+    // /api/admin/rankings/:groupId
+    if (tail.length === 2 && tail[0] === 'rankings') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const groupId = tail[1];
+        if (!groupId) return json400('groupId is required.');
+
+        const item = await services.v_thesis_group_rankings.byGroup(groupId);
+        if (!item) return json404Entity('Ranking');
+        return json200({ item });
+    }
+
     const id = tail[0];
     if (!id) return json404Api();
 
