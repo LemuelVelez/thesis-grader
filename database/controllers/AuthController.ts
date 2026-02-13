@@ -191,7 +191,11 @@ async function hashPassword(password: string): Promise<string> {
     return scryptHash(password);
 }
 
-async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+async function verifyPassword(password: string, storedHash: unknown): Promise<boolean> {
+    if (typeof storedHash !== 'string' || storedHash.length === 0) {
+        return false;
+    }
+
     // Support bcrypt-like hashes if project already uses bcrypt/bcryptjs.
     if (
         storedHash.startsWith('$2a$') ||
@@ -351,6 +355,13 @@ export class AuthController {
             const user = await this.services.users.findByEmail(email);
 
             if (!user || user.status !== 'active') {
+                return this.json(401, { error: 'Invalid email or password.' });
+            }
+
+            if (
+                typeof user.password_hash !== 'string' ||
+                user.password_hash.trim().length === 0
+            ) {
                 return this.json(401, { error: 'Invalid email or password.' });
             }
 
@@ -675,24 +686,29 @@ export class AuthController {
     private async resolveSession(
         req: NextRequest,
     ): Promise<{ user: UserRow; sessionId: UUID } | null> {
-        const token = this.sessionTokenFromRequest(req);
-        if (!token) return null;
+        try {
+            const token = this.sessionTokenFromRequest(req);
+            if (!token) return null;
 
-        const tokenHash = sha256(token);
-        const session = await this.services.sessions.findByTokenHash(tokenHash);
-        if (!session) return null;
+            const tokenHash = sha256(token);
+            const session = await this.services.sessions.findByTokenHash(tokenHash);
+            if (!session) return null;
 
-        if (isExpired(session.expires_at)) {
-            await this.services.sessions.delete({ id: session.id });
+            if (isExpired(session.expires_at)) {
+                await this.services.sessions.delete({ id: session.id });
+                return null;
+            }
+
+            const user = await this.services.users.findById(session.user_id);
+            if (!user || user.status !== 'active') {
+                return null;
+            }
+
+            return { user, sessionId: session.id };
+        } catch {
+            // Fail closed: treat any session resolution issue as unauthenticated.
             return null;
         }
-
-        const user = await this.services.users.findById(session.user_id);
-        if (!user || user.status !== 'active') {
-            return null;
-        }
-
-        return { user, sessionId: session.id };
     }
 
     private async writeAudit(
