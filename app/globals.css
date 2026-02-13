@@ -110,7 +110,7 @@
 
   /* Chromium / Safari: vertical + horizontal */
   *::-webkit-scrollbar {
-    width: 6px;  /* vertical */
+    width: 6px; /* vertical */
     height: 6px; /* horizontal */
   }
   *::-webkit-scrollbar-track {
@@ -152,10 +152,12 @@
     margin-right: 2px;
     background: rgba(0, 255, 127, 0.12);
     opacity: 0.9;
-    transition: background-color 150ms ease, opacity 150ms ease, transform 150ms ease;
+    transition: background-color 150ms ease, opacity 150ms ease,
+      transform 150ms ease;
 
     /* Tint the calendar icon towards spring green */
-    filter: invert(38%) sepia(92%) saturate(650%) hue-rotate(92deg) brightness(108%) contrast(106%);
+    filter: invert(38%) sepia(92%) saturate(650%) hue-rotate(92deg)
+      brightness(108%) contrast(106%);
   }
 
   .native-date::-webkit-calendar-picker-indicator:hover {
