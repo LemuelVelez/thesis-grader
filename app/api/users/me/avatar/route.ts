@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { resolveDatabaseServices } from '../../../../../database/services/resolver';
 import type { DatabaseServices } from '../../../../../database/services/Services';
-import type { UserRow } from '../../../../../database/models/Model';
+import type { UserPatch, UserRow } from '../../../../../database/models/Model';
 import { createPresignedGetUrl, createPresignedPutUrl } from '@/lib/s3';
 
 export const runtime = 'nodejs';
@@ -126,6 +126,62 @@ function buildAvatarKey(userId: string, filename: string): string {
     return `avatars/${userId}/${stamp}-${rand}${ext}`;
 }
 
+function envFirst(keys: string[]): string | null {
+    for (const key of keys) {
+        const value = trimToString(process.env[key]);
+        if (value) return value;
+    }
+    return null;
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+    return baseUrl.replace(/\/+$/, '');
+}
+
+function normalizeKeyPath(key: string): string {
+    return key.replace(/^\/+/, '');
+}
+
+/**
+ * Creates a persistent avatar URL string to store in DB.
+ * Priority:
+ * 1) explicit public base URL envs
+ * 2) standard S3 HTTPS URL
+ * 3) null if not derivable
+ */
+function buildPersistentAvatarUrl(key: string): string | null {
+    const normalizedKey = normalizeKeyPath(key);
+
+    const explicitBaseUrl = envFirst([
+        'S3_PUBLIC_BASE_URL',
+        'NEXT_PUBLIC_S3_PUBLIC_BASE_URL',
+        'AWS_S3_PUBLIC_BASE_URL',
+        'CLOUDFRONT_PUBLIC_BASE_URL',
+        'R2_PUBLIC_BASE_URL',
+    ]);
+
+    if (explicitBaseUrl) {
+        return `${normalizeBaseUrl(explicitBaseUrl)}/${normalizedKey}`;
+    }
+
+    const bucket = envFirst(['S3_BUCKET', 'AWS_S3_BUCKET', 'AWS_BUCKET_NAME']);
+    const region = envFirst(['AWS_REGION', 'S3_REGION']);
+
+    if (bucket && region) {
+        return `https://${bucket}.s3.${region}.amazonaws.com/${normalizedKey}`;
+    }
+    if (bucket) {
+        return `https://${bucket}.s3.amazonaws.com/${normalizedKey}`;
+    }
+
+    return null;
+}
+
+function readAvatarUrlFromUser(user: UserRow): string | null {
+    const raw = (user as unknown as { avatar_url?: unknown }).avatar_url;
+    return trimToString(raw);
+}
+
 export async function GET(req: NextRequest): Promise<NextResponse> {
     try {
         const services = await resolveDatabaseServices();
@@ -146,10 +202,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 item: {
                     id: user.id,
                     avatar_key: null,
+                    avatar_url: null,
                     url: null,
                 },
             });
         }
+
+        const avatarUrlFromDb = readAvatarUrlFromUser(user);
+        const avatarUrl = avatarUrlFromDb ?? buildPersistentAvatarUrl(avatarKey);
 
         const url = await createPresignedGetUrl({
             key: avatarKey,
@@ -160,6 +220,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             item: {
                 id: user.id,
                 avatar_key: avatarKey,
+                avatar_url: avatarUrl,
                 url,
             },
         });
@@ -230,8 +291,21 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
             return json(400, { error: 'Invalid avatar key for current user.' });
         }
 
-        const updated = await services.users.setAvatarKey(user.id, key);
+        const persistentAvatarUrl = buildPersistentAvatarUrl(key);
+
+        // Save BOTH key + persistent URL in DB
+        const patchPayload = {
+            avatar_key: key,
+            avatar_url: persistentAvatarUrl,
+        } as unknown as UserPatch;
+
+        const updated = await services.users.updateOne({ id: user.id }, patchPayload);
         if (!updated) return json(404, { error: 'User not found.' });
+
+        const signedGetUrl = await createPresignedGetUrl({
+            key,
+            expiresInSeconds: 300,
+        });
 
         try {
             await services.audit_logs.create({
@@ -239,13 +313,24 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
                 action: 'users.me.avatar.update',
                 entity: 'users',
                 entity_id: user.id,
-                details: { avatar_key: key },
+                details: { avatar_key: key, avatar_url: persistentAvatarUrl },
             });
         } catch {
             // Do not fail if audit logging fails.
         }
 
-        return json(200, { item: { id: updated.id, avatar_key: updated.avatar_key } });
+        const updatedAvatarUrl =
+            trimToString((updated as unknown as { avatar_url?: unknown }).avatar_url) ??
+            persistentAvatarUrl;
+
+        return json(200, {
+            item: {
+                id: updated.id,
+                avatar_key: key,
+                avatar_url: updatedAvatarUrl,
+                url: signedGetUrl,
+            },
+        });
     } catch (error) {
         return json(500, {
             error: 'Failed to save avatar.',
@@ -265,7 +350,13 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
             return res;
         }
 
-        const updated = await services.users.setAvatarKey(user.id, null);
+        // Clear BOTH key + url in DB
+        const patchPayload = {
+            avatar_key: null,
+            avatar_url: null,
+        } as unknown as UserPatch;
+
+        const updated = await services.users.updateOne({ id: user.id }, patchPayload);
         if (!updated) return json(404, { error: 'User not found.' });
 
         try {
@@ -280,7 +371,13 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
             // Do not fail if audit logging fails.
         }
 
-        return json(200, { item: { id: updated.id, avatar_key: updated.avatar_key } });
+        return json(200, {
+            item: {
+                id: updated.id,
+                avatar_key: null,
+                avatar_url: null,
+            },
+        });
     } catch (error) {
         return json(500, {
             error: 'Failed to remove avatar.',
