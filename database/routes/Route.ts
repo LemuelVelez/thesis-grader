@@ -46,10 +46,20 @@ export type DatabaseServicesResolver =
     | (() => DatabaseServices | Promise<DatabaseServices>)
     | null;
 
+export interface AuthRouteParams {
+    slug?: string[];
+}
+
+/**
+ * Next.js 16 App Router context uses:
+ *   { params: Promise<{ ... }> }
+ * while older/internal usage may still pass a plain object.
+ * Accept both to keep handlers compatible across call sites.
+ */
+export type AuthRouteParamsLike = AuthRouteParams | Promise<AuthRouteParams>;
+
 export interface AuthRouteContext {
-    params?: {
-        slug?: string[];
-    };
+    params?: AuthRouteParamsLike;
 }
 
 export type AuthRouteHandler = (
@@ -184,6 +194,13 @@ function normalizeSegment(value: string): string {
 
 function normalizeSegments(slug?: string[]): string[] {
     return (slug ?? []).map(normalizeSegment).filter(Boolean);
+}
+
+async function resolveContextSlug(
+    ctx?: AuthRouteContext,
+): Promise<string[] | undefined> {
+    const params = await ctx?.params;
+    return params?.slug;
 }
 
 function resolveAuthAction(slug?: string[]): AuthAction | null {
@@ -1122,7 +1139,8 @@ async function dispatchApiRequest(
     options: CreateApiRouteHandlersOptions,
 ): Promise<Response> {
     const method = req.method.toUpperCase();
-    const segments = normalizeSegments(ctx?.params?.slug);
+    const slug = await resolveContextSlug(ctx);
+    const segments = normalizeSegments(slug);
     const root = resolveApiRoot(segments[0]);
 
     if (!root) {
@@ -1208,7 +1226,8 @@ export function createAuthRouteHandlers(
                 return cors.preflight(req);
             }
 
-            const action = resolveAuthAction(ctx?.params?.slug);
+            const slug = await resolveContextSlug(ctx);
+            const action = resolveAuthAction(slug);
             const response = await dispatchAuthRequest(
                 req,
                 action,

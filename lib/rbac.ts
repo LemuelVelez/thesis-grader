@@ -1,10 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import type { Role, PublicUser } from "@/lib/auth"
+import type { Role, PublicUser } from "./auth"
+
+type HttpError = Error & { status: number }
 
 export function requireRole(user: PublicUser, allowed: Role[]) {
     if (!allowed.includes(user.role)) {
-        const err = new Error("Forbidden")
-            ; (err as any).status = 403
+        const err = new Error("Forbidden") as HttpError
+        err.status = 403
         throw err
     }
 }
