@@ -629,7 +629,15 @@ export class AuthController {
     }
 
     private json(status: number, payload: Record<string, unknown>): NextResponse {
-        return NextResponse.json(payload, { status });
+        const hasOk = Object.prototype.hasOwnProperty.call(payload, 'ok');
+        const withOk = hasOk
+            ? payload
+            : {
+                ok: status >= 200 && status < 300,
+                ...payload,
+            };
+
+        return NextResponse.json(withOk, { status });
     }
 
     private setSessionCookie(
@@ -663,7 +671,20 @@ export class AuthController {
     }
 
     private sessionTokenFromRequest(req: NextRequest): string | null {
-        return req.cookies.get(this.cookieName)?.value ?? null;
+        const cookieToken = req.cookies.get(this.cookieName)?.value?.trim();
+        if (cookieToken) return cookieToken;
+
+        const authorization = req.headers.get('authorization');
+        if (authorization) {
+            const match = authorization.match(/^Bearer\s+(.+)$/i);
+            const bearerToken = match?.[1]?.trim();
+            if (bearerToken) return bearerToken;
+        }
+
+        const headerToken = req.headers.get('x-session-token')?.trim();
+        if (headerToken) return headerToken;
+
+        return null;
     }
 
     private async createSession(

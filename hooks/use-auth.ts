@@ -10,7 +10,10 @@ type AuthUser = {
     avatar_key: string | null
 }
 
-type MeResponse = { ok: true; user: AuthUser } | { ok: false }
+type MeResponse =
+    | { ok: true; user: AuthUser }
+    | { ok: false; error?: string; message?: string }
+    | { user: AuthUser }
 
 type AvatarResponse =
     | { ok: true; avatar_key: string | null; url: string | null; expires_in_seconds?: number }
@@ -54,6 +57,39 @@ function clearAvatarCache(userId: string) {
     }
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function isAuthUser(value: unknown): value is AuthUser {
+    if (!isObject(value)) return false
+    return (
+        typeof value.id === "string" &&
+        typeof value.name === "string" &&
+        typeof value.email === "string" &&
+        typeof value.role === "string" &&
+        (typeof value.avatar_key === "string" || value.avatar_key === null)
+    )
+}
+
+function resolveUserFromMePayload(payload: unknown, responseOk: boolean): AuthUser | null {
+    if (!isObject(payload)) return null
+
+    // Preferred API shape: { ok: true, user: {...} }
+    if (typeof payload.ok === "boolean") {
+        if (!payload.ok) return null
+        const user = payload.user
+        return isAuthUser(user) ? user : null
+    }
+
+    // Backward-compatible API shape: { user: {...} } with 2xx response
+    if (responseOk && isAuthUser(payload.user)) {
+        return payload.user
+    }
+
+    return null
+}
+
 export function useAuth() {
     const [loading, setLoading] = useState(true)
     const [user, setUser] = useState<AuthUser | null>(null)
@@ -72,9 +108,18 @@ export function useAuth() {
 
     const refresh = useCallback(async () => {
         try {
-            const res = await fetch("/api/auth/me", { cache: "no-store" })
-            const data = (await res.json().catch(() => ({}))) as MeResponse
-            setUser(data.ok ? data.user : null)
+            const res = await fetch("/api/auth/me", {
+                method: "GET",
+                cache: "no-store",
+                credentials: "include",
+                headers: {
+                    accept: "application/json",
+                },
+            })
+
+            const data = (await res.json().catch(() => null)) as MeResponse | null
+            const resolved = resolveUserFromMePayload(data, res.ok)
+            setUser(resolved)
         } catch {
             setUser(null)
         }
@@ -89,7 +134,15 @@ export function useAuth() {
         }
 
         try {
-            const res = await fetch("/api/users/me/avatar", { cache: "no-store" })
+            const res = await fetch("/api/users/me/avatar", {
+                method: "GET",
+                cache: "no-store",
+                credentials: "include",
+                headers: {
+                    accept: "application/json",
+                },
+            })
+
             const data = (await res.json().catch(() => ({}))) as AvatarResponse
 
             if (!res.ok || !data?.ok) {
