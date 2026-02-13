@@ -265,12 +265,13 @@ function extractArrayPayload(payload: unknown): unknown[] {
 }
 
 function extractObjectPayload(payload: unknown): Record<string, unknown> | null {
+    if (!isRecord(payload)) return null
+
     if (isRecord(payload.item)) return payload.item
     if (isRecord(payload.schedule)) return payload.schedule
     if (isRecord(payload.data)) return payload.data
     if (isRecord(payload.result)) return payload.result
-    if (isRecord(payload)) return payload
-    return null
+    return payload
 }
 
 async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
