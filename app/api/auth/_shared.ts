@@ -10,6 +10,7 @@ import { sendPasswordResetEmail } from '@/lib/email';
 
 type DatabaseServicesResolver = () => DatabaseServices | Promise<DatabaseServices>;
 type ZeroArgFactory = () => unknown | Promise<unknown>;
+type ServiceGetter = (entity: string) => unknown;
 
 type GlobalDatabaseServiceRegistry = typeof globalThis & {
     __thesisGraderDbServices?: DatabaseServices;
@@ -46,9 +47,7 @@ function getAppBaseUrl(): string {
     const appUrl =
         env.APP_URL?.trim() ||
         process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-        (process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
-            : 'http://localhost:3000');
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
 
     const normalized = appUrl.trim();
     return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
@@ -67,21 +66,74 @@ async function sendPasswordResetEmailSafe(payload: {
     }
 }
 
-function isDatabaseServices(value: unknown): value is DatabaseServices {
-    if (!value || typeof value !== 'object') return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
-    const maybe = value as Partial<DatabaseServices>;
-    const users = maybe.users as { findByEmail?: unknown; findById?: unknown } | undefined;
-    const sessions = maybe.sessions as { findByTokenHash?: unknown } | undefined;
+function isFunction(value: unknown): value is (...args: unknown[]) => unknown {
+    return typeof value === 'function';
+}
 
-    return (
-        typeof maybe.transaction === 'function' &&
-        !!users &&
-        typeof users.findByEmail === 'function' &&
-        typeof users.findById === 'function' &&
-        !!sessions &&
-        typeof sessions.findByTokenHash === 'function'
-    );
+function hasMethod(target: unknown, methodName: string): boolean {
+    return isRecord(target) && typeof target[methodName] === 'function';
+}
+
+function getServiceFromCandidate(candidate: Record<string, unknown>, key: string): unknown {
+    const direct = candidate[key];
+    if (direct !== undefined) return direct;
+
+    const getter = candidate.get;
+    if (!isFunction(getter)) return undefined;
+
+    try {
+        return (getter as ServiceGetter)(key);
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Accepts both:
+ * 1) full DatabaseServices object
+ * 2) "service registry" object exposing transaction + get(entity)
+ * and hydrates required auth services.
+ */
+function normalizeToDatabaseServices(value: unknown): DatabaseServices | null {
+    if (!isRecord(value)) return null;
+    if (!isFunction(value.transaction)) return null;
+
+    const users = getServiceFromCandidate(value, 'users');
+    const sessions = getServiceFromCandidate(value, 'sessions');
+    const passwordResets = getServiceFromCandidate(value, 'password_resets');
+    const auditLogs = getServiceFromCandidate(value, 'audit_logs');
+
+    const usersOk = hasMethod(users, 'findByEmail') && hasMethod(users, 'findById');
+    const sessionsOk = hasMethod(sessions, 'findByTokenHash');
+    const passwordResetsOk =
+        hasMethod(passwordResets, 'create') &&
+        hasMethod(passwordResets, 'findByTokenHash') &&
+        hasMethod(passwordResets, 'markUsed');
+    const auditLogsOk = hasMethod(auditLogs, 'create');
+
+    if (!usersOk || !sessionsOk || !passwordResetsOk || !auditLogsOk) {
+        return null;
+    }
+
+    const normalized = {
+        ...(value as Partial<DatabaseServices>),
+        users: users as DatabaseServices['users'],
+        sessions: sessions as DatabaseServices['sessions'],
+        password_resets: passwordResets as DatabaseServices['password_resets'],
+        audit_logs: auditLogs as DatabaseServices['audit_logs'],
+        transaction: value.transaction as DatabaseServices['transaction'],
+    } as DatabaseServices;
+
+    if (!isFunction((normalized as unknown as Record<string, unknown>).get)) {
+        (normalized as unknown as { get: DatabaseServices['get'] }).get = ((entity: string) =>
+            (normalized as unknown as Record<string, unknown>)[entity]) as DatabaseServices['get'];
+    }
+
+    return normalized;
 }
 
 function cacheResolvedServices(
@@ -93,25 +145,21 @@ function cacheResolvedServices(
     return services;
 }
 
-async function tryResolveFromResolver(
-    candidate: unknown,
-): Promise<DatabaseServices | null> {
-    if (typeof candidate !== 'function') return null;
+async function tryResolveFromResolver(candidate: unknown): Promise<DatabaseServices | null> {
+    if (!isFunction(candidate)) return null;
     const resolved = await (candidate as () => unknown | Promise<unknown>)();
-    return isDatabaseServices(resolved) ? resolved : null;
+    return normalizeToDatabaseServices(resolved);
 }
 
-async function tryResolveFromFactory(
-    candidate: unknown,
-): Promise<DatabaseServices | null> {
-    if (typeof candidate !== 'function') return null;
+async function tryResolveFromFactory(candidate: unknown): Promise<DatabaseServices | null> {
+    if (!isFunction(candidate)) return null;
 
     // Only call zero-arg factories to avoid unsafe invocation.
     const fn = candidate as ZeroArgFactory;
     if (fn.length > 0) return null;
 
     const resolved = await fn();
-    return isDatabaseServices(resolved) ? resolved : null;
+    return normalizeToDatabaseServices(resolved);
 }
 
 async function tryResolveFromModule(specifier: string): Promise<DatabaseServices | null> {
@@ -130,7 +178,8 @@ async function tryResolveFromModule(specifier: string): Promise<DatabaseServices
 
         for (const key of objectExportKeys) {
             const value = mod[key];
-            if (isDatabaseServices(value)) return value;
+            const normalized = normalizeToDatabaseServices(value);
+            if (normalized) return normalized;
         }
 
         // 2) Known factory/resolver exports
@@ -154,6 +203,12 @@ async function tryResolveFromModule(specifier: string): Promise<DatabaseServices
             if (resolved) return resolved;
         }
 
+        // 3) Last chance: any zero-arg function export that returns services
+        for (const candidate of Object.values(mod)) {
+            const resolved = await tryResolveFromFactory(candidate);
+            if (resolved) return resolved;
+        }
+
         return null;
     } catch {
         return null;
@@ -172,12 +227,14 @@ async function resolveDatabaseServices(): Promise<DatabaseServices> {
     // 1) Canonical resolver
     if (typeof g.__thesisGraderDbServicesResolver === 'function') {
         const resolved = await g.__thesisGraderDbServicesResolver();
-        if (isDatabaseServices(resolved)) return cacheResolvedServices(g, resolved);
+        const normalized = normalizeToDatabaseServices(resolved);
+        if (normalized) return cacheResolvedServices(g, normalized);
     }
 
     // 2) Canonical singleton
-    if (isDatabaseServices(g.__thesisGraderDbServices)) {
-        return cacheResolvedServices(g, g.__thesisGraderDbServices);
+    {
+        const normalized = normalizeToDatabaseServices(g.__thesisGraderDbServices);
+        if (normalized) return cacheResolvedServices(g, normalized);
     }
 
     // 3) Legacy resolvers
@@ -205,9 +262,8 @@ async function resolveDatabaseServices(): Promise<DatabaseServices> {
     ];
 
     for (const candidate of legacyServices) {
-        if (isDatabaseServices(candidate)) {
-            return cacheResolvedServices(g, candidate);
-        }
+        const normalized = normalizeToDatabaseServices(candidate);
+        if (normalized) return cacheResolvedServices(g, normalized);
     }
 
     // 5) Global factories
