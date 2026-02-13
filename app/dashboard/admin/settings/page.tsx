@@ -54,6 +54,13 @@ type Me = {
     avatar_key: string | null
 } | null
 
+type SettingsPageConfig = {
+    pageTitle: string
+    pageDescription: string
+    roleBadgeLabel: string
+    roleIcon?: React.ReactNode
+}
+
 function initials(name: string) {
     const parts = String(name || "")
         .trim()
@@ -76,7 +83,7 @@ function passwordScore(pw: string) {
     return Math.min(100, score)
 }
 
-export default function AdminSettingsPage() {
+export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
     const router = useRouter()
 
     // ✅ global auth + avatar state
@@ -315,15 +322,15 @@ export default function AdminSettingsPage() {
     const pwScore = passwordScore(newPassword)
 
     return (
-        <DashboardLayout title="Settings">
+        <DashboardLayout title={config.pageTitle}>
             <TooltipProvider>
                 <div className="space-y-6">
                     {/* Single hidden file input shared by BOTH mobile + desktop */}
-                    <input
+                    <Input
                         ref={fileRef}
                         type="file"
                         accept="image/*"
-                        className="hidden"
+                        className="sr-only"
                         onChange={(e) => {
                             const f = e.target.files?.[0]
                             if (f) uploadAvatar(f)
@@ -333,14 +340,14 @@ export default function AdminSettingsPage() {
                     <div className="space-y-2">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div className="space-y-1">
-                                <h1 className="text-xl font-semibold tracking-tight">Admin Settings</h1>
-                                <p className="text-sm text-muted-foreground">Update your account information, avatar, and password.</p>
+                                <h1 className="text-xl font-semibold tracking-tight">{config.pageTitle}</h1>
+                                <p className="text-sm text-muted-foreground">{config.pageDescription}</p>
                             </div>
 
                             <div className="flex items-center gap-2">
                                 <Badge variant="secondary" className="gap-2">
-                                    <Shield className="h-3.5 w-3.5" />
-                                    Admin
+                                    {config.roleIcon ?? <Shield className="h-3.5 w-3.5" />}
+                                    {config.roleBadgeLabel}
                                 </Badge>
                                 {!!me?.role && (
                                     <Badge variant="outline" className="capitalize">
@@ -1165,5 +1172,18 @@ export default function AdminSettingsPage() {
                 </div>
             </TooltipProvider>
         </DashboardLayout>
+    )
+}
+
+export default function AdminSettingsPage() {
+    return (
+        <RoleSettingsPage
+            config={{
+                pageTitle: "Admin Settings",
+                pageDescription: "Update your account information, avatar, and password.",
+                roleBadgeLabel: "Admin",
+                roleIcon: <Shield className="h-3.5 w-3.5" />,
+            }}
+        />
     )
 }
