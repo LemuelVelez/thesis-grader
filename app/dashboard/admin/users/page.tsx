@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -64,6 +65,11 @@ type ProvisionResponse = {
     emailError?: string
 }
 
+type ResendResponse = {
+    message?: string
+    error?: string
+}
+
 const ROLE_FILTERS: Array<"all" | ThesisRole> = [
     "all",
     "admin",
@@ -102,6 +108,37 @@ async function readErrorMessage(res: Response): Promise<string> {
     }
 }
 
+async function postResendLoginCredentials(userId: string): Promise<string | null> {
+    const endpoints = [
+        `/api/users/${userId}/resend-login-credentials`,
+        `/api/users/${userId}/resend-login-details`,
+        `/api/users/${userId}/send-login-details`,
+    ]
+
+    for (const endpoint of endpoints) {
+        const res = await fetch(endpoint, { method: "POST" })
+
+        if (res.ok) {
+            try {
+                const data = (await res.json()) as ResendResponse
+                return data.message || null
+            } catch {
+                return null
+            }
+        }
+
+        if (res.status === 404 || res.status === 405) {
+            continue
+        }
+
+        throw new Error(await readErrorMessage(res))
+    }
+
+    throw new Error(
+        "Resend login credentials endpoint is unavailable. Please add an API route for resend login credentials.",
+    )
+}
+
 function isValidEmail(value: string) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
@@ -110,12 +147,14 @@ export default function AdminUsersPage() {
     const [users, setUsers] = React.useState<UserRecord[]>([])
     const [loading, setLoading] = React.useState(true)
     const [error, setError] = React.useState<string | null>(null)
+    const [directorySuccess, setDirectorySuccess] = React.useState<string | null>(null)
 
     const [search, setSearch] = React.useState("")
     const [roleFilter, setRoleFilter] = React.useState<"all" | ThesisRole>("all")
     const [statusFilter, setStatusFilter] = React.useState<"all" | UserStatus>("all")
 
     const [busyUserId, setBusyUserId] = React.useState<string | null>(null)
+    const [resendingUserId, setResendingUserId] = React.useState<string | null>(null)
 
     const [creating, setCreating] = React.useState(false)
     const [createError, setCreateError] = React.useState<string | null>(null)
@@ -141,8 +180,10 @@ export default function AdminUsersPage() {
             const safeItems = Array.isArray(data.items) ? data.items : []
             setUsers(safeItems)
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to fetch users.")
+            const message = err instanceof Error ? err.message : "Failed to fetch users."
+            setError(message)
             setUsers([])
+            toast.error(message)
         } finally {
             setLoading(false)
         }
@@ -171,17 +212,23 @@ export default function AdminUsersPage() {
         setCreateSuccess(null)
 
         if (!name) {
-            setCreateError("Name is required.")
+            const msg = "Name is required."
+            setCreateError(msg)
+            toast.error(msg)
             return
         }
 
         if (!email) {
-            setCreateError("Email is required.")
+            const msg = "Email is required."
+            setCreateError(msg)
+            toast.error(msg)
             return
         }
 
         if (!isValidEmail(email)) {
-            setCreateError("Please provide a valid email address.")
+            const msg = "Please provide a valid email address."
+            setCreateError(msg)
+            toast.error(msg)
             return
         }
 
@@ -210,16 +257,21 @@ export default function AdminUsersPage() {
                 data.item as UserRecord,
                 ...prev.filter((u) => u.id !== data.item?.id),
             ])
-            setCreateSuccess(
+
+            const successMsg =
                 data.message ||
-                "User created successfully. Login details were sent to the user email.",
-            )
+                "User created successfully. Login details were sent to the user email."
+            setCreateSuccess(successMsg)
+            toast.success(successMsg)
+
             setNewName("")
             setNewEmail("")
             setNewRole("student")
             setNewStatus("active")
         } catch (err) {
-            setCreateError(err instanceof Error ? err.message : "Failed to create user.")
+            const message = err instanceof Error ? err.message : "Failed to create user."
+            setCreateError(message)
+            toast.error(message)
         } finally {
             setCreating(false)
         }
@@ -252,8 +304,10 @@ export default function AdminUsersPage() {
 
     const setUserStatus = React.useCallback(
         async (user: UserRecord, nextStatus: UserStatus) => {
-            if (busyUserId) return
+            if (busyUserId || resendingUserId) return
             setBusyUserId(user.id)
+            setError(null)
+            setDirectorySuccess(null)
 
             try {
                 const res = await fetch(`/api/users/${user.id}/status`, {
@@ -271,13 +325,48 @@ export default function AdminUsersPage() {
                         item.id === user.id ? { ...item, status: nextStatus } : item,
                     ),
                 )
+
+                const successMsg = `${user.name} is now ${toTitleCase(nextStatus)}.`
+                setDirectorySuccess(successMsg)
+                toast.success(successMsg)
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to update user status.")
+                const message =
+                    err instanceof Error ? err.message : "Failed to update user status."
+                setError(message)
+                toast.error(message)
             } finally {
                 setBusyUserId(null)
             }
         },
-        [busyUserId],
+        [busyUserId, resendingUserId],
+    )
+
+    const resendLoginCredentials = React.useCallback(
+        async (user: UserRecord) => {
+            if (resendingUserId || busyUserId) return
+
+            setResendingUserId(user.id)
+            setError(null)
+            setDirectorySuccess(null)
+
+            try {
+                const serverMessage = await postResendLoginCredentials(user.id)
+                const successMsg =
+                    serverMessage || `Login credentials were resent to ${user.email}.`
+                setDirectorySuccess(successMsg)
+                toast.success(successMsg)
+            } catch (err) {
+                const message =
+                    err instanceof Error
+                        ? err.message
+                        : "Failed to resend login credentials."
+                setError(message)
+                toast.error(message)
+            } finally {
+                setResendingUserId(null)
+            }
+        },
+        [resendingUserId, busyUserId],
     )
 
     return (
@@ -287,6 +376,13 @@ export default function AdminUsersPage() {
                     <Alert variant="destructive">
                         <AlertTitle>Something went wrong</AlertTitle>
                         <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {directorySuccess ? (
+                    <Alert>
+                        <AlertTitle>Success</AlertTitle>
+                        <AlertDescription>{directorySuccess}</AlertDescription>
                     </Alert>
                 ) : null}
 
@@ -415,7 +511,7 @@ export default function AdminUsersPage() {
                                                 <TableHead className="min-w-28">Role</TableHead>
                                                 <TableHead className="min-w-28">Status</TableHead>
                                                 <TableHead className="min-w-40">Updated</TableHead>
-                                                <TableHead className="min-w-48 text-right">
+                                                <TableHead className="min-w-72 text-right">
                                                     Actions
                                                 </TableHead>
                                             </TableRow>
@@ -442,6 +538,7 @@ export default function AdminUsersPage() {
                                             ) : (
                                                 filteredUsers.map((user) => {
                                                     const disabling = busyUserId === user.id
+                                                    const resending = resendingUserId === user.id
                                                     const nextStatus: UserStatus =
                                                         user.status === "active"
                                                             ? "disabled"
@@ -496,7 +593,7 @@ export default function AdminUsersPage() {
                                                             </TableCell>
 
                                                             <TableCell>
-                                                                <div className="flex items-center justify-end gap-2">
+                                                                <div className="flex flex-wrap items-center justify-end gap-2">
                                                                     <Button
                                                                         asChild
                                                                         variant="outline"
@@ -518,7 +615,10 @@ export default function AdminUsersPage() {
                                                                                 nextStatus,
                                                                             )
                                                                         }
-                                                                        disabled={disabling}
+                                                                        disabled={
+                                                                            disabling ||
+                                                                            Boolean(resendingUserId)
+                                                                        }
                                                                     >
                                                                         {disabling
                                                                             ? "Updating..."
@@ -526,6 +626,24 @@ export default function AdminUsersPage() {
                                                                                 "disabled"
                                                                                 ? "Disable"
                                                                                 : "Activate"}
+                                                                    </Button>
+
+                                                                    <Button
+                                                                        variant="secondary"
+                                                                        size="sm"
+                                                                        onClick={() =>
+                                                                            void resendLoginCredentials(
+                                                                                user,
+                                                                            )
+                                                                        }
+                                                                        disabled={
+                                                                            resending ||
+                                                                            Boolean(busyUserId)
+                                                                        }
+                                                                    >
+                                                                        {resending
+                                                                            ? "Sending..."
+                                                                            : "Resend Login Credential"}
                                                                     </Button>
                                                                 </div>
                                                             </TableCell>

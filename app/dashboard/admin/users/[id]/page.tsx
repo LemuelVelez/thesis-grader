@@ -3,6 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -60,6 +61,11 @@ type UserResponse = {
     message?: string
 }
 
+type ResendResponse = {
+    message?: string
+    error?: string
+}
+
 const ROLES: ThesisRole[] = ["admin", "staff", "student", "panelist"]
 const STATUSES: UserStatus[] = ["active", "disabled"]
 
@@ -93,6 +99,37 @@ async function readErrorMessage(res: Response): Promise<string> {
     }
 }
 
+async function postResendLoginCredentials(userId: string): Promise<string | null> {
+    const endpoints = [
+        `/api/users/${userId}/resend-login-credentials`,
+        `/api/users/${userId}/resend-login-details`,
+        `/api/users/${userId}/send-login-details`,
+    ]
+
+    for (const endpoint of endpoints) {
+        const res = await fetch(endpoint, { method: "POST" })
+
+        if (res.ok) {
+            try {
+                const data = (await res.json()) as ResendResponse
+                return data.message || null
+            } catch {
+                return null
+            }
+        }
+
+        if (res.status === 404 || res.status === 405) {
+            continue
+        }
+
+        throw new Error(await readErrorMessage(res))
+    }
+
+    throw new Error(
+        "Resend login credentials endpoint is unavailable. Please add an API route for resend login credentials.",
+    )
+}
+
 export default function AdminUserDetailsPage() {
     const params = useParams()
     const router = useRouter()
@@ -106,6 +143,7 @@ export default function AdminUserDetailsPage() {
     const [loading, setLoading] = React.useState(true)
     const [savingProfile, setSavingProfile] = React.useState(false)
     const [savingStatus, setSavingStatus] = React.useState(false)
+    const [resendingCredentials, setResendingCredentials] = React.useState(false)
     const [deleting, setDeleting] = React.useState(false)
 
     const [error, setError] = React.useState<string | null>(null)
@@ -143,8 +181,10 @@ export default function AdminUserDetailsPage() {
             setUser(data.item)
             hydrateForm(data.item)
         } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to fetch user."
             setUser(null)
-            setError(err instanceof Error ? err.message : "Failed to fetch user.")
+            setError(message)
+            toast.error(message)
         } finally {
             setLoading(false)
         }
@@ -178,12 +218,16 @@ export default function AdminUserDetailsPage() {
         setSuccess(null)
 
         if (!cleanedName) {
-            setError("Name is required.")
+            const msg = "Name is required."
+            setError(msg)
+            toast.error(msg)
             return
         }
 
         if (!cleanedEmail || !isValidEmail(cleanedEmail)) {
-            setError("Please provide a valid email address.")
+            const msg = "Please provide a valid email address."
+            setError(msg)
+            toast.error(msg)
             return
         }
 
@@ -212,9 +256,13 @@ export default function AdminUserDetailsPage() {
 
             setUser(updated)
             hydrateForm(updated)
-            setSuccess("User profile updated successfully.")
+            const successMsg = "User profile updated successfully."
+            setSuccess(successMsg)
+            toast.success(successMsg)
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to update profile.")
+            const message = err instanceof Error ? err.message : "Failed to update profile."
+            setError(message)
+            toast.error(message)
         } finally {
             setSavingProfile(false)
         }
@@ -246,13 +294,39 @@ export default function AdminUserDetailsPage() {
 
             setUser(updated)
             hydrateForm(updated)
-            setSuccess("User status updated successfully.")
+            const successMsg = "User status updated successfully."
+            setSuccess(successMsg)
+            toast.success(successMsg)
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to update status.")
+            const message = err instanceof Error ? err.message : "Failed to update status."
+            setError(message)
+            toast.error(message)
         } finally {
             setSavingStatus(false)
         }
     }, [user, savingStatus, status, hydrateForm])
+
+    const handleResendLoginCredentials = React.useCallback(async () => {
+        if (!user || resendingCredentials) return
+
+        setResendingCredentials(true)
+        setError(null)
+        setSuccess(null)
+
+        try {
+            const serverMessage = await postResendLoginCredentials(user.id)
+            const successMsg = serverMessage || `Login credentials were resent to ${user.email}.`
+            setSuccess(successMsg)
+            toast.success(successMsg)
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to resend login credentials."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setResendingCredentials(false)
+        }
+    }, [user, resendingCredentials])
 
     const handleDelete = React.useCallback(async () => {
         if (!user || deleting) return
@@ -267,9 +341,12 @@ export default function AdminUserDetailsPage() {
                 throw new Error(await readErrorMessage(res))
             }
 
+            toast.success("User deleted successfully.")
             router.push("/dashboard/admin/users")
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to delete user.")
+            const message = err instanceof Error ? err.message : "Failed to delete user."
+            setError(message)
+            toast.error(message)
             setDeleting(false)
         }
     }, [user, deleting, router])
@@ -286,7 +363,13 @@ export default function AdminUserDetailsPage() {
                             <Button
                                 variant="outline"
                                 onClick={() => void loadUser()}
-                                disabled={loading || savingProfile || savingStatus || deleting}
+                                disabled={
+                                    loading ||
+                                    savingProfile ||
+                                    savingStatus ||
+                                    resendingCredentials ||
+                                    deleting
+                                }
                             >
                                 {loading ? "Refreshing..." : "Refresh"}
                             </Button>
@@ -466,6 +549,7 @@ export default function AdminUserDetailsPage() {
                                                 disabled={
                                                     savingProfile ||
                                                     savingStatus ||
+                                                    resendingCredentials ||
                                                     deleting ||
                                                     !profileDirty
                                                 }
@@ -483,6 +567,7 @@ export default function AdminUserDetailsPage() {
                                                 disabled={
                                                     savingProfile ||
                                                     savingStatus ||
+                                                    resendingCredentials ||
                                                     deleting ||
                                                     !profileDirty
                                                 }
@@ -537,6 +622,7 @@ export default function AdminUserDetailsPage() {
                                                 disabled={
                                                     savingStatus ||
                                                     savingProfile ||
+                                                    resendingCredentials ||
                                                     deleting ||
                                                     !statusDirty
                                                 }
@@ -558,6 +644,7 @@ export default function AdminUserDetailsPage() {
                                                 disabled={
                                                     savingStatus ||
                                                     savingProfile ||
+                                                    resendingCredentials ||
                                                     deleting
                                                 }
                                             >
@@ -566,6 +653,41 @@ export default function AdminUserDetailsPage() {
                                                     ? "Disabled"
                                                     : "Active"}
                                             </Button>
+                                        </div>
+
+                                        <Separator />
+
+                                        <div className="rounded-md border p-4">
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                <div>
+                                                    <p className="text-sm font-medium">
+                                                        Login Credentials
+                                                    </p>
+                                                    <p className="text-sm text-muted-foreground">
+                                                        Resend login credentials to{" "}
+                                                        <span className="font-medium">
+                                                            {user.email}
+                                                        </span>
+                                                        .
+                                                    </p>
+                                                </div>
+                                                <Button
+                                                    variant="secondary"
+                                                    onClick={() =>
+                                                        void handleResendLoginCredentials()
+                                                    }
+                                                    disabled={
+                                                        resendingCredentials ||
+                                                        savingProfile ||
+                                                        savingStatus ||
+                                                        deleting
+                                                    }
+                                                >
+                                                    {resendingCredentials
+                                                        ? "Sending..."
+                                                        : "Resend Login Credential"}
+                                                </Button>
+                                            </div>
                                         </div>
                                     </CardContent>
                                 </Card>
@@ -589,6 +711,7 @@ export default function AdminUserDetailsPage() {
                                                     disabled={
                                                         savingProfile ||
                                                         savingStatus ||
+                                                        resendingCredentials ||
                                                         deleting
                                                     }
                                                 >
