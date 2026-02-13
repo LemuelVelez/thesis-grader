@@ -4,10 +4,13 @@ import {
     type AuthRouteContext,
     type AuthRouteHandler,
 } from '../../../database/routes/Route';
+import { resolveDatabaseServices } from '../../../database/services/resolver';
 
 export const runtime = 'nodejs';
 
-const handlers = createApiRouteHandlers();
+const handlers = createApiRouteHandlers({
+    resolveServices: resolveDatabaseServices,
+});
 
 function normalizeSegment(value: string): string {
     return value.trim().toLowerCase().replace(/[_\s]+/g, '-');
