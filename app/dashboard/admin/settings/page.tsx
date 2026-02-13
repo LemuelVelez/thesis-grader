@@ -4,7 +4,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Camera, Check, Copy, Info, KeyRound, Loader2, Shield, Trash2, Upload, User2 } from "lucide-react"
+import { Camera, Check, Copy, Eye, EyeOff, Info, KeyRound, Loader2, Shield, Trash2, Upload, User2 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { cn } from "@/lib/utils"
@@ -100,6 +100,9 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
     const [newPassword, setNewPassword] = React.useState("")
     const [confirmPassword, setConfirmPassword] = React.useState("")
     const [savingPassword, setSavingPassword] = React.useState(false)
+    const [showCurrentPassword, setShowCurrentPassword] = React.useState(false)
+    const [showNewPassword, setShowNewPassword] = React.useState(false)
+    const [showConfirmPassword, setShowConfirmPassword] = React.useState(false)
 
     // avatar
     const fileRef = React.useRef<HTMLInputElement | null>(null)
@@ -210,6 +213,9 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
             setCurrentPassword("")
             setNewPassword("")
             setConfirmPassword("")
+            setShowCurrentPassword(false)
+            setShowNewPassword(false)
+            setShowConfirmPassword(false)
         } catch {
             toast.error("Network error while updating password.", { id: tId })
         } finally {
@@ -606,15 +612,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                         <form onSubmit={savePassword} className="space-y-4">
                                             <div className="space-y-2">
                                                 <Label htmlFor="m_current_password">Current password</Label>
-                                                <Input
-                                                    id="m_current_password"
-                                                    type="password"
-                                                    value={currentPassword}
-                                                    onChange={(e) => setCurrentPassword(e.target.value)}
-                                                    disabled={savingPassword}
-                                                    autoComplete="current-password"
-                                                    placeholder="••••••••"
-                                                />
+                                                <div className="relative">
+                                                    <Input
+                                                        id="m_current_password"
+                                                        type={showCurrentPassword ? "text" : "password"}
+                                                        value={currentPassword}
+                                                        onChange={(e) => setCurrentPassword(e.target.value)}
+                                                        disabled={savingPassword}
+                                                        autoComplete="current-password"
+                                                        placeholder="••••••••"
+                                                        className="pr-10"
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                        onClick={() => setShowCurrentPassword((v) => !v)}
+                                                        disabled={savingPassword}
+                                                        aria-label={showCurrentPassword ? "Hide current password" : "Show current password"}
+                                                    >
+                                                        {showCurrentPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                    </Button>
+                                                </div>
                                             </div>
 
                                             <div className="space-y-2">
@@ -642,15 +662,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                     </Popover>
                                                 </div>
 
-                                                <Input
-                                                    id="m_new_password"
-                                                    type="password"
-                                                    value={newPassword}
-                                                    onChange={(e) => setNewPassword(e.target.value)}
-                                                    disabled={savingPassword}
-                                                    autoComplete="new-password"
-                                                    placeholder="Create a strong password"
-                                                />
+                                                <div className="relative">
+                                                    <Input
+                                                        id="m_new_password"
+                                                        type={showNewPassword ? "text" : "password"}
+                                                        value={newPassword}
+                                                        onChange={(e) => setNewPassword(e.target.value)}
+                                                        disabled={savingPassword}
+                                                        autoComplete="new-password"
+                                                        placeholder="Create a strong password"
+                                                        className="pr-10"
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                        onClick={() => setShowNewPassword((v) => !v)}
+                                                        disabled={savingPassword}
+                                                        aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                                                    >
+                                                        {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                    </Button>
+                                                </div>
 
                                                 <div className="space-y-1">
                                                     <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -663,15 +697,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
 
                                             <div className="space-y-2">
                                                 <Label htmlFor="m_confirm_password">Confirm new password</Label>
-                                                <Input
-                                                    id="m_confirm_password"
-                                                    type="password"
-                                                    value={confirmPassword}
-                                                    onChange={(e) => setConfirmPassword(e.target.value)}
-                                                    disabled={savingPassword}
-                                                    autoComplete="new-password"
-                                                    placeholder="Re-type new password"
-                                                />
+                                                <div className="relative">
+                                                    <Input
+                                                        id="m_confirm_password"
+                                                        type={showConfirmPassword ? "text" : "password"}
+                                                        value={confirmPassword}
+                                                        onChange={(e) => setConfirmPassword(e.target.value)}
+                                                        disabled={savingPassword}
+                                                        autoComplete="new-password"
+                                                        placeholder="Re-type new password"
+                                                        className="pr-10"
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                        onClick={() => setShowConfirmPassword((v) => !v)}
+                                                        disabled={savingPassword}
+                                                        aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                                                    >
+                                                        {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                    </Button>
+                                                </div>
                                             </div>
 
                                             {/* ✅ Buttons vertical (mobile) */}
@@ -684,6 +732,9 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                         setCurrentPassword("")
                                                         setNewPassword("")
                                                         setConfirmPassword("")
+                                                        setShowCurrentPassword(false)
+                                                        setShowNewPassword(false)
+                                                        setShowConfirmPassword(false)
                                                     }}
                                                     className="w-full"
                                                 >
@@ -1021,15 +1072,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                 <form onSubmit={savePassword} className="space-y-4">
                                                     <div className="space-y-2">
                                                         <Label htmlFor="current_password">Current password</Label>
-                                                        <Input
-                                                            id="current_password"
-                                                            type="password"
-                                                            value={currentPassword}
-                                                            onChange={(e) => setCurrentPassword(e.target.value)}
-                                                            disabled={savingPassword}
-                                                            autoComplete="current-password"
-                                                            placeholder="••••••••"
-                                                        />
+                                                        <div className="relative">
+                                                            <Input
+                                                                id="current_password"
+                                                                type={showCurrentPassword ? "text" : "password"}
+                                                                value={currentPassword}
+                                                                onChange={(e) => setCurrentPassword(e.target.value)}
+                                                                disabled={savingPassword}
+                                                                autoComplete="current-password"
+                                                                placeholder="••••••••"
+                                                                className="pr-10"
+                                                            />
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                                onClick={() => setShowCurrentPassword((v) => !v)}
+                                                                disabled={savingPassword}
+                                                                aria-label={showCurrentPassword ? "Hide current password" : "Show current password"}
+                                                            >
+                                                                {showCurrentPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                            </Button>
+                                                        </div>
                                                     </div>
 
                                                     <div className="space-y-2">
@@ -1057,15 +1122,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                             </Popover>
                                                         </div>
 
-                                                        <Input
-                                                            id="new_password"
-                                                            type="password"
-                                                            value={newPassword}
-                                                            onChange={(e) => setNewPassword(e.target.value)}
-                                                            disabled={savingPassword}
-                                                            autoComplete="new-password"
-                                                            placeholder="Create a strong password"
-                                                        />
+                                                        <div className="relative">
+                                                            <Input
+                                                                id="new_password"
+                                                                type={showNewPassword ? "text" : "password"}
+                                                                value={newPassword}
+                                                                onChange={(e) => setNewPassword(e.target.value)}
+                                                                disabled={savingPassword}
+                                                                autoComplete="new-password"
+                                                                placeholder="Create a strong password"
+                                                                className="pr-10"
+                                                            />
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                                onClick={() => setShowNewPassword((v) => !v)}
+                                                                disabled={savingPassword}
+                                                                aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                                                            >
+                                                                {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                            </Button>
+                                                        </div>
 
                                                         <div className="space-y-1">
                                                             <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -1078,15 +1157,29 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
 
                                                     <div className="space-y-2">
                                                         <Label htmlFor="confirm_password">Confirm new password</Label>
-                                                        <Input
-                                                            id="confirm_password"
-                                                            type="password"
-                                                            value={confirmPassword}
-                                                            onChange={(e) => setConfirmPassword(e.target.value)}
-                                                            disabled={savingPassword}
-                                                            autoComplete="new-password"
-                                                            placeholder="Re-type new password"
-                                                        />
+                                                        <div className="relative">
+                                                            <Input
+                                                                id="confirm_password"
+                                                                type={showConfirmPassword ? "text" : "password"}
+                                                                value={confirmPassword}
+                                                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                                                disabled={savingPassword}
+                                                                autoComplete="new-password"
+                                                                placeholder="Re-type new password"
+                                                                className="pr-10"
+                                                            />
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                                                                onClick={() => setShowConfirmPassword((v) => !v)}
+                                                                disabled={savingPassword}
+                                                                aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                                                            >
+                                                                {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                            </Button>
+                                                        </div>
                                                     </div>
 
                                                     <div className="flex items-center justify-end gap-2">
@@ -1098,6 +1191,9 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                                 setCurrentPassword("")
                                                                 setNewPassword("")
                                                                 setConfirmPassword("")
+                                                                setShowCurrentPassword(false)
+                                                                setShowNewPassword(false)
+                                                                setShowConfirmPassword(false)
                                                             }}
                                                         >
                                                             Clear
