@@ -1,12 +1,18 @@
-import { fixedAuthRoute } from '../_shared';
+import { NextRequest } from 'next/server';
+import { createAuthRouteHandlers } from '../../../../database/routes/Route';
 
 export const runtime = 'nodejs';
 
-const route = fixedAuthRoute(['forgot-password']);
+const handlers = createAuthRouteHandlers();
 
-export const GET = route.GET;
-export const POST = route.POST;
-export const PUT = route.PUT;
-export const PATCH = route.PATCH;
-export const DELETE = route.DELETE;
-export const OPTIONS = route.OPTIONS;
+function authCtx(slug: string[]) {
+    return { params: Promise.resolve({ slug }) };
+}
+
+export async function POST(req: NextRequest) {
+    return handlers.POST(req, authCtx(['forgot-password']));
+}
+
+export async function OPTIONS(req: NextRequest) {
+    return handlers.OPTIONS(req, authCtx(['forgot-password']));
+}
