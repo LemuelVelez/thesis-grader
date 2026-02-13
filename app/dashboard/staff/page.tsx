@@ -176,7 +176,12 @@ export default function StaffOverviewPage() {
     const topGroupsData = React.useMemo(() => {
         const fallback = [
             { group_title: "No data", group_percentage: 0, rank: 1 },
-            o {}
+            { group_title: "No data", group_percentage: 0, rank: 2 },
+            { group_title: "No data", group_percentage: 0, rank: 3 },
+            { group_title: "No data", group_percentage: 0, rank: 4 },
+            { group_title: "No data", group_percentage: 0, rank: 5 },
+            { group_title: "No data", group_percentage: 0, rank: 6 },
+            { group_title: "No data", group_percentage: 0, rank: 7 },
         ] as RankingLite[]
 
         const source = (rankings.length > 0 ? rankings : fallback)
@@ -268,7 +273,7 @@ export default function StaffOverviewPage() {
                                     />
                                     <YAxis stroke="var(--muted-foreground)" />
                                     <Tooltip
-                                        formatter={(value: number) => `${value.toFixed(2)}%`}
+                                        formatter={(value: number | undefined) => `${(value ?? 0).toFixed(2)}%`}
                                         contentStyle={{
                                             backgroundColor: "var(--card)",
                                             borderColor: "var(--border)",
