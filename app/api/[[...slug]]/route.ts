@@ -1,7 +1,42 @@
 import { NextResponse } from 'next/server';
 import { createApiRouteHandlers } from '../../../database/routes/Route';
+import type { DatabaseServices } from '../../../database/services/Services';
 
 export const runtime = 'nodejs';
+
+type DatabaseServicesResolver = () => DatabaseServices | Promise<DatabaseServices>;
+type ZeroArgFactory = () => unknown | Promise<unknown>;
+
+type GlobalDatabaseServiceRegistry = typeof globalThis & {
+    __thesisGraderDbServices?: DatabaseServices;
+    __thesisGraderDbServicesResolver?: DatabaseServicesResolver;
+
+    // Legacy/alternate keys found in older bootstraps
+    __databaseServices?: unknown;
+    __databaseServicesResolver?: unknown;
+    __dbServices?: unknown;
+    __dbServicesResolver?: unknown;
+    __thesisGraderServices?: unknown;
+    __thesisGraderServicesResolver?: unknown;
+    databaseServices?: unknown;
+    databaseServicesResolver?: unknown;
+    dbServices?: unknown;
+    dbServicesResolver?: unknown;
+    services?: unknown;
+
+    // Optional globally-exposed factories
+    createDatabaseServices?: unknown;
+    getDatabaseServices?: unknown;
+    createDbServices?: unknown;
+    getDbServices?: unknown;
+    createServices?: unknown;
+    getServices?: unknown;
+    initDatabaseServices?: unknown;
+    makeDatabaseServices?: unknown;
+
+    // Route-level one-time import attempt flag
+    __thesisGraderDbImportAttempted?: boolean;
+};
 
 function getAppBaseUrl(): string {
     const appUrl =
@@ -31,14 +66,205 @@ async function sendPasswordResetEmailSafe(payload: {
     }
 }
 
+function isDatabaseServices(value: unknown): value is DatabaseServices {
+    if (!value || typeof value !== 'object') return false;
+
+    const maybe = value as Partial<DatabaseServices>;
+    const users = maybe.users as { findByEmail?: unknown; findById?: unknown } | undefined;
+    const sessions = maybe.sessions as { findByTokenHash?: unknown } | undefined;
+
+    return (
+        typeof maybe.transaction === 'function' &&
+        !!users &&
+        typeof users.findByEmail === 'function' &&
+        typeof users.findById === 'function' &&
+        !!sessions &&
+        typeof sessions.findByTokenHash === 'function'
+    );
+}
+
+function cacheResolvedServices(
+    g: GlobalDatabaseServiceRegistry,
+    services: DatabaseServices,
+): DatabaseServices {
+    g.__thesisGraderDbServices = services;
+    g.__thesisGraderDbServicesResolver = async () => services;
+    return services;
+}
+
+async function tryResolveFromResolver(
+    candidate: unknown,
+): Promise<DatabaseServices | null> {
+    if (typeof candidate !== 'function') return null;
+    const resolved = await (candidate as () => unknown | Promise<unknown>)();
+    return isDatabaseServices(resolved) ? resolved : null;
+}
+
+async function tryResolveFromFactory(
+    candidate: unknown,
+): Promise<DatabaseServices | null> {
+    if (typeof candidate !== 'function') return null;
+
+    // Only call zero-arg factories to avoid unsafe invocation.
+    const fn = candidate as ZeroArgFactory;
+    if (fn.length > 0) return null;
+
+    const resolved = await fn();
+    return isDatabaseServices(resolved) ? resolved : null;
+}
+
+async function tryResolveFromModule(specifier: string): Promise<DatabaseServices | null> {
+    try {
+        const mod = (await import(specifier)) as Record<string, unknown>;
+
+        // 1) Known object exports
+        const objectExportKeys = [
+            'default',
+            'databaseServices',
+            'dbServices',
+            'services',
+            'database',
+            'db',
+        ] as const;
+
+        for (const key of objectExportKeys) {
+            const value = mod[key];
+            if (isDatabaseServices(value)) return value;
+        }
+
+        // 2) Known factory/resolver exports
+        const functionExportKeys = [
+            'default',
+            'getDatabaseServices',
+            'createDatabaseServices',
+            'getDbServices',
+            'createDbServices',
+            'getServices',
+            'createServices',
+            'initDatabaseServices',
+            'makeDatabaseServices',
+            'buildDatabaseServices',
+            'resolveDatabaseServices',
+        ] as const;
+
+        for (const key of functionExportKeys) {
+            const candidate = mod[key];
+            const resolved = await tryResolveFromFactory(candidate);
+            if (resolved) return resolved;
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Robust resolver that supports:
+ * - canonical globals
+ * - legacy globals/factories
+ * - one-time dynamic module discovery for common DB bootstrap files
+ */
+async function resolveDatabaseServices(): Promise<DatabaseServices> {
+    const g = globalThis as GlobalDatabaseServiceRegistry;
+
+    // 1) Canonical resolver
+    if (typeof g.__thesisGraderDbServicesResolver === 'function') {
+        const resolved = await g.__thesisGraderDbServicesResolver();
+        if (isDatabaseServices(resolved)) return cacheResolvedServices(g, resolved);
+    }
+
+    // 2) Canonical singleton
+    if (isDatabaseServices(g.__thesisGraderDbServices)) {
+        return cacheResolvedServices(g, g.__thesisGraderDbServices);
+    }
+
+    // 3) Legacy resolvers
+    const legacyResolvers: unknown[] = [
+        g.__databaseServicesResolver,
+        g.__dbServicesResolver,
+        g.__thesisGraderServicesResolver,
+        g.databaseServicesResolver,
+        g.dbServicesResolver,
+    ];
+
+    for (const candidate of legacyResolvers) {
+        const resolved = await tryResolveFromResolver(candidate);
+        if (resolved) return cacheResolvedServices(g, resolved);
+    }
+
+    // 4) Legacy singletons
+    const legacyServices: unknown[] = [
+        g.__databaseServices,
+        g.__dbServices,
+        g.__thesisGraderServices,
+        g.databaseServices,
+        g.dbServices,
+        g.services,
+    ];
+
+    for (const candidate of legacyServices) {
+        if (isDatabaseServices(candidate)) {
+            return cacheResolvedServices(g, candidate);
+        }
+    }
+
+    // 5) Global factories
+    const globalFactories: unknown[] = [
+        g.createDatabaseServices,
+        g.getDatabaseServices,
+        g.createDbServices,
+        g.getDbServices,
+        g.createServices,
+        g.getServices,
+        g.initDatabaseServices,
+        g.makeDatabaseServices,
+    ];
+
+    for (const factory of globalFactories) {
+        const resolved = await tryResolveFromFactory(factory);
+        if (resolved) return cacheResolvedServices(g, resolved);
+    }
+
+    // 6) One-time dynamic module discovery
+    if (!g.__thesisGraderDbImportAttempted) {
+        g.__thesisGraderDbImportAttempted = true;
+
+        const moduleSpecifiers = [
+            // relative to app/api/[[...slug]]/route.ts
+            '../../../database/services/index',
+            '../../../database/services',
+            '../../../database/index',
+            '../../../database',
+            '../../../lib/database',
+            '../../../lib/db',
+            '../../../server/database',
+            '../../../server/db',
+
+            // tsconfig alias-based
+            '@/database/services/index',
+            '@/database/services',
+            '@/database/index',
+            '@/database',
+            '@/lib/database',
+            '@/lib/db',
+            '@/server/database',
+            '@/server/db',
+        ];
+
+        for (const specifier of moduleSpecifiers) {
+            const resolved = await tryResolveFromModule(specifier);
+            if (resolved) return cacheResolvedServices(g, resolved);
+        }
+    }
+
+    throw new Error(
+        'DatabaseServices resolver is not configured. Register services via setDatabaseServicesResolver(...), expose globalThis.__thesisGraderDbServices, or export a zero-arg database services factory/singleton from a common database module.',
+    );
+}
+
 const handlers = createApiRouteHandlers({
-    /**
-     * Important fix:
-     * - Do NOT override resolveServices here.
-     * - Let createApiRouteHandlers use Route.ts default resolver, which supports
-     *   setDatabaseServicesResolver(...) and canonical globals.
-     * This avoids false 503 on /api/auth/me when services are registered via module resolver.
-     */
+    resolveServices: resolveDatabaseServices,
     auth: {
         onPasswordResetRequested: async ({ email, token, user }) => {
             const resetUrl = `${getAppBaseUrl()}/auth/password/reset?token=${encodeURIComponent(token)}`;
@@ -57,7 +283,7 @@ const handlers = createApiRouteHandlers({
                 {
                     error: 'Service unavailable.',
                     message:
-                        'Database services are not configured. Ensure setDatabaseServicesResolver(...) is called during bootstrap, or expose globalThis.__thesisGraderDbServices / globalThis.__thesisGraderDbServicesResolver.',
+                        'Database services are not configured. Register a DatabaseServices resolver or expose a DatabaseServices singleton globally before calling /api endpoints.',
                 },
                 { status: 503 },
             );
