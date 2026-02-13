@@ -4,7 +4,7 @@
  * Provides:
  * - auth action resolver from [[...slug]]
  * - method/action dispatcher for AuthController
- * - optional API catch-all dispatcher (auth/admin/student/staff/panelist/users/notifications)
+ * - optional API catch-all dispatcher (auth/admin/student/staff/panelist/users/notifications/evaluations)
  * - built-in CORS wrapping via CorsController
  * - pluggable DatabaseServices resolver
  *
@@ -35,6 +35,10 @@ import { UserController } from '../controllers/UserController';
 import {
     NOTIFICATION_TYPES,
     USER_STATUSES,
+    type EvaluationInsert,
+    type EvaluationPatch,
+    type EvaluationRow,
+    type EvaluationStatus,
     type NotificationType,
     type ThesisRole,
     type UserRow,
@@ -83,7 +87,8 @@ type ApiResource =
     | 'staff'
     | 'panelist'
     | 'users'
-    | 'notifications';
+    | 'notifications'
+    | 'evaluations';
 
 type ApiRoot = 'root' | 'auth' | ApiResource;
 
@@ -283,6 +288,10 @@ function resolveApiRoot(segment: string | undefined): ApiRoot | null {
         case 'notifications':
             return 'notifications';
 
+        case 'evaluation':
+        case 'evaluations':
+            return 'evaluations';
+
         default:
             return null;
     }
@@ -413,10 +422,24 @@ function toNotificationType(value: unknown): NotificationType | null {
         : null;
 }
 
+function toEvaluationStatus(value: unknown): EvaluationStatus | null {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return null;
+    return normalized as EvaluationStatus;
+}
+
 function parseReadAt(body: Record<string, unknown>): string | undefined {
     const readAt = body.readAt;
     if (typeof readAt === 'string' && readAt.trim().length > 0) {
         return readAt.trim();
+    }
+    return undefined;
+}
+
+function parseOptionalIsoDate(value: unknown): string | undefined {
+    if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
     }
     return undefined;
 }
@@ -1105,6 +1128,133 @@ async function dispatchNotificationsRequest(
     return json404Api();
 }
 
+async function dispatchEvaluationsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = services.evaluations;
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const query = parseListQuery<EvaluationRow>(req);
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.create(body as EvaluationInsert);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/evaluations/schedule/:scheduleId
+    if (tail.length === 2 && tail[0] === 'schedule') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const scheduleId = tail[1];
+        if (!scheduleId) return json400('scheduleId is required.');
+
+        const items = await controller.listBySchedule(scheduleId);
+        return json200({ items });
+    }
+
+    // /api/evaluations/evaluator/:evaluatorId
+    if (tail.length === 2 && tail[0] === 'evaluator') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const evaluatorId = tail[1];
+        if (!evaluatorId) return json400('evaluatorId is required.');
+
+        const items = await controller.listByEvaluator(evaluatorId);
+        return json200({ items });
+    }
+
+    const id = tail[0];
+    if (!id) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await controller.findById(id);
+            if (!item) return json404Entity('Evaluation');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id }, body as EvaluationPatch);
+            if (!item) return json404Entity('Evaluation');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id });
+            if (deleted === 0) return json404Entity('Evaluation');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[1] === 'status') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        if (!body) return json400('Invalid JSON body.');
+
+        const status = toEvaluationStatus(body.status);
+        if (!status) {
+            return json400('Invalid status. Provide a non-empty status string.');
+        }
+
+        const item = await controller.setStatus(id, status);
+        if (!item) return json404Entity('Evaluation');
+        return json200({ item });
+    }
+
+    if (tail.length === 2 && tail[1] === 'submit') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        const submittedAt = body
+            ? parseOptionalIsoDate(body.submittedAt ?? body.submitted_at)
+            : undefined;
+
+        const item = await controller.submit(id, submittedAt);
+        if (!item) return json404Entity('Evaluation');
+        return json200({ item });
+    }
+
+    if (tail.length === 2 && tail[1] === 'lock') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        const lockedAt = body
+            ? parseOptionalIsoDate(body.lockedAt ?? body.locked_at)
+            : undefined;
+
+        const item = await controller.lock(id, lockedAt);
+        if (!item) return json404Entity('Evaluation');
+        return json200({ item });
+    }
+
+    return json404Api();
+}
+
 async function enforceApiGuard(
     req: NextRequest,
     resource: ApiResource,
@@ -1162,6 +1312,7 @@ async function dispatchApiRequest(
                 panelist: '/api/panelist/*',
                 users: '/api/users/*',
                 notifications: '/api/notifications/*',
+                evaluations: '/api/evaluations/*',
             },
         });
     }
@@ -1195,6 +1346,9 @@ async function dispatchApiRequest(
 
         case 'notifications':
             return dispatchNotificationsRequest(req, tail, services);
+
+        case 'evaluations':
+            return dispatchEvaluationsRequest(req, tail, services);
 
         default:
             return json404Api();
@@ -1279,6 +1433,7 @@ export function createAuthRouteHandlers(
  * - /api/panelist/*
  * - /api/users/*
  * - /api/notifications/*
+ * - /api/evaluations/*
  */
 export function createApiRouteHandlers(
     options: CreateApiRouteHandlersOptions = {},
