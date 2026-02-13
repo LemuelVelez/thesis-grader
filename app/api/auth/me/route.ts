@@ -1,20 +1,20 @@
-import { NextRequest } from 'next/server';
-import { createAuthRouteHandlers } from '../../../../database/routes/Route';
+import type { NextRequest } from 'next/server';
+import type { AuthRouteContext } from '../../../../database/routes/Route';
+import {
+    GET as API_GET,
+    OPTIONS as API_OPTIONS,
+} from '../../[[...slug]]/route';
 
 export const runtime = 'nodejs';
 
-const handlers = createAuthRouteHandlers();
-
-function authCtx(slug: string[]) {
-    // Use plain object params for compatibility with handlers that expect
-    // context.params.slug directly (non-Promise style).
-    return { params: { slug } };
+function apiCtx(slug: string[]): AuthRouteContext {
+    return { params: Promise.resolve({ slug }) };
 }
 
 export async function GET(req: NextRequest) {
-    return handlers.GET(req, authCtx(['me']) as any);
+    return API_GET(req, apiCtx(['me']));
 }
 
 export async function OPTIONS(req: NextRequest) {
-    return handlers.OPTIONS(req, authCtx(['me']) as any);
+    return API_OPTIONS(req, apiCtx(['me']));
 }
