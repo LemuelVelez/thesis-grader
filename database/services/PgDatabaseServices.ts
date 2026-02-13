@@ -1,4 +1,4 @@
-import type { Pool, PoolClient, QueryResult } from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { db } from '../../lib/db';
 
 import type {
@@ -78,8 +78,10 @@ import type {
 } from './Services';
 
 type Queryable = {
-    query<T = unknown>(text: string, values?: unknown[]): Promise<QueryResult<T>>;
-    connect?: () => Promise<PoolClient>;
+    query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+    ): Promise<QueryResult<T>>;
 };
 
 const SAFE_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -187,7 +189,10 @@ function parseCountRow(row: unknown): number {
 }
 
 function isPool(executor: Queryable): executor is Pool {
-    return typeof executor.connect === 'function';
+    return (
+        typeof (executor as Pool).connect === 'function' &&
+        typeof (executor as { end?: unknown }).end === 'function'
+    );
 }
 
 let savepointCounter = 0;
@@ -1093,7 +1098,6 @@ function buildEntityServices(executor: Queryable): EntityServiceMap {
 
 async function runTransaction<T>(
     executor: Queryable,
-    poolForTransactions: Pool,
     work: (services: DatabaseServices) => Promise<T>,
 ): Promise<T> {
     if (isPool(executor)) {
@@ -1137,7 +1141,6 @@ async function runTransaction<T>(
 }
 
 export function createPgDatabaseServices(executor: Queryable = db): DatabaseServices {
-    const poolForTransactions: Pool = isPool(executor) ? executor : db;
     const entities = buildEntityServices(executor);
 
     const services: DatabaseServices = {
@@ -1148,7 +1151,7 @@ export function createPgDatabaseServices(executor: Queryable = db): DatabaseServ
         },
 
         async transaction<T>(work: (services: DatabaseServices) => Promise<T>): Promise<T> {
-            return runTransaction(executor, poolForTransactions, work);
+            return runTransaction(executor, work);
         },
     };
 
