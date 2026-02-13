@@ -16,17 +16,13 @@ export const env = {
     NODE_ENV: process.env.NODE_ENV ?? "development",
 }
 
+type EnvKey = keyof typeof env
+
 export const isProd = env.NODE_ENV === "production"
 
-export function assertServerEnv() {
-    const required = [
-        "DATABASE_URL",
-        "GMAIL_USER",
-        "GMAIL_APP_PASSWORD",
-        "AWS_REGION",
-        "S3_BUCKET_NAME",
-    ] as const
-
+export function assertServerEnv(
+    required: readonly EnvKey[] = ["DATABASE_URL"] as const,
+) {
     const missing = required.filter((k) => !env[k])
     if (missing.length) {
         throw new Error(`Missing required env vars: ${missing.join(", ")}`)
