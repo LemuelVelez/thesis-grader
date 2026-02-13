@@ -78,6 +78,7 @@ function roleBasePath(role: string | null | undefined) {
     if (r === "student") return "/dashboard/student"
     if (r === "staff") return "/dashboard/staff"
     if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
     return "/dashboard"
 }
 

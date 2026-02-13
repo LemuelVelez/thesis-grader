@@ -14,6 +14,11 @@ import {
     ShieldCheck,
     Settings,
     ListChecks,
+    Bell,
+    Trophy,
+    UserCheck,
+    GraduationCap,
+    BarChart3,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -36,6 +41,7 @@ function roleBasePath(role: string | null | undefined) {
     if (r === "student") return "/dashboard/student"
     if (r === "staff") return "/dashboard/staff"
     if (r === "admin") return "/dashboard/admin"
+    if (r === "panelist") return "/dashboard/panelist"
     return "/dashboard"
 }
 
@@ -47,7 +53,7 @@ function normalizePath(p: string) {
 
 function isRoleRootHref(href: string) {
     const h = normalizePath(href)
-    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin)$/.test(h)
+    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin|panelist)$/.test(h)
 }
 
 function isActivePath(pathname: string, href: string) {
@@ -64,9 +70,7 @@ function isActivePath(pathname: string, href: string) {
 }
 
 /**
- * Nav is aligned with:
- * - Features: Scheduling (Staff), Rubrics (Admin), Scoring/Feedback (Staff), Finalize/Lock, Audit Logs (Admin)
- * - Roles: Student (schedule+evaluate), Staff (schedules+score+feedback+finalize), Admin (oversight+reports+audit)
+ * Navigation is strictly aligned to the existing pages only.
  */
 export function getDashboardNav(role: string | null | undefined): NavGroup[] {
     const base = roleBasePath(role)
@@ -81,8 +85,27 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
                 title: "Main",
                 items: [
                     dashboard,
-                    { label: "My Schedule", href: `${base}/schedule`, icon: Calendar },
-                    { label: "My Evaluation", href: `${base}/evaluation`, icon: ClipboardList },
+                    { label: "Defense Schedule", href: `${base}/defense-schedule`, icon: Calendar },
+                    { label: "Thesis Group", href: `${base}/thesis-group`, icon: BookOpen },
+                    { label: "Student Evaluations", href: `${base}/student-evaluations`, icon: ClipboardList },
+                    { label: "Results", href: `${base}/results`, icon: BarChart3 },
+                    { label: "Notifications", href: `${base}/notifications`, icon: Bell },
+                    settings,
+                ],
+            },
+        ]
+    }
+
+    if (r === "panelist") {
+        return [
+            {
+                title: "Main",
+                items: [
+                    dashboard,
+                    { label: "Defense Schedules", href: `${base}/defense-schedules`, icon: Calendar },
+                    { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
+                    { label: "Rankings", href: `${base}/rankings`, icon: Trophy },
+                    { label: "Notifications", href: `${base}/notifications`, icon: Bell },
                     settings,
                 ],
             },
@@ -95,16 +118,13 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
                 title: "Main",
                 items: [
                     dashboard,
-
-                    // Scheduling (Staff)
-                    { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
-
-                    // Scoring & feedback + Finalize & lock (Staff)
-                    { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
-
-                    // Read-only reference to templates/criteria (supports scoring)
-                    { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
-
+                    { label: "Defense Schedules", href: `${base}/defense-schedules`, icon: Calendar },
+                    { label: "Thesis Groups", href: `${base}/thesis-groups`, icon: BookOpen },
+                    { label: "Students", href: `${base}/students`, icon: GraduationCap },
+                    { label: "Panelists", href: `${base}/panelists`, icon: UserCheck },
+                    { label: "Rubric Templates", href: `${base}/rubric-templates`, icon: ListChecks },
+                    { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
+                    { label: "Notifications", href: `${base}/notifications`, icon: Bell },
                     settings,
                 ],
             },
@@ -112,31 +132,28 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
     }
 
     if (r === "admin") {
-        const oversight: NavItem[] = [
-            // Admin oversight typically needs visibility (not scoring)
-            { label: "Schedules", href: `${base}/schedules`, icon: Calendar },
-
-            // ✅ changed from `${base}/evaluations` to `${base}/evaluation`
-            { label: "Evaluations", href: `${base}/evaluation`, icon: ClipboardList },
-
-            { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
-        ]
-
-        const administration: NavItem[] = [
-            { label: "Users", href: `${base}/users`, icon: Users },
-            { label: "Thesis Records", href: `${base}/thesis`, icon: BookOpen },
-
-            // Rubrics & criteria (Admin)
-            { label: "Rubrics", href: `${base}/rubrics`, icon: ListChecks },
-
-            // Audit logs (Admin)
-            { label: "Audit Logs", href: `${base}/audit`, icon: ShieldCheck },
-        ]
-
         return [
-            { title: "Main", items: [dashboard, settings] },
-            { title: "Oversight", items: oversight },
-            { title: "Administration", items: administration },
+            {
+                title: "Main",
+                items: [
+                    dashboard,
+                    { label: "Defense Schedules", href: `${base}/defense-schedules`, icon: Calendar },
+                    { label: "Evaluations", href: `${base}/evaluations`, icon: ClipboardList },
+                    { label: "Thesis Groups", href: `${base}/thesis-groups`, icon: BookOpen },
+                    { label: "Rankings", href: `${base}/rankings`, icon: Trophy },
+                    { label: "Reports", href: `${base}/reports`, icon: FileBarChart2 },
+                ],
+            },
+            {
+                title: "Administration",
+                items: [
+                    { label: "Users", href: `${base}/users`, icon: Users },
+                    { label: "Rubric Templates", href: `${base}/rubric-templates`, icon: ListChecks },
+                    { label: "Audit Logs", href: `${base}/audit-logs`, icon: ShieldCheck },
+                    { label: "Notifications", href: `${base}/notifications`, icon: Bell },
+                    settings,
+                ],
+            },
         ]
     }
 

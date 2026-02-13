@@ -25,7 +25,7 @@ function normalizePath(p: string) {
 function isRoleRootHref(href: string) {
     // Overview links are role roots like /dashboard/admin (and optionally /dashboard)
     const h = normalizePath(href)
-    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin)$/.test(h)
+    return h === "/dashboard" || /^\/dashboard\/(student|staff|admin|panelist)$/.test(h)
 }
 
 function isActivePath(pathname: string, href: string) {
