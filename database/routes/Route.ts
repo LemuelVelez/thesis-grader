@@ -35,11 +35,23 @@ import { UserController } from '../controllers/UserController';
 import {
     NOTIFICATION_TYPES,
     USER_STATUSES,
+    type AuditLogInsert,
+    type AuditLogPatch,
+    type AuditLogRow,
+    type DefenseScheduleInsert,
+    type DefenseSchedulePatch,
+    type DefenseScheduleRow,
     type EvaluationInsert,
     type EvaluationPatch,
     type EvaluationRow,
     type EvaluationStatus,
     type NotificationType,
+    type RubricTemplateInsert,
+    type RubricTemplatePatch,
+    type RubricTemplateRow,
+    type ThesisGroupInsert,
+    type ThesisGroupPatch,
+    type ThesisGroupRow,
     type ThesisRole,
     type UserRow,
     type UserStatus,
@@ -88,7 +100,11 @@ type ApiResource =
     | 'panelist'
     | 'users'
     | 'notifications'
-    | 'evaluations';
+    | 'evaluations'
+    | 'defense-schedules'
+    | 'rubric-templates'
+    | 'thesis-groups'
+    | 'audit-logs';
 
 type ApiRoot = 'root' | 'auth' | ApiResource;
 
@@ -292,6 +308,24 @@ function resolveApiRoot(segment: string | undefined): ApiRoot | null {
         case 'evaluations':
             return 'evaluations';
 
+        case 'defense-schedule':
+        case 'defense-schedules':
+        case 'defenses':
+            return 'defense-schedules';
+
+        case 'rubric-template':
+        case 'rubric-templates':
+        case 'rubrics':
+            return 'rubric-templates';
+
+        case 'thesis-group':
+        case 'thesis-groups':
+            return 'thesis-groups';
+
+        case 'audit-log':
+        case 'audit-logs':
+            return 'audit-logs';
+
         default:
             return null;
     }
@@ -362,6 +396,22 @@ function parseNonNegativeInt(raw: string | null): number | undefined {
     if (!Number.isFinite(parsed)) return undefined;
     if (!Number.isInteger(parsed)) return undefined;
     return parsed >= 0 ? parsed : undefined;
+}
+
+function parseBoolean(raw: string | null): boolean | undefined {
+    if (raw == null) return undefined;
+    const normalized = raw.trim().toLowerCase();
+
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+
+    return undefined;
+}
+
+function isUuidLike(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value.trim(),
+    );
 }
 
 function parseListQuery<Row extends object>(req: NextRequest): ListQuery<Row> {
@@ -513,6 +563,435 @@ async function dispatchAuthRequest(
     }
 }
 
+async function dispatchThesisGroupsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = services.thesis_groups;
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const adviserId =
+                req.nextUrl.searchParams.get('adviserId') ??
+                req.nextUrl.searchParams.get('adviser_id');
+
+            if (adviserId) {
+                if (!isUuidLike(adviserId)) {
+                    return json400('adviserId must be a valid UUID.');
+                }
+                const items = await controller.listByAdviser(adviserId);
+                return json200({ items });
+            }
+
+            const query = parseListQuery<ThesisGroupRow>(req);
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.create(body as ThesisGroupInsert);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[0] === 'adviser') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const adviserId = tail[1];
+        if (!adviserId || !isUuidLike(adviserId)) {
+            return json400('adviserId must be a valid UUID.');
+        }
+
+        const items = await controller.listByAdviser(adviserId);
+        return json200({ items });
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await controller.findById(id);
+            if (!item) return json404Entity('Thesis group');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id }, body as ThesisGroupPatch);
+            if (!item) return json404Entity('Thesis group');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id });
+            if (deleted === 0) return json404Entity('Thesis group');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
+
+async function dispatchDefenseSchedulesRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = services.defense_schedules;
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const groupId =
+                req.nextUrl.searchParams.get('groupId') ??
+                req.nextUrl.searchParams.get('group_id');
+            const panelistId =
+                req.nextUrl.searchParams.get('panelistId') ??
+                req.nextUrl.searchParams.get('panelist_id') ??
+                req.nextUrl.searchParams.get('staffId') ??
+                req.nextUrl.searchParams.get('staff_id');
+
+            if (groupId) {
+                if (!isUuidLike(groupId)) {
+                    return json400('groupId must be a valid UUID.');
+                }
+                const items = await controller.listByGroup(groupId);
+                return json200({ items });
+            }
+
+            if (panelistId) {
+                if (!isUuidLike(panelistId)) {
+                    return json400('panelistId/staffId must be a valid UUID.');
+                }
+                const items = await controller.listByPanelist(panelistId);
+                return json200({ items });
+            }
+
+            const query = parseListQuery<DefenseScheduleRow>(req);
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.create(body as DefenseScheduleInsert);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/*/defense-schedules/group/:groupId
+    if (tail.length === 2 && tail[0] === 'group') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const groupId = tail[1];
+        if (!groupId || !isUuidLike(groupId)) {
+            return json400('groupId must be a valid UUID.');
+        }
+
+        const items = await controller.listByGroup(groupId);
+        return json200({ items });
+    }
+
+    // /api/*/defense-schedules/panelist/:panelistId
+    if (tail.length === 2 && (tail[0] === 'panelist' || tail[0] === 'staff')) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const panelistId = tail[1];
+        if (!panelistId || !isUuidLike(panelistId)) {
+            return json400('panelistId/staffId must be a valid UUID.');
+        }
+
+        const items = await controller.listByPanelist(panelistId);
+        return json200({ items });
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await controller.findById(id);
+            if (!item) return json404Entity('Defense schedule');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id }, body as DefenseSchedulePatch);
+            if (!item) return json404Entity('Defense schedule');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id });
+            if (deleted === 0) return json404Entity('Defense schedule');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[1] === 'status') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        if (!body) return json400('Invalid JSON body.');
+
+        const status = body.status;
+        if (typeof status !== 'string' || status.trim().length === 0) {
+            return json400('status must be a non-empty string.');
+        }
+
+        const item = await controller.setStatus(
+            id,
+            status.trim() as DefenseScheduleRow['status'],
+        );
+        if (!item) return json404Entity('Defense schedule');
+        return json200({ item });
+    }
+
+    return json404Api();
+}
+
+async function dispatchRubricTemplatesRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = services.rubric_templates;
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const latest = parseBoolean(req.nextUrl.searchParams.get('latest'));
+            if (latest === true) {
+                const item = await controller.getActiveLatest();
+                return json200({ item });
+            }
+
+            const active = parseBoolean(req.nextUrl.searchParams.get('active'));
+            if (active === true) {
+                const items = await controller.listActive();
+                return json200({ items });
+            }
+
+            const query = parseListQuery<RubricTemplateRow>(req);
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.create(body as RubricTemplateInsert);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/*/rubric-templates/active
+    if (tail.length === 1 && tail[0] === 'active') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const items = await controller.listActive();
+        return json200({ items });
+    }
+
+    // /api/*/rubric-templates/active/latest
+    if (tail.length === 2 && tail[0] === 'active' && tail[1] === 'latest') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const item = await controller.getActiveLatest();
+        return json200({ item });
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await controller.findById(id);
+            if (!item) return json404Entity('Rubric template');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id }, body as RubricTemplatePatch);
+            if (!item) return json404Entity('Rubric template');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id });
+            if (deleted === 0) return json404Entity('Rubric template');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[1] === 'active') {
+        if (method !== 'PATCH' && method !== 'POST' && method !== 'PUT') {
+            return json405(['PATCH', 'POST', 'PUT', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        const activeFromBody = body ? body.active : undefined;
+        const activeFromQuery = parseBoolean(req.nextUrl.searchParams.get('active'));
+
+        const active =
+            typeof activeFromBody === 'boolean' ? activeFromBody : activeFromQuery;
+
+        if (active === undefined) {
+            return json400('active must be provided as a boolean.');
+        }
+
+        const item = await controller.setActive(id, active);
+        if (!item) return json404Entity('Rubric template');
+        return json200({ item });
+    }
+
+    return json404Api();
+}
+
+async function dispatchAuditLogsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = services.audit_logs;
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const query = parseListQuery<AuditLogRow>(req);
+            const search = req.nextUrl.searchParams;
+
+            const actorId = search.get('actorId') ?? search.get('actor_id');
+            const entity = search.get('entity');
+            const entityId = search.get('entityId') ?? search.get('entity_id');
+
+            const where: Partial<AuditLogRow> = {
+                ...(query.where ?? {}),
+            };
+
+            if (actorId) {
+                if (!isUuidLike(actorId)) {
+                    return json400('actorId must be a valid UUID.');
+                }
+                where.actor_id = actorId;
+            }
+
+            if (entity) {
+                where.entity = entity;
+            }
+
+            if (entityId) {
+                if (!isUuidLike(entityId)) {
+                    return json400('entityId must be a valid UUID.');
+                }
+                where.entity_id = entityId;
+            }
+
+            if (Object.keys(where).length > 0) {
+                query.where = where;
+            }
+
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.create(body as AuditLogInsert);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/*/audit-logs/actor/:actorId
+    if (tail.length === 2 && tail[0] === 'actor') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const actorId = tail[1];
+        if (!actorId || !isUuidLike(actorId)) {
+            return json400('actorId must be a valid UUID.');
+        }
+
+        const items = await controller.listByActor(actorId);
+        return json200({ items });
+    }
+
+    // /api/*/audit-logs/entity/:entity[/entityId]
+    if (tail.length >= 2 && tail[0] === 'entity') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const entity = tail[1];
+        if (!entity) return json400('entity is required.');
+
+        const entityId = tail[2];
+        if (entityId && !isUuidLike(entityId)) {
+            return json400('entityId must be a valid UUID.');
+        }
+
+        const items = await controller.listByEntity(entity, entityId);
+        return json200({ items });
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await controller.findById(id);
+            if (!item) return json404Entity('Audit log');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id }, body as AuditLogPatch);
+            if (!item) return json404Entity('Audit log');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id });
+            if (deleted === 0) return json404Entity('Audit log');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
+
 async function dispatchAdminRequest(
     req: NextRequest,
     tail: string[],
@@ -541,6 +1020,31 @@ async function dispatchAdminRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
+    // Namespaced admin resources
+    if (tail[0] === 'defense-schedules' || tail[0] === 'defense-schedule') {
+        return dispatchDefenseSchedulesRequest(req, tail.slice(1), services);
+    }
+
+    if (tail[0] === 'rubric-templates' || tail[0] === 'rubric-template') {
+        return dispatchRubricTemplatesRequest(req, tail.slice(1), services);
+    }
+
+    if (tail[0] === 'audit-logs' || tail[0] === 'audit-log') {
+        return dispatchAuditLogsRequest(req, tail.slice(1), services);
+    }
+
+    if (tail[0] === 'thesis' && tail[1] === 'groups') {
+        return dispatchThesisGroupsRequest(req, tail.slice(2), services);
+    }
+
+    if (
+        tail[0] === 'thesis-groups' ||
+        tail[0] === 'thesis-group' ||
+        tail[0] === 'groups'
+    ) {
+        return dispatchThesisGroupsRequest(req, tail.slice(1), services);
+    }
+
     // /api/admin/rankings
     if (tail.length === 1 && tail[0] === 'rankings') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
@@ -555,7 +1059,9 @@ async function dispatchAdminRequest(
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
         const groupId = tail[1];
-        if (!groupId) return json400('groupId is required.');
+        if (!groupId || !isUuidLike(groupId)) {
+            return json400('groupId is required and must be a valid UUID.');
+        }
 
         const item = await services.v_thesis_group_rankings.byGroup(groupId);
         if (!item) return json404Entity('Ranking');
@@ -563,7 +1069,7 @@ async function dispatchAdminRequest(
     }
 
     const id = tail[0];
-    if (!id) return json404Api();
+    if (!id || !isUuidLike(id)) return json404Api();
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -643,7 +1149,7 @@ async function dispatchStudentRequest(
     }
 
     const id = tail[0];
-    if (!id) return json404Api();
+    if (!id || !isUuidLike(id)) return json404Api();
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -723,7 +1229,7 @@ async function dispatchStaffRequest(
     }
 
     const id = tail[0];
-    if (!id) return json404Api();
+    if (!id || !isUuidLike(id)) return json404Api();
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -803,7 +1309,7 @@ async function dispatchPanelistRequest(
     }
 
     const id = tail[0];
-    if (!id) return json404Api();
+    if (!id || !isUuidLike(id)) return json404Api();
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -883,7 +1389,7 @@ async function dispatchUsersRequest(
     }
 
     const id = tail[0];
-    if (!id) return json404Api();
+    if (!id || !isUuidLike(id)) return json404Api();
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -1334,6 +1840,10 @@ async function dispatchApiRequest(
                 users: '/api/users/*',
                 notifications: '/api/notifications/*',
                 evaluations: '/api/evaluations/*',
+                defenseSchedules: '/api/defense-schedules/*',
+                rubricTemplates: '/api/rubric-templates/*',
+                thesisGroups: '/api/thesis-groups/*',
+                auditLogs: '/api/audit-logs/*',
             },
         });
     }
@@ -1370,6 +1880,18 @@ async function dispatchApiRequest(
 
         case 'evaluations':
             return dispatchEvaluationsRequest(req, tail, services);
+
+        case 'defense-schedules':
+            return dispatchDefenseSchedulesRequest(req, tail, services);
+
+        case 'rubric-templates':
+            return dispatchRubricTemplatesRequest(req, tail, services);
+
+        case 'thesis-groups':
+            return dispatchThesisGroupsRequest(req, tail, services);
+
+        case 'audit-logs':
+            return dispatchAuditLogsRequest(req, tail, services);
 
         default:
             return json404Api();
@@ -1455,6 +1977,10 @@ export function createAuthRouteHandlers(
  * - /api/users/*
  * - /api/notifications/*
  * - /api/evaluations/*
+ * - /api/defense-schedules/*
+ * - /api/rubric-templates/*
+ * - /api/thesis-groups/*
+ * - /api/audit-logs/*
  */
 export function createApiRouteHandlers(
     options: CreateApiRouteHandlersOptions = {},

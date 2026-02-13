@@ -44,13 +44,13 @@ export default function DashboardLayout({ title, description, mainClassName, chi
                 <DashboardHeader title={title} />
 
                 {description ? (
-                    <div className="px-4 pb-2 md:px-6">
+                    <div className="p-4 pb-2 md:px-6">
                         <p className="text-sm text-muted-foreground">{description}</p>
                     </div>
                 ) : null}
 
                 {/* ✅ prevent page-level horizontal scroll; tables should scroll inside their own wrappers */}
-                <main className={cn("flex-1 min-w-0 overflow-x-hidden p-4 md:p-6", mainClassName)}>
+                <main className={cn("flex-1 min-w-0 overflow-x-hidden p-4 m-2 md:p-6", mainClassName)}>
                     {children}
                 </main>
             </SidebarInset>
