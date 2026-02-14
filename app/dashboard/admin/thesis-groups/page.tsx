@@ -131,6 +131,13 @@ function toNumberOrNull(value: unknown): number | null {
   return null
 }
 
+function toNonNegativeCountOrNull(value: unknown): number | null {
+  const n = toNumberOrNull(value)
+  if (n === null) return null
+  if (n < 0) return null
+  return Math.trunc(n)
+}
+
 function unwrapItems(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload
 
@@ -189,7 +196,14 @@ function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
     rec.adviser
   )
 
-  const membersCount = toNumberOrNull(rec.members_count ?? rec.member_count ?? rec.membersCount)
+  const scalarMembersCount = toNonNegativeCountOrNull(
+    rec.members_count ?? rec.member_count ?? rec.membersCount
+  )
+  const membersArrayCandidate =
+    rec.members ?? rec.group_members ?? rec.groupMembers ?? rec.member_list ?? rec.memberList
+
+  const membersCount =
+    scalarMembersCount ?? (Array.isArray(membersArrayCandidate) ? membersArrayCandidate.length : null)
 
   const createdAt = toStringOrNull(rec.created_at ?? rec.createdAt)
   const updatedAt = toStringOrNull(rec.updated_at ?? rec.updatedAt)
@@ -225,6 +239,103 @@ function normalizeStaffUser(raw: unknown): StaffUserItem | null {
     email: toStringOrNull(rec.email),
     status: toStringOrNull(rec.status),
   }
+}
+
+function extractMembersCountFromPayload(payload: unknown): number | null {
+  if (Array.isArray(payload)) {
+    return payload.length
+  }
+
+  const rec = asRecord(payload)
+  if (!rec) return null
+
+  const scalarCount = toNonNegativeCountOrNull(
+    rec.count ??
+    rec.total ??
+    rec.totalCount ??
+    rec.membersCount ??
+    rec.members_count ??
+    rec.memberCount ??
+    rec.member_count
+  )
+  if (scalarCount !== null) return scalarCount
+
+  const arrayCandidates: unknown[] = [
+    rec.items,
+    rec.data,
+    rec.members,
+    rec.group_members,
+    rec.groupMembers,
+  ]
+
+  for (const candidate of arrayCandidates) {
+    if (Array.isArray(candidate)) return candidate.length
+  }
+
+  return null
+}
+
+function buildGroupMembersEndpointCandidates(
+  groupId: string,
+  preferredBaseEndpoint: string | null
+): string[] {
+  const bases = preferredBaseEndpoint
+    ? [preferredBaseEndpoint, ...LIST_ENDPOINTS.filter((endpoint) => endpoint !== preferredBaseEndpoint)]
+    : [...LIST_ENDPOINTS]
+
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  const push = (endpoint: string) => {
+    const normalized = endpoint.replace(/\/+$/, "")
+    if (seen.has(normalized)) return
+    seen.add(normalized)
+    candidates.push(normalized)
+  }
+
+  for (const base of bases) {
+    push(`${base}/${groupId}/members`)
+  }
+
+  // Defensive aliases in case list and member endpoints are mounted differently.
+  push(`/api/thesis-groups/${groupId}/members`)
+  push(`/api/admin/thesis-groups/${groupId}/members`)
+  push(`/api/thesis/groups/${groupId}/members`)
+  push(`/api/admin/thesis/groups/${groupId}/members`)
+
+  return candidates
+}
+
+async function fetchMembersCountForGroup(
+  groupId: string,
+  preferredBaseEndpoint: string | null,
+  signal: AbortSignal
+): Promise<number | null> {
+  const endpoints = buildGroupMembersEndpointCandidates(groupId, preferredBaseEndpoint)
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal,
+      })
+
+      if (res.status === 404 || res.status === 405) continue
+
+      const payload = await parseResponseBodySafe(res)
+      if (!res.ok) continue
+
+      const count = extractMembersCountFromPayload(payload)
+      if (count !== null) return count
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error
+    }
+  }
+
+  return null
 }
 
 function dedupeStaffUsers(items: StaffUserItem[]): StaffUserItem[] {
@@ -693,6 +804,7 @@ export default function AdminThesisGroupsPage() {
 
   const [loading, setLoading] = React.useState<boolean>(true)
   const [staffLoading, setStaffLoading] = React.useState<boolean>(true)
+  const [membersCountSyncing, setMembersCountSyncing] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string | null>(null)
   const [staffError, setStaffError] = React.useState<string | null>(null)
 
@@ -817,10 +929,57 @@ export default function AdminThesisGroupsPage() {
     setDeleteOpen(true)
   }, [])
 
+  const hydrateMembersCount = React.useCallback(
+    async (items: ThesisGroupListItem[], preferredBaseEndpoint: string | null, signal: AbortSignal) => {
+      if (items.length === 0) {
+        setMembersCountSyncing(false)
+        return
+      }
+
+      setMembersCountSyncing(true)
+
+      try {
+        const pairs = await Promise.all(
+          items.map(async (item) => {
+            const count = await fetchMembersCountForGroup(item.id, preferredBaseEndpoint, signal)
+            return [item.id, count] as const
+          })
+        )
+
+        if (signal.aborted) return
+
+        const resolvedCountByGroupId = new Map<string, number>()
+        for (const [groupId, count] of pairs) {
+          if (count === null) continue
+          resolvedCountByGroupId.set(groupId, count)
+        }
+
+        if (resolvedCountByGroupId.size === 0) return
+
+        setGroups((prev) =>
+          sortNewest(
+            prev.map((group) => {
+              const nextCount = resolvedCountByGroupId.get(group.id)
+              if (nextCount === undefined || group.membersCount === nextCount) return group
+              return { ...group, membersCount: nextCount }
+            })
+          )
+        )
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return
+        toast.error("Could not sync member counts. Showing available values only.")
+      } finally {
+        if (!signal.aborted) setMembersCountSyncing(false)
+      }
+    },
+    []
+  )
+
   const loadGroups = React.useCallback(
     async (signal: AbortSignal) => {
       setLoading(true)
       setError(null)
+      setMembersCountSyncing(false)
 
       try {
         const result = await fetchFirstAvailableJson(LIST_ENDPOINTS, signal)
@@ -828,6 +987,7 @@ export default function AdminThesisGroupsPage() {
         if (!result) {
           setGroups([])
           setActiveBaseEndpoint(null)
+          setMembersCountSyncing(false)
           setError(
             "No compatible thesis-group API endpoint found. Wire one of: /api/thesis-groups or /api/admin/thesis-groups."
           )
@@ -840,19 +1000,23 @@ export default function AdminThesisGroupsPage() {
           .map(normalizeGroup)
           .filter((item): item is ThesisGroupListItem => item !== null)
 
-        setGroups(sortNewest(normalized))
+        const sorted = sortNewest(normalized)
+        setGroups(sorted)
+
+        void hydrateMembersCount(sorted, result.endpoint, signal)
       } catch (e) {
         if (e instanceof Error && e.name === "AbortError") return
         const message = e instanceof Error ? e.message : "Failed to load thesis groups."
         setGroups([])
         setActiveBaseEndpoint(null)
+        setMembersCountSyncing(false)
         setError(message)
         toast.error(message)
       } finally {
         setLoading(false)
       }
     },
-    []
+    [hydrateMembersCount]
   )
 
   const loadStaffUsers = React.useCallback(async (signal: AbortSignal) => {
@@ -1298,7 +1462,18 @@ export default function AdminThesisGroupsPage() {
       {
         accessorKey: "membersCount",
         header: "Members",
-        cell: ({ row }) => (row.original.membersCount === null ? "—" : String(row.original.membersCount)),
+        cell: ({ row }) => {
+          if (row.original.membersCount === null) {
+            return membersCountSyncing ? (
+              <Badge variant="outline" className="font-normal">
+                Syncing…
+              </Badge>
+            ) : (
+              "—"
+            )
+          }
+          return String(row.original.membersCount)
+        },
       },
       {
         accessorKey: "updatedAt",
@@ -1337,7 +1512,7 @@ export default function AdminThesisGroupsPage() {
         ),
       },
     ],
-    [openDeleteDialog, openEditDialog, staffById]
+    [membersCountSyncing, openDeleteDialog, openEditDialog, staffById]
   )
 
   const selectedEditAdviserMissing =
@@ -1362,8 +1537,12 @@ export default function AdminThesisGroupsPage() {
             Add Thesis Group
           </Button>
 
-          <Button onClick={() => setRefreshKey((v) => v + 1)} disabled={loading || staffLoading} variant="outline">
-            {loading || staffLoading ? "Refreshing..." : "Refresh"}
+          <Button
+            onClick={() => setRefreshKey((v) => v + 1)}
+            disabled={loading || staffLoading || membersCountSyncing}
+            variant="outline"
+          >
+            {loading || staffLoading || membersCountSyncing ? "Refreshing..." : "Refresh"}
           </Button>
 
           {!staffLoading && availableCreateStaff.length === 0 ? (
@@ -1378,6 +1557,9 @@ export default function AdminThesisGroupsPage() {
           </Badge>
 
           <Badge variant="outline">Available for new group: {availableCreateStaff.length}</Badge>
+          <Badge variant="outline">
+            {membersCountSyncing ? "Syncing member counts..." : "Member counts ready"}
+          </Badge>
         </div>
 
         {error ? (
