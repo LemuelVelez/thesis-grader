@@ -34,6 +34,7 @@ import { StudentController } from '../controllers/StudentController';
 import { UserController } from '../controllers/UserController';
 import {
     NOTIFICATION_TYPES,
+    THESIS_ROLES,
     USER_STATUSES,
     type AuditLogInsert,
     type AuditLogPatch,
@@ -503,6 +504,53 @@ function toNonEmptyString(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Safely parses a thesis role from unknown input.
+ */
+function toThesisRole(value: unknown): ThesisRole | null {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().toLowerCase();
+    return (THESIS_ROLES as readonly string[]).includes(normalized)
+        ? (normalized as ThesisRole)
+        : null;
+}
+
+/**
+ * Supports both canonical UserRow and user-like wrappers (e.g., StudentAccount)
+ * where role may be nested under .user.role.
+ */
+function extractRoleFromUserLike(value: unknown): ThesisRole | null {
+    if (!isRecord(value)) return null;
+
+    const direct = toThesisRole(value.role);
+    if (direct) return direct;
+
+    const nested = value.user;
+    if (isRecord(nested)) {
+        const nestedRole = toThesisRole(nested.role);
+        if (nestedRole) return nestedRole;
+    }
+
+    return null;
+}
+
+/**
+ * Supports both canonical UserRow and wrapped account objects where id may be nested.
+ */
+function extractIdFromUserLike(value: unknown): string | null {
+    if (!isRecord(value)) return null;
+
+    const direct = toNonEmptyString(value.id);
+    if (direct) return direct;
+
+    const nested = value.user;
+    if (isRecord(nested)) {
+        return toNonEmptyString(nested.id);
+    }
+
+    return null;
+}
+
 function parseGroupMemberStudentIdFromBody(
     body: Record<string, unknown>,
 ): string | null {
@@ -643,7 +691,7 @@ async function resolveCanonicalUserForMember(
     candidateId: string,
 ): Promise<{
     canonicalId: string;
-    user: UserRow | null;
+    user: Record<string, unknown> | null;
     resolvedFromAlias: boolean;
 }> {
     const normalized = candidateId.trim();
@@ -658,14 +706,14 @@ async function resolveCanonicalUserForMember(
 
     const usersController = new UserController(services);
 
-    let user: UserRow | null = null;
+    let rawUser: unknown = null;
     try {
-        user = await usersController.getById(normalized as UUID);
+        rawUser = await usersController.getById(normalized as UUID);
     } catch {
-        user = null;
+        rawUser = null;
     }
 
-    if (!user) {
+    if (!isRecord(rawUser)) {
         return {
             canonicalId: normalized,
             user: null,
@@ -673,10 +721,10 @@ async function resolveCanonicalUserForMember(
         };
     }
 
-    const canonicalId = user.id;
+    const canonicalId = extractIdFromUserLike(rawUser) ?? normalized;
     return {
         canonicalId,
-        user,
+        user: rawUser,
         resolvedFromAlias:
             canonicalId.toLowerCase() !== normalized.toLowerCase(),
     };
@@ -957,8 +1005,10 @@ async function dispatchThesisGroupsRequest(
                 );
                 const canonicalStudentId = resolvedStudent.canonicalId;
                 const studentUser = resolvedStudent.user;
+                const studentUserRole = extractRoleFromUserLike(studentUser);
 
-                if (studentUser && studentUser.role !== 'student') {
+                // If role is discoverable and not student, fail fast.
+                if (studentUser && studentUserRole && studentUserRole !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
@@ -1086,8 +1136,10 @@ async function dispatchThesisGroupsRequest(
                 );
                 const nextCanonicalStudentId = resolvedNextStudent.canonicalId;
                 const nextStudentUser = resolvedNextStudent.user;
+                const nextStudentUserRole = extractRoleFromUserLike(nextStudentUser);
 
-                if (nextStudentUser && nextStudentUser.role !== 'student') {
+                // If role is discoverable and not student, fail fast.
+                if (nextStudentUser && nextStudentUserRole && nextStudentUserRole !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
@@ -1297,6 +1349,10 @@ async function dispatchThesisGroupsRequest(
 
     return json404Api();
 }
+
+/* ===========================
+   Remaining file is unchanged
+   =========================== */
 
 async function dispatchDefenseSchedulesRequest(
     req: NextRequest,
