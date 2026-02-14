@@ -1,4 +1,7 @@
 import type {
+    DefenseScheduleInsert,
+    DefenseSchedulePatch,
+    DefenseScheduleRow,
     StudentInsert,
     StudentPatch,
     StudentRow,
@@ -55,6 +58,10 @@ export class AdminController {
         return this.services.users.create(payload);
     }
 
+    async createDefenseSchedule(input: DefenseScheduleInsert): Promise<DefenseScheduleRow> {
+        return this.services.defense_schedules.create(input);
+    }
+
     /* ---------------------------------- READ --------------------------------- */
 
     async getById(id: UUID): Promise<UserRow | null> {
@@ -69,6 +76,22 @@ export class AdminController {
 
     async getStudentProfileByUserId(userId: UUID): Promise<StudentRow | null> {
         return this.services.students.findByUserId(userId);
+    }
+
+    async getDefenseScheduleById(id: UUID): Promise<DefenseScheduleRow | null> {
+        return this.services.defense_schedules.findById(id);
+    }
+
+    async getDefenseSchedules(query: ListQuery<DefenseScheduleRow> = {}): Promise<DefenseScheduleRow[]> {
+        return this.services.defense_schedules.findMany(query);
+    }
+
+    async getDefenseSchedulesByGroup(groupId: UUID): Promise<DefenseScheduleRow[]> {
+        return this.services.defense_schedules.listByGroup(groupId);
+    }
+
+    async getDefenseSchedulesByPanelist(panelistId: UUID): Promise<DefenseScheduleRow[]> {
+        return this.services.defense_schedules.listByPanelist(panelistId);
     }
 
     /* --------------------------------- UPDATE -------------------------------- */
@@ -87,6 +110,29 @@ export class AdminController {
         const existing = await this.getById(id);
         if (!existing) return null;
         return this.services.users.setStatus(id, status);
+    }
+
+    async updateDefenseSchedule(
+        id: UUID,
+        patch: DefenseSchedulePatch,
+    ): Promise<DefenseScheduleRow | null> {
+        const existing = await this.services.defense_schedules.findById(id);
+        if (!existing) return null;
+
+        const cleanPatch = stripUndefined(patch) as DefenseSchedulePatch;
+        if (Object.keys(cleanPatch).length === 0) return existing;
+
+        return this.services.defense_schedules.updateOne({ id }, cleanPatch);
+    }
+
+    async setDefenseScheduleStatus(
+        id: UUID,
+        status: DefenseScheduleRow['status'],
+    ): Promise<DefenseScheduleRow | null> {
+        const existing = await this.services.defense_schedules.findById(id);
+        if (!existing) return null;
+
+        return this.services.defense_schedules.setStatus(id, status);
     }
 
     async upsertStudentProfileForUser(
@@ -156,6 +202,12 @@ export class AdminController {
         const existing = await this.getById(id);
         if (!existing) return 0;
         return this.services.users.delete({ id });
+    }
+
+    async deleteDefenseSchedule(id: UUID): Promise<number> {
+        const existing = await this.services.defense_schedules.findById(id);
+        if (!existing) return 0;
+        return this.services.defense_schedules.delete({ id });
     }
 }
 

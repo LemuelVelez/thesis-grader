@@ -2,10 +2,13 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
     Table,
     TableBody,
@@ -14,6 +17,32 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { toast } from "sonner"
 
 type DefenseScheduleStatus =
     | "scheduled"
@@ -50,8 +79,45 @@ type ApiPayload = {
     message?: string
 }
 
-const READ_ENDPOINTS = ["/api/defense-schedules", "/api/admin/defense-schedules"] as const
+type ThesisGroupOption = {
+    id: string
+    title: string
+}
+
+type RubricTemplateOption = {
+    id: string
+    name: string
+}
+
+type ScheduleFormValues = {
+    group_id: string
+    scheduled_at: string
+    room: string
+    status: DefenseScheduleStatus
+    rubric_template_id: string
+}
+
+type DefenseScheduleMutationPayload = {
+    group_id: string
+    scheduled_at: string
+    room: string | null
+    status: DefenseScheduleStatus
+    rubric_template_id: string | null
+}
+
+const READ_ENDPOINTS = ["/api/admin/defense-schedules", "/api/defense-schedules"] as const
+const WRITE_BASE_ENDPOINTS = ["/api/admin/defense-schedules", "/api/defense-schedules"] as const
 const STATUS_ACTIONS: DefenseScheduleStatus[] = ["scheduled", "ongoing", "completed", "cancelled"]
+
+const GROUP_ENDPOINTS = ["/api/admin/thesis-groups", "/api/thesis-groups"] as const
+const RUBRIC_ENDPOINTS = [
+    "/api/admin/rubric-templates?active=true",
+    "/api/rubric-templates?active=true",
+    "/api/admin/rubric-templates",
+    "/api/rubric-templates",
+] as const
+
+const RUBRIC_NONE_VALUE = "__none__"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -80,6 +146,20 @@ function formatDateTime(value: string): string {
     const date = new Date(value)
     if (Number.isNaN(date.getTime())) return value
     return date.toLocaleString()
+}
+
+function toDateTimeLocalValue(value: string): string {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ""
+    const tzOffsetMs = date.getTimezoneOffset() * 60_000
+    return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16)
+}
+
+function fromDateTimeLocalValue(value: string): string | null {
+    if (!value) return null
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return null
+    return date.toISOString()
 }
 
 function toTitleCase(value: string): string {
@@ -119,6 +199,14 @@ function extractSingle(payload: unknown): unknown {
     if (Array.isArray(typed.items) && typed.items.length > 0) return typed.items[0]
 
     return payload
+}
+
+function extractList(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload
+    if (!isRecord(payload)) return []
+    if (Array.isArray(payload.items)) return payload.items
+    if (payload.item !== undefined) return [payload.item]
+    return []
 }
 
 function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
@@ -163,9 +251,9 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
         pickString(raw, ["updated_at", "updatedAt"]) ??
         createdAt
 
-    const panelists =
-        normalizePanelists(raw.panelists) ||
-        normalizePanelists(raw.schedule_panelists)
+    const primaryPanelists = normalizePanelists(raw.panelists)
+    const secondaryPanelists = normalizePanelists(raw.schedule_panelists)
+    const panelists = primaryPanelists.length > 0 ? primaryPanelists : secondaryPanelists
 
     return {
         id,
@@ -183,6 +271,45 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
     }
 }
 
+function normalizeGroupOption(raw: unknown): ThesisGroupOption | null {
+    if (!isRecord(raw)) return null
+    const id = pickString(raw, ["id"])
+    if (!id) return null
+    const title = pickString(raw, ["title", "name"]) ?? id
+    return { id, title }
+}
+
+function normalizeRubricOption(raw: unknown): RubricTemplateOption | null {
+    if (!isRecord(raw)) return null
+    const id = pickString(raw, ["id"])
+    if (!id) return null
+    const name = pickString(raw, ["name"]) ?? id
+    return { id, name }
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+    const seen = new Set<string>()
+    const out: T[] = []
+
+    for (const item of items) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        out.push(item)
+    }
+
+    return out
+}
+
+function makeInitialFormValues(): ScheduleFormValues {
+    return {
+        group_id: "",
+        scheduled_at: "",
+        room: "",
+        status: "scheduled",
+        rubric_template_id: "",
+    }
+}
+
 async function readErrorMessage(res: Response): Promise<string> {
     try {
         const data = (await res.json()) as { error?: string; message?: string }
@@ -192,7 +319,7 @@ async function readErrorMessage(res: Response): Promise<string> {
     }
 }
 
-function statusPillClass(status: DefenseScheduleStatus): string {
+function statusBadgeClass(status: DefenseScheduleStatus): string {
     if (status === "completed") {
         return "border-primary/40 bg-primary/10 text-foreground"
     }
@@ -245,10 +372,10 @@ async function updateDefenseScheduleStatus(
     const errors: string[] = []
 
     const statusEndpoints = [
-        `/api/defense-schedules/${encodeURIComponent(id)}/status`,
         `/api/admin/defense-schedules/${encodeURIComponent(id)}/status`,
-        `/api/defense-schedules/${encodeURIComponent(id)}`,
+        `/api/defense-schedules/${encodeURIComponent(id)}/status`,
         `/api/admin/defense-schedules/${encodeURIComponent(id)}`,
+        `/api/defense-schedules/${encodeURIComponent(id)}`,
     ] as const
 
     for (const endpoint of statusEndpoints) {
@@ -281,7 +408,111 @@ async function updateDefenseScheduleStatus(
     return null
 }
 
+async function updateDefenseSchedule(
+    id: string,
+    payload: DefenseScheduleMutationPayload,
+): Promise<DefenseScheduleRecord | null> {
+    const errors: string[] = []
+
+    for (const base of WRITE_BASE_ENDPOINTS) {
+        const endpoint = `${base}/${encodeURIComponent(id)}`
+
+        try {
+            const res = await fetch(endpoint, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            })
+
+            if (res.ok) {
+                const data = (await res.json()) as unknown
+                const single = extractSingle(data)
+                return normalizeDefenseSchedule(single)
+            }
+
+            if (res.status !== 404) {
+                errors.push(await readErrorMessage(res))
+            }
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : "Network error")
+        }
+    }
+
+    throw new Error(errors[0] ?? "Failed to update defense schedule.")
+}
+
+async function deleteDefenseSchedule(id: string): Promise<void> {
+    const errors: string[] = []
+
+    for (const base of WRITE_BASE_ENDPOINTS) {
+        const endpoint = `${base}/${encodeURIComponent(id)}`
+
+        try {
+            const res = await fetch(endpoint, {
+                method: "DELETE",
+            })
+
+            if (res.ok) return
+
+            if (res.status !== 404) {
+                errors.push(await readErrorMessage(res))
+            }
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : "Network error")
+        }
+    }
+
+    throw new Error(errors[0] ?? "Failed to delete defense schedule.")
+}
+
+async function fetchThesisGroups(): Promise<ThesisGroupOption[]> {
+    for (const endpoint of GROUP_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            if (!res.ok) {
+                if (res.status === 404) continue
+                continue
+            }
+
+            const payload = (await res.json()) as unknown
+            const options = extractList(payload)
+                .map(normalizeGroupOption)
+                .filter((item): item is ThesisGroupOption => !!item)
+
+            return uniqueById(options)
+        } catch {
+            // try next endpoint
+        }
+    }
+
+    return []
+}
+
+async function fetchRubricTemplates(): Promise<RubricTemplateOption[]> {
+    for (const endpoint of RUBRIC_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            if (!res.ok) {
+                if (res.status === 404) continue
+                continue
+            }
+
+            const payload = (await res.json()) as unknown
+            const options = extractList(payload)
+                .map(normalizeRubricOption)
+                .filter((item): item is RubricTemplateOption => !!item)
+
+            return uniqueById(options)
+        } catch {
+            // try next endpoint
+        }
+    }
+
+    return []
+}
+
 export default function AdminDefenseScheduleDetailsPage() {
+    const router = useRouter()
     const params = useParams<{ id?: string | string[] }>()
     const scheduleId = React.useMemo(() => {
         const raw = params?.id
@@ -294,12 +525,23 @@ export default function AdminDefenseScheduleDetailsPage() {
     const [error, setError] = React.useState<string | null>(null)
     const [busyStatus, setBusyStatus] = React.useState<DefenseScheduleStatus | null>(null)
 
-    const loadSchedule = React.useCallback(async () => {
+    const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
+    const [rubrics, setRubrics] = React.useState<RubricTemplateOption[]>([])
+    const [metaLoading, setMetaLoading] = React.useState(true)
+
+    const [editOpen, setEditOpen] = React.useState(false)
+    const [editBusy, setEditBusy] = React.useState(false)
+    const [editForm, setEditForm] = React.useState<ScheduleFormValues>(makeInitialFormValues())
+
+    const [deleteOpen, setDeleteOpen] = React.useState(false)
+    const [deleteBusy, setDeleteBusy] = React.useState(false)
+
+    const loadSchedule = React.useCallback(async (): Promise<boolean> => {
         if (!scheduleId) {
             setError("Invalid defense schedule ID.")
             setSchedule(null)
             setLoading(false)
-            return
+            return false
         }
 
         setLoading(true)
@@ -308,17 +550,70 @@ export default function AdminDefenseScheduleDetailsPage() {
         try {
             const row = await fetchDefenseScheduleById(scheduleId)
             setSchedule(row)
+            return true
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to load defense schedule.")
             setSchedule(null)
+            return false
         } finally {
             setLoading(false)
         }
     }, [scheduleId])
 
+    const loadReferenceData = React.useCallback(async () => {
+        setMetaLoading(true)
+        try {
+            const [groupRows, rubricRows] = await Promise.all([
+                fetchThesisGroups(),
+                fetchRubricTemplates(),
+            ])
+            setGroups(groupRows)
+            setRubrics(rubricRows)
+        } finally {
+            setMetaLoading(false)
+        }
+    }, [])
+
     React.useEffect(() => {
         void loadSchedule()
-    }, [loadSchedule])
+        void loadReferenceData()
+    }, [loadSchedule, loadReferenceData])
+
+    const groupSelectOptions = React.useMemo(() => {
+        if (!editForm.group_id) return groups
+        if (groups.some((g) => g.id === editForm.group_id)) return groups
+        return [{ id: editForm.group_id, title: `Current: ${editForm.group_id}` }, ...groups]
+    }, [groups, editForm.group_id])
+
+    const rubricSelectOptions = React.useMemo(() => {
+        if (!editForm.rubric_template_id) return rubrics
+        if (rubrics.some((r) => r.id === editForm.rubric_template_id)) return rubrics
+        return [{ id: editForm.rubric_template_id, name: `Current: ${editForm.rubric_template_id}` }, ...rubrics]
+    }, [rubrics, editForm.rubric_template_id])
+
+    const handleRefresh = React.useCallback(async () => {
+        const ok = await loadSchedule()
+        await loadReferenceData()
+
+        if (ok) {
+            toast.success("Defense schedule refreshed.")
+        } else {
+            toast.error("Could not refresh defense schedule.")
+        }
+    }, [loadSchedule, loadReferenceData])
+
+    const openEditDialog = React.useCallback(() => {
+        if (!schedule) return
+
+        setEditForm({
+            group_id: schedule.group_id,
+            scheduled_at: toDateTimeLocalValue(schedule.scheduled_at),
+            room: schedule.room ?? "",
+            status: STATUS_ACTIONS.includes(schedule.status) ? schedule.status : "scheduled",
+            rubric_template_id: schedule.rubric_template_id ?? "",
+        })
+        setEditOpen(true)
+    }, [schedule])
 
     const handleSetStatus = React.useCallback(
         async (nextStatus: DefenseScheduleStatus) => {
@@ -343,8 +638,12 @@ export default function AdminDefenseScheduleDetailsPage() {
                             : prev,
                     )
                 }
+
+                toast.success(`Status updated to ${toTitleCase(nextStatus)}.`)
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to update status.")
+                const message = err instanceof Error ? err.message : "Failed to update status."
+                setError(message)
+                toast.error(message)
             } finally {
                 setBusyStatus(null)
             }
@@ -352,10 +651,75 @@ export default function AdminDefenseScheduleDetailsPage() {
         [schedule, busyStatus],
     )
 
+    const handleSaveEdit = React.useCallback(async () => {
+        if (!schedule || editBusy) return
+
+        const groupId = editForm.group_id.trim()
+        if (!groupId) {
+            toast.error("Please select or enter a thesis group.")
+            return
+        }
+
+        const scheduledAtIso = fromDateTimeLocalValue(editForm.scheduled_at)
+        if (!scheduledAtIso) {
+            toast.error("Please provide a valid date and time.")
+            return
+        }
+
+        const payload: DefenseScheduleMutationPayload = {
+            group_id: groupId,
+            scheduled_at: scheduledAtIso,
+            room: editForm.room.trim() || null,
+            status: editForm.status,
+            rubric_template_id: editForm.rubric_template_id.trim() || null,
+        }
+
+        setEditBusy(true)
+        setError(null)
+
+        try {
+            const updated = await updateDefenseSchedule(schedule.id, payload)
+
+            if (updated) {
+                setSchedule(updated)
+            } else {
+                await loadSchedule()
+            }
+
+            setEditOpen(false)
+            toast.success("Defense schedule updated successfully.")
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to update defense schedule."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setEditBusy(false)
+        }
+    }, [schedule, editBusy, editForm, loadSchedule])
+
+    const handleDelete = React.useCallback(async () => {
+        if (!schedule || deleteBusy) return
+
+        setDeleteBusy(true)
+        setError(null)
+
+        try {
+            await deleteDefenseSchedule(schedule.id)
+            toast.success("Defense schedule deleted successfully.")
+            router.push("/dashboard/admin/defense-schedules")
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to delete defense schedule."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setDeleteBusy(false)
+        }
+    }, [schedule, deleteBusy, router])
+
     return (
         <DashboardLayout
             title="Defense Schedule Details"
-            description="Review schedule information and update defense status."
+            description="Review, update, and manage a defense schedule."
         >
             <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -363,9 +727,28 @@ export default function AdminDefenseScheduleDetailsPage() {
                         <Link href="/dashboard/admin/defense-schedules">Back to Defense Schedules</Link>
                     </Button>
 
-                    <Button variant="outline" size="sm" onClick={() => void loadSchedule()} disabled={loading}>
-                        Refresh
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => void handleRefresh()} disabled={loading}>
+                            Refresh
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={loading || !schedule}
+                            onClick={openEditDialog}
+                        >
+                            Edit Schedule
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            disabled={loading || !schedule}
+                            onClick={() => setDeleteOpen(true)}
+                        >
+                            Delete Schedule
+                        </Button>
+                    </div>
                 </div>
 
                 {error ? (
@@ -399,14 +782,12 @@ export default function AdminDefenseScheduleDetailsPage() {
                                 </div>
 
                                 <div>
-                                    <span
-                                        className={[
-                                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                            statusPillClass(schedule.status),
-                                        ].join(" ")}
+                                    <Badge
+                                        variant="outline"
+                                        className={statusBadgeClass(schedule.status)}
                                     >
                                         {toTitleCase(schedule.status)}
-                                    </span>
+                                    </Badge>
                                 </div>
                             </div>
                         </div>
@@ -517,6 +898,179 @@ export default function AdminDefenseScheduleDetailsPage() {
                     </>
                 )}
             </div>
+
+            <Dialog
+                open={editOpen}
+                onOpenChange={(open) => {
+                    if (!open && editBusy) return
+                    setEditOpen(open)
+                }}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit Defense Schedule</DialogTitle>
+                        <DialogDescription>
+                            Update schedule details and save changes.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="grid gap-4 py-2">
+                        <div className="grid gap-2">
+                            <Label htmlFor="edit_group_id">Thesis Group</Label>
+                            {groupSelectOptions.length > 0 ? (
+                                <Select
+                                    value={editForm.group_id}
+                                    onValueChange={(value) =>
+                                        setEditForm((prev) => ({ ...prev, group_id: value }))
+                                    }
+                                >
+                                    <SelectTrigger id="edit_group_id">
+                                        <SelectValue placeholder={metaLoading ? "Loading groups..." : "Select a group"} />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {groupSelectOptions.map((group) => (
+                                            <SelectItem key={group.id} value={group.id}>
+                                                {group.title}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            ) : (
+                                <Input
+                                    id="edit_group_id"
+                                    placeholder="Enter thesis group UUID"
+                                    value={editForm.group_id}
+                                    onChange={(e) =>
+                                        setEditForm((prev) => ({ ...prev, group_id: e.target.value }))
+                                    }
+                                />
+                            )}
+                        </div>
+
+                        <div className="grid gap-2">
+                            <Label htmlFor="edit_scheduled_at">Date &amp; Time</Label>
+                            <Input
+                                id="edit_scheduled_at"
+                                type="datetime-local"
+                                value={editForm.scheduled_at}
+                                onChange={(e) =>
+                                    setEditForm((prev) => ({ ...prev, scheduled_at: e.target.value }))
+                                }
+                            />
+                        </div>
+
+                        <div className="grid gap-2">
+                            <Label htmlFor="edit_room">Room</Label>
+                            <Input
+                                id="edit_room"
+                                placeholder="e.g. AVR 1 or TBA"
+                                value={editForm.room}
+                                onChange={(e) =>
+                                    setEditForm((prev) => ({ ...prev, room: e.target.value }))
+                                }
+                            />
+                        </div>
+
+                        <div className="grid gap-2 md:grid-cols-2 md:gap-4">
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_status">Status</Label>
+                                <Select
+                                    value={editForm.status}
+                                    onValueChange={(value) =>
+                                        setEditForm((prev) => ({ ...prev, status: value as DefenseScheduleStatus }))
+                                    }
+                                >
+                                    <SelectTrigger id="edit_status">
+                                        <SelectValue placeholder="Select status" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {STATUS_ACTIONS.map((status) => (
+                                            <SelectItem key={status} value={status}>
+                                                {toTitleCase(status)}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_rubric_template_id">Rubric Template</Label>
+                                {rubricSelectOptions.length > 0 ? (
+                                    <Select
+                                        value={editForm.rubric_template_id || RUBRIC_NONE_VALUE}
+                                        onValueChange={(value) =>
+                                            setEditForm((prev) => ({
+                                                ...prev,
+                                                rubric_template_id: value === RUBRIC_NONE_VALUE ? "" : value,
+                                            }))
+                                        }
+                                    >
+                                        <SelectTrigger id="edit_rubric_template_id">
+                                            <SelectValue placeholder={metaLoading ? "Loading rubrics..." : "Select rubric"} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
+                                            {rubricSelectOptions.map((rubric) => (
+                                                <SelectItem key={rubric.id} value={rubric.id}>
+                                                    {rubric.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                ) : (
+                                    <Input
+                                        id="edit_rubric_template_id"
+                                        placeholder="Optional rubric template UUID"
+                                        value={editForm.rubric_template_id}
+                                        onChange={(e) =>
+                                            setEditForm((prev) => ({ ...prev, rubric_template_id: e.target.value }))
+                                        }
+                                    />
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editBusy}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleSaveEdit()} disabled={editBusy}>
+                            {editBusy ? "Saving..." : "Save Changes"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <AlertDialog
+                open={deleteOpen}
+                onOpenChange={(open) => {
+                    if (!open && deleteBusy) return
+                    setDeleteOpen(open)
+                }}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete defense schedule?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This action cannot be undone and will permanently remove this schedule.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={deleteBusy}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={deleteBusy}
+                            onClick={(e) => {
+                                e.preventDefault()
+                                void handleDelete()
+                            }}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                            {deleteBusy ? "Deleting..." : "Delete Schedule"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </DashboardLayout>
     )
 }
