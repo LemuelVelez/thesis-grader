@@ -186,6 +186,15 @@ function isValidEmail(value: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
+/**
+ * Guarantees non-empty values for Radix/Shadcn Select components.
+ * Empty string is invalid for <SelectItem value="...">.
+ */
+function sanitizeStudentSelectValue(value: string | null | undefined): string {
+    const trimmed = (value ?? "").trim()
+    return trimmed.length > 0 ? trimmed : STUDENT_NONE_VALUE
+}
+
 function unwrapItems(payload: unknown): unknown[] {
     if (Array.isArray(payload)) return payload
 
@@ -566,7 +575,7 @@ async function requestFirstAvailable(endpoints: readonly string[], init: Request
 
 function defaultMemberForm(selectedStudentId: string): MemberFormState {
     return {
-        studentUserId: selectedStudentId,
+        studentUserId: sanitizeStudentSelectValue(selectedStudentId),
         program: "",
         section: "",
     }
@@ -665,9 +674,14 @@ export default function AdminThesisGroupDetailsPage() {
     const availableStudentsForDialog =
         memberDialogMode === "edit" ? availableStudentsForEdit : availableStudentsForCreate
 
+    const normalizedMemberSelectValue = React.useMemo(
+        () => sanitizeStudentSelectValue(memberForm.studentUserId),
+        [memberForm.studentUserId]
+    )
+
     const selectedStudentMissing =
-        memberForm.studentUserId !== STUDENT_NONE_VALUE &&
-        !availableStudentsForDialog.some((item) => item.id === memberForm.studentUserId)
+        normalizedMemberSelectValue !== STUDENT_NONE_VALUE &&
+        !availableStudentsForDialog.some((item) => item.id === normalizedMemberSelectValue)
 
     const editableStudentIds = React.useMemo(() => {
         const set = new Set(studentIdsAlreadyUsed)
@@ -861,14 +875,19 @@ export default function AdminThesisGroupDetailsPage() {
     }, [load, loadStaffUsers, loadStudentUsers, refreshKey])
 
     React.useEffect(() => {
+        if (memberForm.studentUserId === normalizedMemberSelectValue) return
+        setMemberForm((prev) => ({ ...prev, studentUserId: normalizedMemberSelectValue }))
+    }, [memberForm.studentUserId, normalizedMemberSelectValue])
+
+    React.useEffect(() => {
         if (!memberDialogOpen) return
 
-        const exists = availableStudentsForDialog.some((student) => student.id === memberForm.studentUserId)
+        const exists = availableStudentsForDialog.some((student) => student.id === normalizedMemberSelectValue)
         if (exists) return
 
         const firstStudent = availableStudentsForDialog[0]?.id ?? STUDENT_NONE_VALUE
-        setMemberForm((prev) => ({ ...prev, studentUserId: firstStudent }))
-    }, [availableStudentsForDialog, memberDialogOpen, memberForm.studentUserId])
+        setMemberForm((prev) => ({ ...prev, studentUserId: sanitizeStudentSelectValue(firstStudent) }))
+    }, [availableStudentsForDialog, memberDialogOpen, normalizedMemberSelectValue])
 
     const adviserContent = React.useMemo(() => {
         if (!group?.adviserId) {
@@ -909,7 +928,7 @@ export default function AdminThesisGroupDetailsPage() {
     }, [group?.adviserId, group?.manualAdviserInfo, staffById, staffLoading])
 
     const resetCreateMemberForm = React.useCallback(() => {
-        const firstStudentId = availableStudentsForCreate[0]?.id ?? STUDENT_NONE_VALUE
+        const firstStudentId = sanitizeStudentSelectValue(availableStudentsForCreate[0]?.id ?? STUDENT_NONE_VALUE)
         setMemberForm({
             studentUserId: firstStudentId,
             program: group?.program ?? "",
@@ -1054,7 +1073,9 @@ export default function AdminThesisGroupDetailsPage() {
             )
 
             setMemberForm((prev) =>
-                prev.studentUserId === STUDENT_NONE_VALUE ? { ...prev, studentUserId: createdStudent.id } : prev
+                prev.studentUserId === STUDENT_NONE_VALUE
+                    ? { ...prev, studentUserId: sanitizeStudentSelectValue(createdStudent.id) }
+                    : prev
             )
 
             const successMessage =
@@ -1098,7 +1119,7 @@ export default function AdminThesisGroupDetailsPage() {
                 member.linkedUserId ?? (member.studentId && studentsById.has(member.studentId) ? member.studentId : null)
 
             const fallbackStudentId = availableStudentsForEdit[0]?.id ?? STUDENT_NONE_VALUE
-            const selectedStudentId = linkedId ?? fallbackStudentId
+            const selectedStudentId = sanitizeStudentSelectValue(linkedId ?? fallbackStudentId)
 
             setMemberDialogMode("edit")
             setMemberTarget(member)
@@ -1134,7 +1155,7 @@ export default function AdminThesisGroupDetailsPage() {
             setMemberActionError(null)
 
             try {
-                const selectedId = memberForm.studentUserId === STUDENT_NONE_VALUE ? null : memberForm.studentUserId
+                const selectedId = normalizedMemberSelectValue === STUDENT_NONE_VALUE ? null : normalizedMemberSelectValue
                 if (!selectedId) {
                     throw new Error("Please select a student user. If none is available, create one first.")
                 }
@@ -1250,6 +1271,7 @@ export default function AdminThesisGroupDetailsPage() {
             memberDialogMode,
             memberForm,
             memberTarget,
+            normalizedMemberSelectValue,
             refreshMembersOnly,
             studentIdsAlreadyUsed,
             studentsById,
@@ -1540,8 +1562,13 @@ export default function AdminThesisGroupDetailsPage() {
                                 <div className="space-y-2">
                                     <Label>Student User</Label>
                                     <Select
-                                        value={memberForm.studentUserId}
-                                        onValueChange={(value) => setMemberForm((prev) => ({ ...prev, studentUserId: value }))}
+                                        value={normalizedMemberSelectValue}
+                                        onValueChange={(value) =>
+                                            setMemberForm((prev) => ({
+                                                ...prev,
+                                                studentUserId: sanitizeStudentSelectValue(value),
+                                            }))
+                                        }
                                         disabled={studentsLoading || availableStudentsForDialog.length === 0}
                                     >
                                         <SelectTrigger>
@@ -1555,7 +1582,7 @@ export default function AdminThesisGroupDetailsPage() {
                                             </SelectItem>
 
                                             {selectedStudentMissing ? (
-                                                <SelectItem value={memberForm.studentUserId}>
+                                                <SelectItem value={normalizedMemberSelectValue}>
                                                     Current linked student (profile unavailable)
                                                 </SelectItem>
                                             ) : null}
@@ -1670,7 +1697,12 @@ export default function AdminThesisGroupDetailsPage() {
 
                         <div className="space-y-2">
                             <Label>Status</Label>
-                            <Select value={createStudentStatus} onValueChange={(value) => setCreateStudentStatus(value as UserStatus)}>
+                            <Select
+                                value={createStudentStatus}
+                                onValueChange={(value) =>
+                                    setCreateStudentStatus(value === "disabled" ? "disabled" : "active")
+                                }
+                            >
                                 <SelectTrigger>
                                     <SelectValue placeholder="Select status" />
                                 </SelectTrigger>
