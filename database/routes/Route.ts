@@ -17,7 +17,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { AdminController } from '../controllers/AdminController';
+import {
+    AdminController,
+    type UpsertStudentProfileInput,
+} from '../controllers/AdminController';
 import {
     createAuthController,
     type AuthControllerOptions,
@@ -34,7 +37,6 @@ import { StudentController } from '../controllers/StudentController';
 import { UserController } from '../controllers/UserController';
 import {
     NOTIFICATION_TYPES,
-    THESIS_ROLES,
     USER_STATUSES,
     type AuditLogInsert,
     type AuditLogPatch,
@@ -504,51 +506,38 @@ function toNonEmptyString(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-/**
- * Safely parses a thesis role from unknown input.
- */
-function toThesisRole(value: unknown): ThesisRole | null {
-    if (typeof value !== 'string') return null;
-    const normalized = value.trim().toLowerCase();
-    return (THESIS_ROLES as readonly string[]).includes(normalized)
-        ? (normalized as ThesisRole)
-        : null;
+function hasOwn(body: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(body, key);
 }
 
-/**
- * Supports both canonical UserRow and user-like wrappers (e.g., StudentAccount)
- * where role may be nested under .user.role.
- */
-function extractRoleFromUserLike(value: unknown): ThesisRole | null {
-    if (!isRecord(value)) return null;
-
-    const direct = toThesisRole(value.role);
-    if (direct) return direct;
-
-    const nested = value.user;
-    if (isRecord(nested)) {
-        const nestedRole = toThesisRole(nested.role);
-        if (nestedRole) return nestedRole;
-    }
-
-    return null;
+function parseNullableProfileField(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
 }
 
-/**
- * Supports both canonical UserRow and wrapped account objects where id may be nested.
- */
-function extractIdFromUserLike(value: unknown): string | null {
-    if (!isRecord(value)) return null;
+function parseStudentProfileInput(
+    body: Record<string, unknown> | null,
+): UpsertStudentProfileInput {
+    if (!body) return {};
 
-    const direct = toNonEmptyString(value.id);
-    if (direct) return direct;
+    const out: UpsertStudentProfileInput = {};
 
-    const nested = value.user;
-    if (isRecord(nested)) {
-        return toNonEmptyString(nested.id);
+    const hasProgram = hasOwn(body, 'program') || hasOwn(body, 'course');
+    if (hasProgram) {
+        const rawProgram = hasOwn(body, 'program') ? body.program : body.course;
+        const program = parseNullableProfileField(rawProgram);
+        if (program !== undefined) out.program = program;
     }
 
-    return null;
+    if (hasOwn(body, 'section')) {
+        const section = parseNullableProfileField(body.section);
+        if (section !== undefined) out.section = section;
+    }
+
+    return out;
 }
 
 function parseGroupMemberStudentIdFromBody(
@@ -691,7 +680,7 @@ async function resolveCanonicalUserForMember(
     candidateId: string,
 ): Promise<{
     canonicalId: string;
-    user: Record<string, unknown> | null;
+    user: UserRow | null;
     resolvedFromAlias: boolean;
 }> {
     const normalized = candidateId.trim();
@@ -706,14 +695,14 @@ async function resolveCanonicalUserForMember(
 
     const usersController = new UserController(services);
 
-    let rawUser: unknown = null;
+    let user: UserRow | null = null;
     try {
-        rawUser = await usersController.getById(normalized as UUID);
+        user = await usersController.getById(normalized as UUID);
     } catch {
-        rawUser = null;
+        user = null;
     }
 
-    if (!isRecord(rawUser)) {
+    if (!user) {
         return {
             canonicalId: normalized,
             user: null,
@@ -721,10 +710,10 @@ async function resolveCanonicalUserForMember(
         };
     }
 
-    const canonicalId = extractIdFromUserLike(rawUser) ?? normalized;
+    const canonicalId = user.id;
     return {
         canonicalId,
-        user: rawUser,
+        user,
         resolvedFromAlias:
             canonicalId.toLowerCase() !== normalized.toLowerCase(),
     };
@@ -819,6 +808,61 @@ async function buildGroupMemberResponse(
     };
 }
 
+async function dispatchAdminStudentProfileRequest(
+    req: NextRequest,
+    services: DatabaseServices,
+    userId: UUID,
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+    const controller = new AdminController(services);
+
+    if (method === 'GET') {
+        const item = await controller.getStudentProfileByUserId(userId);
+        if (!item) return json404Entity('Student profile');
+        return json200({ item });
+    }
+
+    if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
+        const body = await readJsonRecord(req);
+        const input = parseStudentProfileInput(body);
+
+        try {
+            const result = await controller.upsertStudentProfileForUser(userId, input);
+            if (!result) return json404Entity('Student user');
+
+            const messageParts: string[] = [
+                result.created
+                    ? 'Student profile created successfully.'
+                    : 'Student profile updated successfully.',
+            ];
+
+            if (result.roleUpdated) {
+                messageParts.push('User role was set to "student".');
+            }
+
+            return NextResponse.json(
+                {
+                    item: result.item,
+                    message: messageParts.join(' '),
+                },
+                {
+                    status: result.created ? 201 : 200,
+                },
+            );
+        } catch (error) {
+            return NextResponse.json(
+                {
+                    error: 'Failed to save student profile.',
+                    message: toErrorMessage(error),
+                },
+                { status: 500 },
+            );
+        }
+    }
+
+    return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
+}
+
 async function dispatchAuthRequest(
     req: NextRequest,
     action: AuthAction | null,
@@ -888,10 +932,15 @@ async function dispatchAuthRequest(
     }
 }
 
+interface DispatchThesisGroupsOptions {
+    autoCreateMissingStudentProfile?: boolean;
+}
+
 async function dispatchThesisGroupsRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
+    options: DispatchThesisGroupsOptions = {},
 ): Promise<Response> {
     const controller = services.thesis_groups;
     const method = req.method.toUpperCase();
@@ -1005,10 +1054,8 @@ async function dispatchThesisGroupsRequest(
                 );
                 const canonicalStudentId = resolvedStudent.canonicalId;
                 const studentUser = resolvedStudent.user;
-                const studentUserRole = extractRoleFromUserLike(studentUser);
 
-                // If role is discoverable and not student, fail fast.
-                if (studentUser && studentUserRole && studentUserRole !== 'student') {
+                if (studentUser && studentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
@@ -1019,12 +1066,40 @@ async function dispatchThesisGroupsRequest(
                 }
 
                 // Pre-check student profile to avoid DB-level FK explosions and opaque 500s.
-                const studentProfile = studentUser
+                let studentProfile = studentUser
                     ? await safeFindStudentProfileByUserId(
                         services,
                         canonicalStudentId,
                     )
                     : null;
+
+                if (
+                    studentUser &&
+                    !studentProfile &&
+                    options.autoCreateMissingStudentProfile
+                ) {
+                    try {
+                        const adminController = new AdminController(services);
+                        const autoCreated =
+                            await adminController.upsertStudentProfileForUser(
+                                canonicalStudentId as UUID,
+                                parseStudentProfileInput(body),
+                            );
+                        if (!autoCreated) {
+                            return json404Entity('Student user');
+                        }
+                        studentProfile = autoCreated.item;
+                    } catch (error) {
+                        return NextResponse.json(
+                            {
+                                error:
+                                    'Failed to create missing student profile before adding the member.',
+                                message: toErrorMessage(error),
+                            },
+                            { status: 500 },
+                        );
+                    }
+                }
 
                 if (studentUser && !studentProfile) {
                     return json400(
@@ -1136,10 +1211,8 @@ async function dispatchThesisGroupsRequest(
                 );
                 const nextCanonicalStudentId = resolvedNextStudent.canonicalId;
                 const nextStudentUser = resolvedNextStudent.user;
-                const nextStudentUserRole = extractRoleFromUserLike(nextStudentUser);
 
-                // If role is discoverable and not student, fail fast.
-                if (nextStudentUser && nextStudentUserRole && nextStudentUserRole !== 'student') {
+                if (nextStudentUser && nextStudentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
@@ -1150,12 +1223,40 @@ async function dispatchThesisGroupsRequest(
                 }
 
                 // Pre-check profile before attempting replacement.
-                const nextStudentProfile = nextStudentUser
+                let nextStudentProfile = nextStudentUser
                     ? await safeFindStudentProfileByUserId(
                         services,
                         nextCanonicalStudentId,
                     )
                     : null;
+
+                if (
+                    nextStudentUser &&
+                    !nextStudentProfile &&
+                    options.autoCreateMissingStudentProfile
+                ) {
+                    try {
+                        const adminController = new AdminController(services);
+                        const autoCreated =
+                            await adminController.upsertStudentProfileForUser(
+                                nextCanonicalStudentId as UUID,
+                                parseStudentProfileInput(body),
+                            );
+                        if (!autoCreated) {
+                            return json404Entity('Student user');
+                        }
+                        nextStudentProfile = autoCreated.item;
+                    } catch (error) {
+                        return NextResponse.json(
+                            {
+                                error:
+                                    'Failed to create missing student profile before updating the member.',
+                                message: toErrorMessage(error),
+                            },
+                            { status: 500 },
+                        );
+                    }
+                }
 
                 if (nextStudentUser && !nextStudentProfile) {
                     return json400(
@@ -1349,10 +1450,6 @@ async function dispatchThesisGroupsRequest(
 
     return json404Api();
 }
-
-/* ===========================
-   Remaining file is unchanged
-   =========================== */
 
 async function dispatchDefenseSchedulesRequest(
     req: NextRequest,
@@ -1734,6 +1831,25 @@ async function dispatchAdminRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
+    // /api/admin/student/:userId/profile
+    // /api/admin/students/:userId/profile
+    if (
+        (tail[0] === 'student' || tail[0] === 'students') &&
+        tail.length === 3 &&
+        tail[2] === 'profile'
+    ) {
+        const userId = tail[1];
+        if (!userId || !isUuidLike(userId)) {
+            return json400('student user id must be a valid UUID.');
+        }
+
+        return dispatchAdminStudentProfileRequest(
+            req,
+            services,
+            userId as UUID,
+        );
+    }
+
     // Namespaced admin resources
     if (tail[0] === 'defense-schedules' || tail[0] === 'defense-schedule') {
         return dispatchDefenseSchedulesRequest(req, tail.slice(1), services);
@@ -1748,7 +1864,9 @@ async function dispatchAdminRequest(
     }
 
     if (tail[0] === 'thesis' && tail[1] === 'groups') {
-        return dispatchThesisGroupsRequest(req, tail.slice(2), services);
+        return dispatchThesisGroupsRequest(req, tail.slice(2), services, {
+            autoCreateMissingStudentProfile: true,
+        });
     }
 
     if (
@@ -1756,7 +1874,9 @@ async function dispatchAdminRequest(
         tail[0] === 'thesis-group' ||
         tail[0] === 'groups'
     ) {
-        return dispatchThesisGroupsRequest(req, tail.slice(1), services);
+        return dispatchThesisGroupsRequest(req, tail.slice(1), services, {
+            autoCreateMissingStudentProfile: true,
+        });
     }
 
     // /api/admin/rankings
