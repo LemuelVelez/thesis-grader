@@ -43,7 +43,7 @@ import type {
     AuthAction,
     AuthRouteContext,
     CreateApiRouteHandlersOptions,
-} from './Route.types';
+} from './RouteTypes';
 import {
     buildGroupMemberResponse,
     findGroupMemberByIdentifierWithAliasFallback,

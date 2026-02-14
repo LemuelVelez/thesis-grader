@@ -19,7 +19,7 @@ import type {
     ApiRoot,
     AuthAction,
     AuthRouteContext,
-} from './Route.types';
+} from './RouteTypes';
 
 export function normalizeSegment(value: string): string {
     return value.trim().toLowerCase().replace(/[_\s]+/g, '-');
