@@ -29,6 +29,8 @@ import {
     type RubricTemplateInsert,
     type RubricTemplatePatch,
     type RubricTemplateRow,
+    type SchedulePanelistInsert,
+    type SchedulePanelistRow,
     type ThesisGroupInsert,
     type ThesisGroupPatch,
     type ThesisGroupRow,
@@ -82,6 +84,19 @@ import {
 
 interface DispatchThesisGroupsOptions {
     autoCreateMissingStudentProfile?: boolean;
+}
+
+interface DispatchSchedulePanelistsOptions {
+    forcedScheduleId?: UUID;
+}
+
+interface SchedulePanelistsServiceLike {
+    listBySchedule?: (scheduleId: UUID) => Promise<SchedulePanelistRow[]>;
+    listByStaff?: (staffId: UUID) => Promise<SchedulePanelistRow[]>;
+    findMany?: (query?: unknown) => Promise<SchedulePanelistRow[]>;
+    create?: (input: SchedulePanelistInsert) => Promise<SchedulePanelistRow>;
+    delete?: (where: Partial<SchedulePanelistRow>) => Promise<number>;
+    removeMember?: (scheduleId: UUID, staffId: UUID) => Promise<number>;
 }
 
 async function dispatchAdminStudentProfileRequest(
@@ -139,7 +154,696 @@ async function dispatchAdminStudentProfileRequest(
     return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
 }
 
-export async function dispatchAuthRequest(
+function isDefenseSchedulePanelistsSegment(value: string | undefined): boolean {
+    if (!value) return false;
+    return (
+        value === 'panelists' ||
+        value === 'panelist' ||
+        value === 'schedule-panelists' ||
+        value === 'schedule-panelist' ||
+        value === 'staff' ||
+        value === 'staffs'
+    );
+}
+
+function toNonEmptyTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseSchedulePanelistStaffIdsFromBody(
+    body: Record<string, unknown>,
+): string[] {
+    const ids: string[] = [];
+
+    const arrayCandidates: unknown[] = [
+        body.staff_ids,
+        body.staffIds,
+        body.panelist_ids,
+        body.panelistIds,
+        body.user_ids,
+        body.userIds,
+        body.member_ids,
+        body.memberIds,
+    ];
+
+    for (const candidate of arrayCandidates) {
+        if (!Array.isArray(candidate)) continue;
+        for (const entry of candidate) {
+            const parsed = toNonEmptyTrimmedString(entry);
+            if (parsed) ids.push(parsed);
+        }
+    }
+
+    const singleCandidates: unknown[] = [
+        body.staff_id,
+        body.staffId,
+        body.panelist_id,
+        body.panelistId,
+        body.user_id,
+        body.userId,
+        body.member_id,
+        body.memberId,
+        body.id,
+    ];
+
+    for (const candidate of singleCandidates) {
+        const parsed = toNonEmptyTrimmedString(candidate);
+        if (parsed) ids.push(parsed);
+    }
+
+    const seen = new Set<string>();
+    const unique: string[] = [];
+
+    for (const id of ids) {
+        const key = id.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(id);
+    }
+
+    return unique;
+}
+
+async function listSchedulePanelistsBySchedule(
+    service: SchedulePanelistsServiceLike,
+    scheduleId: UUID,
+): Promise<SchedulePanelistRow[]> {
+    if (typeof service.listBySchedule === 'function') {
+        return service.listBySchedule(scheduleId);
+    }
+
+    if (typeof service.findMany === 'function') {
+        const rows = await service.findMany({
+            where: {
+                schedule_id: scheduleId,
+            },
+        });
+        return Array.isArray(rows) ? rows : [];
+    }
+
+    throw new Error('Schedule panelists service does not support listing by schedule.');
+}
+
+async function listSchedulePanelistsByStaff(
+    service: SchedulePanelistsServiceLike,
+    staffId: UUID,
+): Promise<SchedulePanelistRow[]> {
+    if (typeof service.listByStaff === 'function') {
+        return service.listByStaff(staffId);
+    }
+
+    if (typeof service.findMany === 'function') {
+        const rows = await service.findMany({
+            where: {
+                staff_id: staffId,
+            },
+        });
+        return Array.isArray(rows) ? rows : [];
+    }
+
+    throw new Error('Schedule panelists service does not support listing by staff/panelist.');
+}
+
+async function createSchedulePanelist(
+    service: SchedulePanelistsServiceLike,
+    payload: SchedulePanelistInsert,
+): Promise<SchedulePanelistRow> {
+    if (typeof service.create !== 'function') {
+        throw new Error('Schedule panelists service does not support create.');
+    }
+    return service.create(payload);
+}
+
+async function deleteSchedulePanelist(
+    service: SchedulePanelistsServiceLike,
+    scheduleId: UUID,
+    staffId: UUID,
+): Promise<number> {
+    if (typeof service.removeMember === 'function') {
+        return service.removeMember(scheduleId, staffId);
+    }
+
+    if (typeof service.delete === 'function') {
+        return service.delete({
+            schedule_id: scheduleId,
+            staff_id: staffId,
+        });
+    }
+
+    throw new Error('Schedule panelists service does not support delete/remove.');
+}
+
+async function dispatchSchedulePanelistsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+    options: DispatchSchedulePanelistsOptions = {},
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+    const service = services.schedule_panelists as unknown as SchedulePanelistsServiceLike;
+    const forcedScheduleId = options.forcedScheduleId ?? null;
+
+    const ensureScheduleExists = async (scheduleId: UUID): Promise<boolean> => {
+        try {
+            const row = await services.defense_schedules.findById(scheduleId);
+            return !!row;
+        } catch {
+            return false;
+        }
+    };
+
+    const ensureUserExists = async (userId: UUID): Promise<boolean> => {
+        try {
+            const user = await services.users.findById(userId);
+            return !!user;
+        } catch {
+            return false;
+        }
+    };
+
+    const getExistingByComposite = async (
+        scheduleId: UUID,
+        staffId: UUID,
+    ): Promise<SchedulePanelistRow | null> => {
+        const rows = await listSchedulePanelistsBySchedule(service, scheduleId);
+        return (
+            rows.find(
+                (row) =>
+                    row.schedule_id.toLowerCase() === scheduleId.toLowerCase() &&
+                    row.staff_id.toLowerCase() === staffId.toLowerCase(),
+            ) ?? null
+        );
+    };
+
+    const createAssignments = async (
+        scheduleId: UUID,
+        staffIds: UUID[],
+    ): Promise<{
+        items: SchedulePanelistRow[];
+        createdCount: number;
+        existingCount: number;
+    }> => {
+        const rowsBySchedule = await listSchedulePanelistsBySchedule(service, scheduleId);
+        const map = new Map<string, SchedulePanelistRow>();
+
+        for (const row of rowsBySchedule) {
+            const key = `${row.schedule_id.toLowerCase()}:${row.staff_id.toLowerCase()}`;
+            map.set(key, row);
+        }
+
+        const items: SchedulePanelistRow[] = [];
+        let createdCount = 0;
+        let existingCount = 0;
+
+        for (const staffId of staffIds) {
+            const key = `${scheduleId.toLowerCase()}:${staffId.toLowerCase()}`;
+            const existing = map.get(key);
+
+            if (existing) {
+                items.push(existing);
+                existingCount += 1;
+                continue;
+            }
+
+            try {
+                const created = await createSchedulePanelist(service, {
+                    schedule_id: scheduleId,
+                    staff_id: staffId,
+                });
+                map.set(key, created);
+                items.push(created);
+                createdCount += 1;
+            } catch (error) {
+                if (isUniqueViolation(error)) {
+                    const found = await getExistingByComposite(scheduleId, staffId);
+                    if (found) {
+                        map.set(key, found);
+                        items.push(found);
+                        existingCount += 1;
+                        continue;
+                    }
+                }
+
+                if (isForeignKeyViolation(error)) {
+                    throw new Error(
+                        `Invalid staff/panelist user reference: ${staffId}. Make sure the user exists before assignment.`,
+                    );
+                }
+
+                throw error;
+            }
+        }
+
+        return { items, createdCount, existingCount };
+    };
+
+    const resolveScheduleIdFromBody = (
+        body: Record<string, unknown>,
+    ): string | null => {
+        const candidates: unknown[] = [
+            body.schedule_id,
+            body.scheduleId,
+            body.defense_schedule_id,
+            body.defenseScheduleId,
+            body.id,
+        ];
+
+        for (const candidate of candidates) {
+            const parsed = toNonEmptyTrimmedString(candidate);
+            if (parsed) return parsed;
+        }
+
+        return null;
+    };
+
+    const handleCreateForSchedule = async (
+        scheduleId: UUID,
+        body: Record<string, unknown>,
+    ): Promise<Response> => {
+        const staffIds = parseSchedulePanelistStaffIdsFromBody(body);
+
+        if (staffIds.length === 0) {
+            return json400(
+                'staffId/panelistId is required. You may also provide staffIds/panelistIds array.',
+            );
+        }
+
+        for (const staffId of staffIds) {
+            if (!isUuidLike(staffId)) {
+                return json400(`Invalid staff/panelist id: ${staffId}`);
+            }
+        }
+
+        const allUsersExist = await Promise.all(
+            staffIds.map((id) => ensureUserExists(id as UUID)),
+        );
+
+        const missingIndex = allUsersExist.findIndex((exists) => !exists);
+        if (missingIndex >= 0) {
+            return json400(
+                `User not found for staff/panelist id: ${staffIds[missingIndex]}`,
+            );
+        }
+
+        try {
+            const { items, createdCount, existingCount } =
+                await createAssignments(
+                    scheduleId,
+                    staffIds as UUID[],
+                );
+
+            const payload: Record<string, unknown> = {
+                message:
+                    createdCount > 0
+                        ? `Assigned ${createdCount} panelist(s) to this defense schedule.${existingCount > 0 ? ` ${existingCount} assignment(s) already existed.` : ''}`
+                        : 'All provided panelists are already assigned to this defense schedule.',
+            };
+
+            if (items.length === 1) {
+                payload.item = items[0];
+            } else {
+                payload.items = items;
+            }
+
+            payload.createdCount = createdCount;
+            payload.existingCount = existingCount;
+
+            return NextResponse.json(payload, {
+                status: createdCount > 0 ? 201 : 200,
+            });
+        } catch (error) {
+            return NextResponse.json(
+                {
+                    error: 'Failed to assign schedule panelists.',
+                    message: toErrorMessage(error),
+                },
+                { status: 500 },
+            );
+        }
+    };
+
+    // Nested mode: /api/*/defense-schedules/:id/panelists[/:staffId]
+    if (forcedScheduleId) {
+        if (tail.length === 0) {
+            if (method === 'GET') {
+                try {
+                    const items = await listSchedulePanelistsBySchedule(
+                        service,
+                        forcedScheduleId,
+                    );
+                    return json200({ items });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to fetch schedule panelists.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            if (method === 'POST') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+                return handleCreateForSchedule(forcedScheduleId, body);
+            }
+
+            return json405(['GET', 'POST', 'OPTIONS']);
+        }
+
+        const staffId = tail[0];
+        if (!staffId || !isUuidLike(staffId)) {
+            return json404Api();
+        }
+
+        if (tail.length === 1) {
+            if (method === 'GET') {
+                try {
+                    const item = await getExistingByComposite(
+                        forcedScheduleId,
+                        staffId as UUID,
+                    );
+                    if (!item) return json404Entity('Defense schedule panelist');
+                    return json200({ item });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to fetch defense schedule panelist.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            if (method === 'DELETE') {
+                try {
+                    const deleted = await deleteSchedulePanelist(
+                        service,
+                        forcedScheduleId,
+                        staffId as UUID,
+                    );
+                    if (deleted === 0) return json404Entity('Defense schedule panelist');
+                    return json200({ deleted });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to remove defense schedule panelist.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            return json405(['GET', 'DELETE', 'OPTIONS']);
+        }
+
+        return json404Api();
+    }
+
+    // Top-level mode: /api/*/defense-schedule-panelists...
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const scheduleIdQuery =
+                req.nextUrl.searchParams.get('scheduleId') ??
+                req.nextUrl.searchParams.get('schedule_id');
+            const staffIdQuery =
+                req.nextUrl.searchParams.get('staffId') ??
+                req.nextUrl.searchParams.get('staff_id') ??
+                req.nextUrl.searchParams.get('panelistId') ??
+                req.nextUrl.searchParams.get('panelist_id');
+
+            if (scheduleIdQuery) {
+                if (!isUuidLike(scheduleIdQuery)) {
+                    return json400('scheduleId must be a valid UUID.');
+                }
+                try {
+                    const items = await listSchedulePanelistsBySchedule(
+                        service,
+                        scheduleIdQuery as UUID,
+                    );
+                    return json200({ items });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to fetch schedule panelists.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            if (staffIdQuery) {
+                if (!isUuidLike(staffIdQuery)) {
+                    return json400('staffId/panelistId must be a valid UUID.');
+                }
+                try {
+                    const items = await listSchedulePanelistsByStaff(
+                        service,
+                        staffIdQuery as UUID,
+                    );
+                    return json200({ items });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to fetch panelist schedules.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            if (typeof service.findMany === 'function') {
+                try {
+                    const items = await service.findMany(parseListQuery<SchedulePanelistRow>(req));
+                    return json200({ items });
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to fetch schedule panelists.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            return json400('Provide scheduleId or staffId query filter.');
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const scheduleIdRaw = resolveScheduleIdFromBody(body);
+            if (!scheduleIdRaw) {
+                return json400('scheduleId is required.');
+            }
+
+            if (!isUuidLike(scheduleIdRaw)) {
+                return json400('scheduleId must be a valid UUID.');
+            }
+
+            const exists = await ensureScheduleExists(scheduleIdRaw as UUID);
+            if (!exists) {
+                return json404Entity('Defense schedule');
+            }
+
+            return handleCreateForSchedule(scheduleIdRaw as UUID, body);
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/*/defense-schedule-panelists/:scheduleId
+    if (tail.length === 1 && isUuidLike(tail[0])) {
+        const scheduleId = tail[0] as UUID;
+
+        if (method === 'GET') {
+            try {
+                const items = await listSchedulePanelistsBySchedule(service, scheduleId);
+                return json200({ items });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to fetch schedule panelists.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const exists = await ensureScheduleExists(scheduleId);
+            if (!exists) {
+                return json404Entity('Defense schedule');
+            }
+
+            return handleCreateForSchedule(scheduleId, body);
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/*/defense-schedule-panelists/schedule/:scheduleId
+    if (
+        tail.length === 2 &&
+        (tail[0] === 'schedule' || tail[0] === 'defense-schedule')
+    ) {
+        const scheduleId = tail[1];
+        if (!scheduleId || !isUuidLike(scheduleId)) {
+            return json400('scheduleId must be a valid UUID.');
+        }
+
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        try {
+            const items = await listSchedulePanelistsBySchedule(
+                service,
+                scheduleId as UUID,
+            );
+            return json200({ items });
+        } catch (error) {
+            return NextResponse.json(
+                {
+                    error: 'Failed to fetch schedule panelists.',
+                    message: toErrorMessage(error),
+                },
+                { status: 500 },
+            );
+        }
+    }
+
+    // /api/*/defense-schedule-panelists/staff/:staffId
+    // /api/*/defense-schedule-panelists/panelist/:panelistId
+    if (
+        tail.length === 2 &&
+        (tail[0] === 'staff' || tail[0] === 'panelist')
+    ) {
+        const staffId = tail[1];
+        if (!staffId || !isUuidLike(staffId)) {
+            return json400('staffId/panelistId must be a valid UUID.');
+        }
+
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        try {
+            const items = await listSchedulePanelistsByStaff(
+                service,
+                staffId as UUID,
+            );
+            return json200({ items });
+        } catch (error) {
+            return NextResponse.json(
+                {
+                    error: 'Failed to fetch panelist schedules.',
+                    message: toErrorMessage(error),
+                },
+                { status: 500 },
+            );
+        }
+    }
+
+    // /api/*/defense-schedule-panelists/:scheduleId/:staffId
+    if (tail.length === 2 && isUuidLike(tail[0]) && isUuidLike(tail[1])) {
+        const scheduleId = tail[0] as UUID;
+        const staffId = tail[1] as UUID;
+
+        if (method === 'GET') {
+            try {
+                const item = await getExistingByComposite(scheduleId, staffId);
+                if (!item) return json404Entity('Defense schedule panelist');
+                return json200({ item });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to fetch defense schedule panelist.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        if (method === 'DELETE') {
+            try {
+                const deleted = await deleteSchedulePanelist(service, scheduleId, staffId);
+                if (deleted === 0) return json404Entity('Defense schedule panelist');
+                return json200({ deleted });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to remove defense schedule panelist.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        return json405(['GET', 'DELETE', 'OPTIONS']);
+    }
+
+    // /api/*/defense-schedule-panelists/:scheduleId/staff/:staffId
+    // /api/*/defense-schedule-panelists/:scheduleId/panelist/:panelistId
+    if (
+        tail.length === 3 &&
+        isUuidLike(tail[0]) &&
+        (tail[1] === 'staff' || tail[1] === 'panelist') &&
+        isUuidLike(tail[2])
+    ) {
+        const scheduleId = tail[0] as UUID;
+        const staffId = tail[2] as UUID;
+
+        if (method === 'GET') {
+            try {
+                const item = await getExistingByComposite(scheduleId, staffId);
+                if (!item) return json404Entity('Defense schedule panelist');
+                return json200({ item });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to fetch defense schedule panelist.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        if (method === 'DELETE') {
+            try {
+                const deleted = await deleteSchedulePanelist(service, scheduleId, staffId);
+                if (deleted === 0) return json404Entity('Defense schedule panelist');
+                return json200({ deleted });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to remove defense schedule panelist.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        return json405(['GET', 'DELETE', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
+
+async function dispatchAuthRequest(
     req: NextRequest,
     action: AuthAction | null,
     servicesResolver: () => Promise<DatabaseServices>,
@@ -822,6 +1526,17 @@ async function dispatchDefenseSchedulesRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
+    // /api/*/defense-schedules/:id/panelists
+    // /api/*/defense-schedules/:id/schedule-panelists
+    if (tail.length >= 2 && isDefenseSchedulePanelistsSegment(tail[1])) {
+        const existing = await controller.findById(id as UUID);
+        if (!existing) return json404Entity('Defense schedule');
+
+        return dispatchSchedulePanelistsRequest(req, tail.slice(2), services, {
+            forcedScheduleId: id as UUID,
+        });
+    }
+
     if (tail.length === 2 && tail[1] === 'status') {
         if (method !== 'PATCH' && method !== 'POST') {
             return json405(['PATCH', 'POST', 'OPTIONS']);
@@ -1119,6 +1834,15 @@ async function dispatchAdminRequest(
     // Namespaced admin resources
     if (tail[0] === 'defense-schedules' || tail[0] === 'defense-schedule') {
         return dispatchDefenseSchedulesRequest(req, tail.slice(1), services);
+    }
+
+    if (
+        tail[0] === 'defense-schedule-panelists' ||
+        tail[0] === 'defense-schedule-panelist' ||
+        tail[0] === 'schedule-panelists' ||
+        tail[0] === 'schedule-panelist'
+    ) {
+        return dispatchSchedulePanelistsRequest(req, tail.slice(1), services);
     }
 
     if (tail[0] === 'rubric-templates' || tail[0] === 'rubric-template') {
@@ -1926,6 +2650,30 @@ export async function dispatchApiRequest(
     const isThesisGroupsAlias =
         segments[0] === 'thesis' && segments[1] === 'groups';
 
+    // New alias support:
+    // /api/defense-schedule-panelists/*
+    // /api/defense-schedule-panelist/*
+    // /api/schedule-panelists/*
+    // /api/schedule-panelist/*
+    const isSchedulePanelistsAlias =
+        segments[0] === 'defense-schedule-panelists' ||
+        segments[0] === 'defense-schedule-panelist' ||
+        segments[0] === 'schedule-panelists' ||
+        segments[0] === 'schedule-panelist';
+
+    if (isSchedulePanelistsAlias) {
+        const services = await servicesResolver();
+        const guardDenied = await enforceApiGuard(
+            req,
+            'defense-schedules',
+            services,
+            options.guard,
+        );
+        if (guardDenied) return guardDenied;
+
+        return dispatchSchedulePanelistsRequest(req, segments.slice(1), services);
+    }
+
     const root = isThesisGroupsAlias
         ? ('thesis-groups' as ApiRoot)
         : resolveApiRoot(segments[0]);
@@ -1951,6 +2699,7 @@ export async function dispatchApiRequest(
                 notifications: '/api/notifications/*',
                 evaluations: '/api/evaluations/*',
                 defenseSchedules: '/api/defense-schedules/*',
+                defenseSchedulePanelists: '/api/defense-schedule-panelists/*',
                 rubricTemplates: '/api/rubric-templates/*',
                 thesisGroups: '/api/thesis-groups/*',
                 thesisLegacyGroups: '/api/thesis/groups/*',
