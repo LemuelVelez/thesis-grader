@@ -106,6 +106,12 @@ type FetchResult = {
     status: number
 }
 
+type StudentProfileProvisionAttempt = {
+    endpoint: string
+    method: "PATCH" | "POST"
+    body: Record<string, unknown>
+}
+
 type MemberDialogMode = "create" | "edit"
 
 type MemberFormState = {
@@ -428,6 +434,10 @@ function isGenericFailureMessage(value: string): boolean {
     if (!normalized) return false
     if (normalized === "internal server error.") return true
     return /^failed to [a-z0-9\s-]+\.$/.test(normalized)
+}
+
+function isMissingStudentProfileError(message: string): boolean {
+    return /does not have a student profile record/i.test(message)
 }
 
 function extractErrorMessage(payload: unknown, fallback: string, status?: number): string {
@@ -1003,6 +1013,101 @@ export default function AdminThesisGroupDetailsPage() {
         return { existed: true, updated: true, roleBefore }
     }, [])
 
+    /**
+     * Best-effort profile provisioning for selected student before retrying member save.
+     * This is intentionally defensive and tries multiple compatible route shapes.
+     */
+    const provisionStudentProfile = React.useCallback(
+        async (
+            studentUserId: string,
+            program?: string | null,
+            section?: string | null
+        ) => {
+            const normalizedId = studentUserId.trim()
+            if (!normalizedId) {
+                throw new Error("Invalid student id for profile provisioning.")
+            }
+
+            const normalizedProgram = toNullableTrimmed(program ?? "")
+            const normalizedSection = toNullableTrimmed(section ?? "")
+
+            const patchPayload: Record<string, unknown> = {
+                program: normalizedProgram,
+                section: normalizedSection,
+            }
+
+            const createPayload: Record<string, unknown> = {
+                user_id: normalizedId,
+                userId: normalizedId,
+                student_user_id: normalizedId,
+                studentUserId: normalizedId,
+                ...patchPayload,
+            }
+
+            const encodedId = encodeURIComponent(normalizedId)
+
+            const attempts: StudentProfileProvisionAttempt[] = [
+                { endpoint: `/api/student/${encodedId}`, method: "PATCH", body: patchPayload },
+                { endpoint: `/api/students/${encodedId}`, method: "PATCH", body: patchPayload },
+                { endpoint: `/api/student/${encodedId}/profile`, method: "PATCH", body: patchPayload },
+                { endpoint: `/api/students/${encodedId}/profile`, method: "PATCH", body: patchPayload },
+                { endpoint: `/api/student-profiles/${encodedId}`, method: "PATCH", body: patchPayload },
+                { endpoint: "/api/student-profiles", method: "POST", body: createPayload },
+                { endpoint: "/api/students/profiles", method: "POST", body: createPayload },
+            ]
+
+            let lastError: Error | null = null
+
+            for (const attempt of attempts) {
+                try {
+                    const res = await fetch(attempt.endpoint, {
+                        method: attempt.method,
+                        credentials: "include",
+                        cache: "no-store",
+                        headers: {
+                            Accept: "application/json",
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify(attempt.body),
+                    })
+
+                    if (res.status === 404 || res.status === 405) {
+                        continue
+                    }
+
+                    const payload = await parseResponseBodySafe(res)
+
+                    if (!res.ok) {
+                        const message = extractErrorMessage(
+                            payload,
+                            `${attempt.endpoint} returned ${res.status}`,
+                            res.status
+                        )
+
+                        // Continue probing other compatible endpoint shapes first.
+                        if (res.status === 400 || res.status === 409 || res.status === 422) {
+                            lastError = new Error(message)
+                            continue
+                        }
+
+                        throw new Error(message)
+                    }
+
+                    return
+                } catch (error) {
+                    if (error instanceof Error && error.name === "AbortError") throw error
+                    lastError = error instanceof Error ? error : new Error("Failed to provision student profile.")
+                }
+            }
+
+            if (lastError) throw lastError
+            throw new Error(
+                "Unable to provision student profile automatically. Please create the student profile, then retry adding the member."
+            )
+        },
+        []
+    )
+
     const handleCreateStudentUser = React.useCallback(async () => {
         if (creatingStudentUser) return
 
@@ -1197,12 +1302,49 @@ export default function AdminThesisGroupDetailsPage() {
                     section: toNullableTrimmed(memberForm.section) ?? toNullableTrimmed(selected.section ?? "") ?? null,
                 }
 
+                const runMemberSaveWithAutoProfileProvision = async (
+                    executeSave: () => Promise<FetchResult>
+                ): Promise<FetchResult> => {
+                    try {
+                        return await executeSave()
+                    } catch (firstError) {
+                        const firstMessage = firstError instanceof Error ? firstError.message : "Failed to save member."
+                        if (!isMissingStudentProfileError(firstMessage)) {
+                            throw firstError
+                        }
+
+                        const provisioningToastId = toast.loading("Creating missing student profile...")
+
+                        try {
+                            await provisionStudentProfile(
+                                selected.id,
+                                payload.program,
+                                payload.section
+                            )
+                            toast.success("Student profile created. Retrying member save...", { id: provisioningToastId })
+                        } catch (provisionError) {
+                            const provisionMessage =
+                                provisionError instanceof Error
+                                    ? provisionError.message
+                                    : "Failed to create student profile automatically."
+                            toast.error(provisionMessage, { id: provisioningToastId })
+                            throw new Error(provisionMessage)
+                        }
+
+                        const retried = await executeSave()
+                        successNotes.push("Missing student profile was created automatically.")
+                        return retried
+                    }
+                }
+
                 if (memberDialogMode === "create") {
-                    const result = await requestFirstAvailable(memberEndpoints(groupId), {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload),
-                    })
+                    const result = await runMemberSaveWithAutoProfileProvision(() =>
+                        requestFirstAvailable(memberEndpoints(groupId), {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        })
+                    )
 
                     const created = normalizeMember(unwrapDetail(result.payload))
 
@@ -1229,11 +1371,13 @@ export default function AdminThesisGroupDetailsPage() {
                         (base) => `${base}/${encodeURIComponent(identifier)}`
                     )
 
-                    const result = await requestFirstAvailable(endpoints, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload),
-                    })
+                    const result = await runMemberSaveWithAutoProfileProvision(() =>
+                        requestFirstAvailable(endpoints, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        })
+                    )
 
                     const updated = normalizeMember(unwrapDetail(result.payload))
 
@@ -1272,6 +1416,7 @@ export default function AdminThesisGroupDetailsPage() {
             memberForm,
             memberTarget,
             normalizedMemberSelectValue,
+            provisionStudentProfile,
             refreshMembersOnly,
             studentIdsAlreadyUsed,
             studentsById,
