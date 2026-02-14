@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
@@ -52,6 +53,7 @@ type ThesisGroupListItem = {
   program: string | null
   term: string | null
   adviserId: string | null
+  manualAdviserInfo: string | null
   membersCount: number | null
   createdAt: string | null
   updatedAt: string | null
@@ -90,6 +92,9 @@ const LIST_ENDPOINTS = [
 const STAFF_LIST_ENDPOINTS = [
   "/api/staff",
   `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
+  "/api/users?role=staff",
+  "/api/users",
+  "/api/admin/users",
 ] as const
 
 const WRITE_BASE_ENDPOINTS = [...LIST_ENDPOINTS]
@@ -147,6 +152,17 @@ function unwrapItem(payload: unknown): unknown {
   return payload
 }
 
+function extractRoleLower(rec: Record<string, unknown>): string | null {
+  const direct = toStringOrNull(rec.role ?? rec.user_role ?? rec.userRole)
+  if (direct) return direct.toLowerCase()
+
+  const userRec = asRecord(rec.user)
+  const nested = userRec ? toStringOrNull(userRec.role ?? userRec.user_role) : null
+  if (nested) return nested.toLowerCase()
+
+  return null
+}
+
 function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
   const rec = asRecord(raw)
   if (!rec) return null
@@ -158,6 +174,13 @@ function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
   const program = toStringOrNull(rec.program)
   const term = toStringOrNull(rec.term)
   const adviserId = toStringOrNull(rec.adviser_id ?? rec.adviserId)
+  const manualAdviserInfo = toStringOrNull(
+    rec.manual_adviser_info ??
+    rec.manualAdviserInfo ??
+    rec.adviser_name ??
+    rec.adviserName ??
+    rec.adviser
+  )
 
   const membersCount = toNumberOrNull(
     rec.members_count ?? rec.member_count ?? rec.membersCount
@@ -172,6 +195,7 @@ function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
     program,
     term,
     adviserId,
+    manualAdviserInfo,
     membersCount,
     createdAt,
     updatedAt,
@@ -185,7 +209,7 @@ function normalizeStaffUser(raw: unknown): StaffUserItem | null {
   const id = toStringOrNull(rec.id ?? rec.user_id)
   if (!id) return null
 
-  const role = toStringOrNull(rec.role)?.toLowerCase()
+  const role = extractRoleLower(rec)
   if (role && role !== "staff") return null
 
   const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Staff"
@@ -196,6 +220,30 @@ function normalizeStaffUser(raw: unknown): StaffUserItem | null {
     email: toStringOrNull(rec.email),
     status: toStringOrNull(rec.status),
   }
+}
+
+function dedupeStaffUsers(items: StaffUserItem[]): StaffUserItem[] {
+  const map = new Map<string, StaffUserItem>()
+
+  for (const item of items) {
+    const existing = map.get(item.id)
+    if (!existing) {
+      map.set(item.id, item)
+      continue
+    }
+
+    map.set(item.id, {
+      id: item.id,
+      name:
+        existing.name === "Unnamed Staff" && item.name !== "Unnamed Staff"
+          ? item.name
+          : existing.name,
+      email: existing.email ?? item.email,
+      status: existing.status ?? item.status,
+    })
+  }
+
+  return [...map.values()]
 }
 
 function sortNewest(items: ThesisGroupListItem[]): ThesisGroupListItem[] {
@@ -395,14 +443,14 @@ async function fetchFirstAvailableJson(
         continue
       }
 
+      const payload = await parseResponseBodySafe(res)
+
       if (!res.ok) {
-        const payload = await parseResponseBodySafe(res)
         const message = extractErrorMessage(payload, `${endpoint} returned ${res.status}`)
         lastError = new Error(message)
         continue
       }
 
-      const payload = await parseResponseBodySafe(res)
       return {
         endpoint,
         payload,
@@ -418,6 +466,47 @@ async function fetchFirstAvailableJson(
 
   if (lastError) throw lastError
   return null
+}
+
+async function fetchAllSuccessfulJson(
+  endpoints: readonly string[],
+  signal: AbortSignal
+): Promise<FetchResult[]> {
+  const results: FetchResult[] = []
+  let lastError: Error | null = null
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal,
+      })
+
+      if (res.status === 404 || res.status === 405) continue
+
+      const payload = await parseResponseBodySafe(res)
+
+      if (!res.ok) {
+        lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`))
+        continue
+      }
+
+      results.push({
+        endpoint,
+        payload,
+        status: res.status,
+      })
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error
+      lastError = error instanceof Error ? error : new Error("Request failed")
+    }
+  }
+
+  if (results.length === 0 && lastError) throw lastError
+  return results
 }
 
 async function requestFirstAvailable(
@@ -546,7 +635,7 @@ export default function AdminThesisGroupsPage() {
       title: item.title,
       program: item.program ?? "",
       adviserUserId: item.adviserId ?? ADVISER_NONE_VALUE,
-      manualAdviserInfo: "",
+      manualAdviserInfo: item.manualAdviserInfo ?? "",
       semester: parsed.semester,
       customSemester: parsed.customSemester,
       schoolYearStart: parsed.schoolYearStart,
@@ -604,9 +693,9 @@ export default function AdminThesisGroupsPage() {
     setStaffError(null)
 
     try {
-      const result = await fetchFirstAvailableJson(STAFF_LIST_ENDPOINTS, signal)
+      const results = await fetchAllSuccessfulJson(STAFF_LIST_ENDPOINTS, signal)
 
-      if (!result) {
+      if (results.length === 0) {
         setStaffUsers([])
         setStaffError(
           "No compatible staff endpoint found. Adviser selection will use manual fallback only."
@@ -614,11 +703,19 @@ export default function AdminThesisGroupsPage() {
         return
       }
 
-      const normalized = unwrapItems(result.payload)
+      const normalized = results
+        .flatMap((result) => unwrapItems(result.payload))
         .map(normalizeStaffUser)
         .filter((item): item is StaffUserItem => item !== null)
 
-      setStaffUsers(sortStaff(normalized))
+      const merged = sortStaff(dedupeStaffUsers(normalized))
+      setStaffUsers(merged)
+
+      if (merged.length === 0) {
+        setStaffError(
+          "No staff users were returned from the available endpoints. Manual adviser input is enabled."
+        )
+      }
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return
       const message =
@@ -716,6 +813,9 @@ export default function AdminThesisGroupsPage() {
         }
       }
 
+      const manualAdviserInfo =
+        selectedAdviserId === null ? toNullableTrimmed(createForm.manualAdviserInfo) : null
+
       try {
         await requestFirstAvailable(writeBases, {
           method: "POST",
@@ -725,6 +825,9 @@ export default function AdminThesisGroupsPage() {
             program: toNullableTrimmed(createForm.program),
             term: termBuilt.term,
             adviser_id: selectedAdviserId,
+            adviserId: selectedAdviserId,
+            manual_adviser_info: manualAdviserInfo,
+            manualAdviserInfo: manualAdviserInfo,
           }),
         })
 
@@ -814,6 +917,9 @@ export default function AdminThesisGroupsPage() {
         }
       }
 
+      const manualAdviserInfo =
+        selectedAdviserId === null ? toNullableTrimmed(editForm.manualAdviserInfo) : null
+
       try {
         const endpoints = writeBases.map((base) => `${base}/${editTarget.id}`)
         const result = await requestFirstAvailable(endpoints, {
@@ -824,6 +930,9 @@ export default function AdminThesisGroupsPage() {
             program: toNullableTrimmed(editForm.program),
             term: termBuilt.term,
             adviser_id: selectedAdviserId,
+            adviserId: selectedAdviserId,
+            manual_adviser_info: manualAdviserInfo,
+            manualAdviserInfo: manualAdviserInfo,
           }),
         })
 
@@ -907,11 +1016,29 @@ export default function AdminThesisGroupsPage() {
         header: "Adviser",
         cell: ({ row }) => {
           const adviserId = row.original.adviserId
+          if (!adviserId && row.original.manualAdviserInfo) {
+            return (
+              <div className="leading-tight">
+                <Badge variant="outline" className="mb-1">
+                  Manual Adviser
+                </Badge>
+                <div className="text-sm">{row.original.manualAdviserInfo}</div>
+              </div>
+            )
+          }
+
           if (!adviserId) return "—"
 
           const staff = staffById.get(adviserId)
           if (!staff) {
-            return <Badge variant="outline">Assigned staff user</Badge>
+            return (
+              <div className="space-y-1">
+                <Badge variant="outline">Assigned staff user</Badge>
+                {row.original.manualAdviserInfo ? (
+                  <div className="text-xs text-muted-foreground">{row.original.manualAdviserInfo}</div>
+                ) : null}
+              </div>
+            )
           }
 
           return (
@@ -1046,219 +1173,223 @@ export default function AdminThesisGroupsPage() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Create Thesis Group</DialogTitle>
-            <DialogDescription>
-              Assign an adviser from Staff users. If no staff adviser is available, use the manual adviser info fallback.
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="sm:max-w-lg max-h-[82vh] p-0">
+          <ScrollArea className="max-h-[82vh]">
+            <div className="p-6">
+              <DialogHeader>
+                <DialogTitle>Create Thesis Group</DialogTitle>
+                <DialogDescription>
+                  Assign an adviser from Staff users. If no staff adviser is available, use the manual adviser info fallback.
+                </DialogDescription>
+              </DialogHeader>
 
-          <form onSubmit={onCreateSubmit} className="space-y-4">
-            {actionError ? (
-              <Alert variant="destructive">
-                <AlertDescription>{actionError}</AlertDescription>
-              </Alert>
-            ) : null}
+              <form onSubmit={onCreateSubmit} className="mt-4 space-y-4">
+                {actionError ? (
+                  <Alert variant="destructive">
+                    <AlertDescription>{actionError}</AlertDescription>
+                  </Alert>
+                ) : null}
 
-            <div className="space-y-2">
-              <Label htmlFor="create-title">Thesis Title</Label>
-              <Input
-                id="create-title"
-                value={createForm.title}
-                onChange={(event) =>
-                  setCreateForm((prev) => ({ ...prev, title: event.target.value }))
-                }
-                placeholder="Enter thesis title"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="create-program">Program</Label>
-              <Input
-                id="create-program"
-                value={createForm.program}
-                onChange={(event) =>
-                  setCreateForm((prev) => ({ ...prev, program: event.target.value }))
-                }
-                placeholder="e.g., BSIT"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="rounded-lg border p-3 space-y-3">
-              <div className="space-y-2">
-                <Label>Semester</Label>
-                <Select
-                  value={createForm.semester}
-                  onValueChange={(value) =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      semester: value,
-                      customSemester:
-                        value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
-                    }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select semester" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STANDARD_SEMESTERS.map((semester) => (
-                      <SelectItem key={`create-sem-${semester}`} value={semester}>
-                        {semester}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
-                    <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {createForm.semester === SEMESTER_OTHER_VALUE ? (
                 <div className="space-y-2">
-                  <Label htmlFor="create-custom-semester">Specify Semester</Label>
+                  <Label htmlFor="create-title">Thesis Title</Label>
                   <Input
-                    id="create-custom-semester"
-                    value={createForm.customSemester}
+                    id="create-title"
+                    value={createForm.title}
                     onChange={(event) =>
-                      setCreateForm((prev) => ({
-                        ...prev,
-                        customSemester: event.target.value,
-                      }))
+                      setCreateForm((prev) => ({ ...prev, title: event.target.value }))
                     }
-                    placeholder="e.g., Midyear"
+                    placeholder="Enter thesis title"
                     autoComplete="off"
                   />
                 </div>
-              ) : null}
 
-              {createForm.semester !== SEMESTER_NONE_VALUE ? (
                 <div className="space-y-2">
-                  <Label htmlFor="create-school-year-start">School Year (Start)</Label>
+                  <Label htmlFor="create-program">Program</Label>
                   <Input
-                    id="create-school-year-start"
-                    value={createForm.schoolYearStart}
+                    id="create-program"
+                    value={createForm.program}
                     onChange={(event) =>
-                      setCreateForm((prev) => ({
-                        ...prev,
-                        schoolYearStart: event.target.value,
-                      }))
+                      setCreateForm((prev) => ({ ...prev, program: event.target.value }))
                     }
-                    placeholder="e.g., 2026"
-                    inputMode="numeric"
+                    placeholder="e.g., BSIT"
                     autoComplete="off"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Example: 2026 will be saved as AY 2026-2027.
-                  </p>
                 </div>
-              ) : null}
 
-              <div className="text-xs text-muted-foreground">
-                Preview: <span className="font-medium">{createTermPreview}</span>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3 space-y-3">
-              <div className="space-y-2">
-                <Label>Adviser (Staff User)</Label>
-                <Select
-                  value={createForm.adviserUserId}
-                  onValueChange={(value) =>
-                    setCreateForm((prev) => ({ ...prev, adviserUserId: value }))
-                  }
-                  disabled={staffLoading}
-                >
-                  <SelectTrigger>
-                    <SelectValue
-                      placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem
-                      value={ADVISER_NONE_VALUE}
-                      disabled={availableCreateStaff.length > 0}
+                <div className="rounded-lg border p-3 space-y-3">
+                  <div className="space-y-2">
+                    <Label>Semester</Label>
+                    <Select
+                      value={createForm.semester}
+                      onValueChange={(value) =>
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          semester: value,
+                          customSemester:
+                            value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
+                        }))
+                      }
                     >
-                      No staff adviser selected
-                    </SelectItem>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select semester" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STANDARD_SEMESTERS.map((semester) => (
+                          <SelectItem key={`create-sem-${semester}`} value={semester}>
+                            {semester}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
+                        <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-                    {staffUsers.map((staff) => {
-                      const taken = takenAdviserIds.has(staff.id)
-                      const disabledAccount = isDisabledStaff(staff)
-                      const disabled = taken || disabledAccount
-                      const suffix = taken
-                        ? " • Already assigned"
-                        : disabledAccount
-                          ? " • Disabled"
-                          : ""
-                      const label = staff.email
-                        ? `${staff.name} (${staff.email})${suffix}`
-                        : `${staff.name}${suffix}`
+                  {createForm.semester === SEMESTER_OTHER_VALUE ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="create-custom-semester">Specify Semester</Label>
+                      <Input
+                        id="create-custom-semester"
+                        value={createForm.customSemester}
+                        onChange={(event) =>
+                          setCreateForm((prev) => ({
+                            ...prev,
+                            customSemester: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., Midyear"
+                        autoComplete="off"
+                      />
+                    </div>
+                  ) : null}
 
-                      return (
-                        <SelectItem
-                          key={`create-adviser-${staff.id}`}
-                          value={staff.id}
-                          disabled={disabled}
-                        >
-                          {label}
-                        </SelectItem>
-                      )
-                    })}
-                  </SelectContent>
-                </Select>
+                  {createForm.semester !== SEMESTER_NONE_VALUE ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="create-school-year-start">School Year (Start)</Label>
+                      <Input
+                        id="create-school-year-start"
+                        value={createForm.schoolYearStart}
+                        onChange={(event) =>
+                          setCreateForm((prev) => ({
+                            ...prev,
+                            schoolYearStart: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., 2026"
+                        inputMode="numeric"
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Example: 2026 will be saved as AY 2026-2027.
+                      </p>
+                    </div>
+                  ) : null}
 
-                {staffLoading ? (
-                  <p className="text-xs text-muted-foreground">Loading staff users…</p>
-                ) : availableCreateStaff.length > 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Select from available Staff users. Assigned/disabled staff are disabled.
-                  </p>
-                ) : (
-                  <p className="text-xs text-amber-600">
-                    No available staff adviser right now. You may proceed with manual adviser information.
-                  </p>
-                )}
-              </div>
-
-              {createCanUseManualAdviser ? (
-                <div className="space-y-2">
-                  <Label htmlFor="create-manual-adviser">Manual Adviser Information (Optional)</Label>
-                  <Input
-                    id="create-manual-adviser"
-                    value={createForm.manualAdviserInfo}
-                    onChange={(event) =>
-                      setCreateForm((prev) => ({
-                        ...prev,
-                        manualAdviserInfo: event.target.value,
-                      }))
-                    }
-                    placeholder="e.g., Prof. Maria Santos - CICT Department"
-                    autoComplete="off"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Use this when no staff user is currently available for assignment.
-                  </p>
+                  <div className="text-xs text-muted-foreground">
+                    Preview: <span className="font-medium">{createTermPreview}</span>
+                  </div>
                 </div>
-              ) : null}
-            </div>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setCreateOpen(false)}
-                disabled={submitting}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? "Creating..." : "Create Group"}
-              </Button>
-            </DialogFooter>
-          </form>
+                <div className="rounded-lg border p-3 space-y-3">
+                  <div className="space-y-2">
+                    <Label>Adviser (Staff User)</Label>
+                    <Select
+                      value={createForm.adviserUserId}
+                      onValueChange={(value) =>
+                        setCreateForm((prev) => ({ ...prev, adviserUserId: value }))
+                      }
+                      disabled={staffLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          value={ADVISER_NONE_VALUE}
+                          disabled={availableCreateStaff.length > 0}
+                        >
+                          No staff adviser selected
+                        </SelectItem>
+
+                        {staffUsers.map((staff) => {
+                          const taken = takenAdviserIds.has(staff.id)
+                          const disabledAccount = isDisabledStaff(staff)
+                          const disabled = taken || disabledAccount
+                          const suffix = taken
+                            ? " • Already assigned"
+                            : disabledAccount
+                              ? " • Disabled"
+                              : ""
+                          const label = staff.email
+                            ? `${staff.name} (${staff.email})${suffix}`
+                            : `${staff.name}${suffix}`
+
+                          return (
+                            <SelectItem
+                              key={`create-adviser-${staff.id}`}
+                              value={staff.id}
+                              disabled={disabled}
+                            >
+                              {label}
+                            </SelectItem>
+                          )
+                        })}
+                      </SelectContent>
+                    </Select>
+
+                    {staffLoading ? (
+                      <p className="text-xs text-muted-foreground">Loading staff users…</p>
+                    ) : availableCreateStaff.length > 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Select from available Staff users. Assigned/disabled staff are disabled.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-amber-600">
+                        No available staff adviser right now. You may proceed with manual adviser information.
+                      </p>
+                    )}
+                  </div>
+
+                  {createCanUseManualAdviser ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="create-manual-adviser">Manual Adviser Information (Optional)</Label>
+                      <Input
+                        id="create-manual-adviser"
+                        value={createForm.manualAdviserInfo}
+                        onChange={(event) =>
+                          setCreateForm((prev) => ({
+                            ...prev,
+                            manualAdviserInfo: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., Prof. Maria Santos - CICT Department"
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Use this when no staff user is currently available for assignment.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setCreateOpen(false)}
+                    disabled={submitting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? "Creating..." : "Create Group"}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </div>
+          </ScrollArea>
         </DialogContent>
       </Dialog>
 
@@ -1272,231 +1403,235 @@ export default function AdminThesisGroupsPage() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Edit Thesis Group</DialogTitle>
-            <DialogDescription>
-              Update thesis details and assign an available staff adviser with conflict protection.
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="sm:max-w-lg max-h-[74vh] p-0">
+          <ScrollArea className="max-h-[74vh]">
+            <div className="p-6">
+              <DialogHeader>
+                <DialogTitle>Edit Thesis Group</DialogTitle>
+                <DialogDescription>
+                  Update thesis details and assign an available staff adviser with conflict protection.
+                </DialogDescription>
+              </DialogHeader>
 
-          <form onSubmit={onEditSubmit} className="space-y-4">
-            {actionError ? (
-              <Alert variant="destructive">
-                <AlertDescription>{actionError}</AlertDescription>
-              </Alert>
-            ) : null}
+              <form onSubmit={onEditSubmit} className="mt-4 space-y-4">
+                {actionError ? (
+                  <Alert variant="destructive">
+                    <AlertDescription>{actionError}</AlertDescription>
+                  </Alert>
+                ) : null}
 
-            <div className="space-y-2">
-              <Label htmlFor="edit-title">Thesis Title</Label>
-              <Input
-                id="edit-title"
-                value={editForm.title}
-                onChange={(event) =>
-                  setEditForm((prev) => ({ ...prev, title: event.target.value }))
-                }
-                placeholder="Enter thesis title"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="edit-program">Program</Label>
-              <Input
-                id="edit-program"
-                value={editForm.program}
-                onChange={(event) =>
-                  setEditForm((prev) => ({ ...prev, program: event.target.value }))
-                }
-                placeholder="e.g., BSIT"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="rounded-lg border p-3 space-y-3">
-              <div className="space-y-2">
-                <Label>Semester</Label>
-                <Select
-                  value={editForm.semester}
-                  onValueChange={(value) =>
-                    setEditForm((prev) => ({
-                      ...prev,
-                      semester: value,
-                      customSemester: value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
-                    }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select semester" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STANDARD_SEMESTERS.map((semester) => (
-                      <SelectItem key={`edit-sem-${semester}`} value={semester}>
-                        {semester}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
-                    <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {editForm.semester === SEMESTER_OTHER_VALUE ? (
                 <div className="space-y-2">
-                  <Label htmlFor="edit-custom-semester">Specify Semester</Label>
+                  <Label htmlFor="edit-title">Thesis Title</Label>
                   <Input
-                    id="edit-custom-semester"
-                    value={editForm.customSemester}
+                    id="edit-title"
+                    value={editForm.title}
                     onChange={(event) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        customSemester: event.target.value,
-                      }))
+                      setEditForm((prev) => ({ ...prev, title: event.target.value }))
                     }
-                    placeholder="e.g., Midyear"
+                    placeholder="Enter thesis title"
                     autoComplete="off"
                   />
                 </div>
-              ) : null}
 
-              {editForm.semester !== SEMESTER_NONE_VALUE ? (
                 <div className="space-y-2">
-                  <Label htmlFor="edit-school-year-start">School Year (Start)</Label>
+                  <Label htmlFor="edit-program">Program</Label>
                   <Input
-                    id="edit-school-year-start"
-                    value={editForm.schoolYearStart}
+                    id="edit-program"
+                    value={editForm.program}
                     onChange={(event) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        schoolYearStart: event.target.value,
-                      }))
+                      setEditForm((prev) => ({ ...prev, program: event.target.value }))
                     }
-                    placeholder="e.g., 2026"
-                    inputMode="numeric"
+                    placeholder="e.g., BSIT"
                     autoComplete="off"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Example: 2026 will be saved as AY 2026-2027.
-                  </p>
                 </div>
-              ) : null}
 
-              <div className="text-xs text-muted-foreground">
-                Preview: <span className="font-medium">{editTermPreview}</span>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3 space-y-3">
-              <div className="space-y-2">
-                <Label>Adviser (Staff User)</Label>
-                <Select
-                  value={editForm.adviserUserId}
-                  onValueChange={(value) =>
-                    setEditForm((prev) => ({ ...prev, adviserUserId: value }))
-                  }
-                  disabled={staffLoading}
-                >
-                  <SelectTrigger>
-                    <SelectValue
-                      placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem
-                      value={ADVISER_NONE_VALUE}
-                      disabled={availableEditStaff.length > 0}
+                <div className="rounded-lg border p-3 space-y-3">
+                  <div className="space-y-2">
+                    <Label>Semester</Label>
+                    <Select
+                      value={editForm.semester}
+                      onValueChange={(value) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          semester: value,
+                          customSemester: value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
+                        }))
+                      }
                     >
-                      No staff adviser selected
-                    </SelectItem>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select semester" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STANDARD_SEMESTERS.map((semester) => (
+                          <SelectItem key={`edit-sem-${semester}`} value={semester}>
+                            {semester}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
+                        <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-                    {selectedEditAdviserMissing ? (
-                      <SelectItem value={editForm.adviserUserId}>
-                        Current assigned adviser (profile unavailable)
-                      </SelectItem>
-                    ) : null}
+                  {editForm.semester === SEMESTER_OTHER_VALUE ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-custom-semester">Specify Semester</Label>
+                      <Input
+                        id="edit-custom-semester"
+                        value={editForm.customSemester}
+                        onChange={(event) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            customSemester: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., Midyear"
+                        autoComplete="off"
+                      />
+                    </div>
+                  ) : null}
 
-                    {staffUsers.map((staff) => {
-                      const selected = editForm.adviserUserId === staff.id
-                      const takenByOtherGroup = takenAdviserIdsForEdit.has(staff.id)
-                      const disabledAccount = isDisabledStaff(staff)
+                  {editForm.semester !== SEMESTER_NONE_VALUE ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-school-year-start">School Year (Start)</Label>
+                      <Input
+                        id="edit-school-year-start"
+                        value={editForm.schoolYearStart}
+                        onChange={(event) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            schoolYearStart: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., 2026"
+                        inputMode="numeric"
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Example: 2026 will be saved as AY 2026-2027.
+                      </p>
+                    </div>
+                  ) : null}
 
-                      const disabled =
-                        takenByOtherGroup || (disabledAccount && !selected)
-
-                      const suffix = takenByOtherGroup
-                        ? " • Already assigned"
-                        : disabledAccount && !selected
-                          ? " • Disabled"
-                          : selected
-                            ? " • Current"
-                            : ""
-
-                      const label = staff.email
-                        ? `${staff.name} (${staff.email})${suffix}`
-                        : `${staff.name}${suffix}`
-
-                      return (
-                        <SelectItem
-                          key={`edit-adviser-${staff.id}`}
-                          value={staff.id}
-                          disabled={disabled}
-                        >
-                          {label}
-                        </SelectItem>
-                      )
-                    })}
-                  </SelectContent>
-                </Select>
-
-                {staffLoading ? (
-                  <p className="text-xs text-muted-foreground">Loading staff users…</p>
-                ) : availableEditStaff.length > 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Assigned/disabled staff are disabled unless it is the current adviser.
-                  </p>
-                ) : (
-                  <p className="text-xs text-amber-600">
-                    No alternative available staff adviser. You may proceed with manual adviser information.
-                  </p>
-                )}
-              </div>
-
-              {editCanUseManualAdviser ? (
-                <div className="space-y-2">
-                  <Label htmlFor="edit-manual-adviser">Manual Adviser Information (Optional)</Label>
-                  <Input
-                    id="edit-manual-adviser"
-                    value={editForm.manualAdviserInfo}
-                    onChange={(event) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        manualAdviserInfo: event.target.value,
-                      }))
-                    }
-                    placeholder="e.g., External adviser details"
-                    autoComplete="off"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Use this when no staff user is currently available for assignment.
-                  </p>
+                  <div className="text-xs text-muted-foreground">
+                    Preview: <span className="font-medium">{editTermPreview}</span>
+                  </div>
                 </div>
-              ) : null}
-            </div>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setEditOpen(false)}
-                disabled={submitting}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? "Saving..." : "Save Changes"}
-              </Button>
-            </DialogFooter>
-          </form>
+                <div className="rounded-lg border p-3 space-y-3">
+                  <div className="space-y-2">
+                    <Label>Adviser (Staff User)</Label>
+                    <Select
+                      value={editForm.adviserUserId}
+                      onValueChange={(value) =>
+                        setEditForm((prev) => ({ ...prev, adviserUserId: value }))
+                      }
+                      disabled={staffLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          value={ADVISER_NONE_VALUE}
+                          disabled={availableEditStaff.length > 0}
+                        >
+                          No staff adviser selected
+                        </SelectItem>
+
+                        {selectedEditAdviserMissing ? (
+                          <SelectItem value={editForm.adviserUserId}>
+                            Current assigned adviser (profile unavailable)
+                          </SelectItem>
+                        ) : null}
+
+                        {staffUsers.map((staff) => {
+                          const selected = editForm.adviserUserId === staff.id
+                          const takenByOtherGroup = takenAdviserIdsForEdit.has(staff.id)
+                          const disabledAccount = isDisabledStaff(staff)
+
+                          const disabled =
+                            takenByOtherGroup || (disabledAccount && !selected)
+
+                          const suffix = takenByOtherGroup
+                            ? " • Already assigned"
+                            : disabledAccount && !selected
+                              ? " • Disabled"
+                              : selected
+                                ? " • Current"
+                                : ""
+
+                          const label = staff.email
+                            ? `${staff.name} (${staff.email})${suffix}`
+                            : `${staff.name}${suffix}`
+
+                          return (
+                            <SelectItem
+                              key={`edit-adviser-${staff.id}`}
+                              value={staff.id}
+                              disabled={disabled}
+                            >
+                              {label}
+                            </SelectItem>
+                          )
+                        })}
+                      </SelectContent>
+                    </Select>
+
+                    {staffLoading ? (
+                      <p className="text-xs text-muted-foreground">Loading staff users…</p>
+                    ) : availableEditStaff.length > 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Assigned/disabled staff are disabled unless it is the current adviser.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-amber-600">
+                        No alternative available staff adviser. You may proceed with manual adviser information.
+                      </p>
+                    )}
+                  </div>
+
+                  {editCanUseManualAdviser ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-manual-adviser">Manual Adviser Information (Optional)</Label>
+                      <Input
+                        id="edit-manual-adviser"
+                        value={editForm.manualAdviserInfo}
+                        onChange={(event) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            manualAdviserInfo: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g., External adviser details"
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Use this when no staff user is currently available for assignment.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditOpen(false)}
+                    disabled={submitting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? "Saving..." : "Save Changes"}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </div>
+          </ScrollArea>
         </DialogContent>
       </Dialog>
 
