@@ -3,12 +3,12 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
+import { CalendarIcon } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Calendar } from "@/components/ui/calendar"
 import {
     Table,
     TableBody,
@@ -32,6 +32,13 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover"
 import {
     AlertDialog,
     AlertDialogAction,
@@ -51,6 +58,8 @@ type DefenseScheduleStatus =
     | "cancelled"
     | (string & {})
 
+type Meridiem = "AM" | "PM"
+
 type PanelistLite = {
     id: string
     name: string
@@ -67,6 +76,9 @@ type DefenseScheduleRecord = {
     rubric_template_id: string | null
     rubric_template_name: string | null
     created_by: string | null
+    created_by_id: string | null
+    created_by_name: string | null
+    created_by_email: string | null
     created_at: string
     updated_at: string
     panelists: PanelistLite[]
@@ -89,9 +101,18 @@ type RubricTemplateOption = {
     name: string
 }
 
+type UserDirectoryOption = {
+    id: string
+    name: string
+    email: string | null
+}
+
 type ScheduleFormValues = {
     group_id: string
-    scheduled_at: string
+    scheduled_date: Date | undefined
+    scheduled_hour: string
+    scheduled_minute: string
+    scheduled_period: Meridiem
     room: string
     status: DefenseScheduleStatus
     rubric_template_id: string
@@ -110,6 +131,7 @@ const WRITE_BASE_ENDPOINTS = ["/api/admin/defense-schedules", "/api/defense-sche
 const STATUS_ACTIONS: DefenseScheduleStatus[] = ["scheduled", "ongoing", "completed", "cancelled"]
 
 const GROUP_ENDPOINTS = ["/api/admin/thesis-groups", "/api/thesis-groups"] as const
+const USER_ENDPOINTS = ["/api/users", "/api/admin"] as const
 const RUBRIC_ENDPOINTS = [
     "/api/admin/rubric-templates?active=true",
     "/api/rubric-templates?active=true",
@@ -118,6 +140,9 @@ const RUBRIC_ENDPOINTS = [
 ] as const
 
 const RUBRIC_NONE_VALUE = "__none__"
+
+const HOUR_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"))
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -148,18 +173,61 @@ function formatDateTime(value: string): string {
     return date.toLocaleString()
 }
 
-function toDateTimeLocalValue(value: string): string {
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return ""
-    const tzOffsetMs = date.getTimezoneOffset() * 60_000
-    return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16)
+function formatCalendarDate(value: Date): string {
+    return value.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+    })
 }
 
-function fromDateTimeLocalValue(value: string): string | null {
-    if (!value) return null
+function parseIsoToDateParts(value: string): {
+    date: Date | undefined
+    hour: string
+    minute: string
+    period: Meridiem
+} {
     const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return null
-    return date.toISOString()
+    if (Number.isNaN(date.getTime())) {
+        return {
+            date: undefined,
+            hour: "08",
+            minute: "00",
+            period: "AM",
+        }
+    }
+
+    const hour24 = date.getHours()
+    const period: Meridiem = hour24 >= 12 ? "PM" : "AM"
+    const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
+
+    return {
+        date: new Date(date.getFullYear(), date.getMonth(), date.getDate()),
+        hour: String(hour12).padStart(2, "0"),
+        minute: String(date.getMinutes()).padStart(2, "0"),
+        period,
+    }
+}
+
+function buildScheduledAtIso(values: ScheduleFormValues): string | null {
+    if (!values.scheduled_date) return null
+
+    const hourNum = Number(values.scheduled_hour)
+    const minuteNum = Number(values.scheduled_minute)
+
+    if (!Number.isInteger(hourNum) || hourNum < 1 || hourNum > 12) return null
+    if (!Number.isInteger(minuteNum) || minuteNum < 0 || minuteNum > 59) return null
+
+    let hour24 = hourNum % 12
+    if (values.scheduled_period === "PM") {
+        hour24 += 12
+    }
+
+    const localDate = new Date(values.scheduled_date)
+    localDate.setHours(hour24, minuteNum, 0, 0)
+
+    if (Number.isNaN(localDate.getTime())) return null
+    return localDate.toISOString()
 }
 
 function toTitleCase(value: string): string {
@@ -217,6 +285,14 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
 
     const groupObject = isRecord(raw.group) ? raw.group : null
     const rubricObject = isRecord(raw.rubric_template) ? raw.rubric_template : null
+    const creatorObject =
+        isRecord(raw.created_by_user)
+            ? raw.created_by_user
+            : isRecord(raw.creator)
+                ? raw.creator
+                : isRecord(raw.createdByUser)
+                    ? raw.createdByUser
+                    : null
 
     const groupId =
         pickString(raw, ["group_id", "groupId"]) ??
@@ -241,7 +317,21 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
         pickNullableString(raw, ["rubric_template_name", "rubricTemplateName"]) ??
         (rubricObject ? pickNullableString(rubricObject, ["name"]) : null)
 
-    const createdBy = pickNullableString(raw, ["created_by", "createdBy"])
+    const createdById =
+        pickNullableString(raw, ["created_by_id", "createdById", "created_by", "createdBy"]) ??
+        (creatorObject ? pickNullableString(creatorObject, ["id", "user_id", "userId"]) : null)
+
+    const createdByName =
+        pickNullableString(raw, ["created_by_name", "createdByName", "creator_name", "creatorName"]) ??
+        (creatorObject
+            ? pickNullableString(creatorObject, ["name", "full_name", "display_name", "displayName"])
+            : null)
+
+    const createdByEmail =
+        pickNullableString(raw, ["created_by_email", "createdByEmail", "creator_email", "creatorEmail"]) ??
+        (creatorObject ? pickNullableString(creatorObject, ["email"]) : null)
+
+    const createdByDisplay = createdByName ?? createdByEmail ?? createdById
 
     const createdAt =
         pickString(raw, ["created_at", "createdAt"]) ??
@@ -264,7 +354,10 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
         status,
         rubric_template_id: rubricTemplateId,
         rubric_template_name: rubricTemplateName,
-        created_by: createdBy,
+        created_by: createdByDisplay,
+        created_by_id: createdById,
+        created_by_name: createdByName,
+        created_by_email: createdByEmail,
         created_at: createdAt,
         updated_at: updatedAt,
         panelists,
@@ -287,6 +380,18 @@ function normalizeRubricOption(raw: unknown): RubricTemplateOption | null {
     return { id, name }
 }
 
+function normalizeUserOption(raw: unknown): UserDirectoryOption | null {
+    if (!isRecord(raw)) return null
+
+    const id = pickString(raw, ["id", "user_id", "userId"])
+    if (!id) return null
+
+    const name = pickString(raw, ["name", "full_name", "display_name", "displayName", "email"]) ?? id
+    const email = pickNullableString(raw, ["email"])
+
+    return { id, name, email }
+}
+
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
     const seen = new Set<string>()
     const out: T[] = []
@@ -303,7 +408,10 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 function makeInitialFormValues(): ScheduleFormValues {
     return {
         group_id: "",
-        scheduled_at: "",
+        scheduled_date: undefined,
+        scheduled_hour: "08",
+        scheduled_minute: "00",
+        scheduled_period: "AM",
         room: "",
         status: "scheduled",
         rubric_template_id: "",
@@ -511,6 +619,31 @@ async function fetchRubricTemplates(): Promise<RubricTemplateOption[]> {
     return []
 }
 
+async function fetchUserDirectory(): Promise<UserDirectoryOption[]> {
+    const collected: UserDirectoryOption[] = []
+
+    for (const endpoint of USER_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            if (!res.ok) {
+                if (res.status === 404 || res.status === 401 || res.status === 403) continue
+                continue
+            }
+
+            const payload = (await res.json()) as unknown
+            const options = extractList(payload)
+                .map(normalizeUserOption)
+                .filter((item): item is UserDirectoryOption => !!item)
+
+            collected.push(...options)
+        } catch {
+            // try next endpoint
+        }
+    }
+
+    return uniqueById(collected)
+}
+
 export default function AdminDefenseScheduleDetailsPage() {
     const router = useRouter()
     const params = useParams<{ id?: string | string[] }>()
@@ -527,6 +660,7 @@ export default function AdminDefenseScheduleDetailsPage() {
 
     const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
     const [rubrics, setRubrics] = React.useState<RubricTemplateOption[]>([])
+    const [users, setUsers] = React.useState<UserDirectoryOption[]>([])
     const [metaLoading, setMetaLoading] = React.useState(true)
 
     const [editOpen, setEditOpen] = React.useState(false)
@@ -535,6 +669,68 @@ export default function AdminDefenseScheduleDetailsPage() {
 
     const [deleteOpen, setDeleteOpen] = React.useState(false)
     const [deleteBusy, setDeleteBusy] = React.useState(false)
+
+    const groupTitleById = React.useMemo(
+        () => new Map(groups.map((group) => [group.id, group.title])),
+        [groups],
+    )
+
+    const rubricNameById = React.useMemo(
+        () => new Map(rubrics.map((rubric) => [rubric.id, rubric.name])),
+        [rubrics],
+    )
+
+    const userById = React.useMemo(
+        () => new Map(users.map((user) => [user.id, user])),
+        [users],
+    )
+
+    const resolvedGroupTitle = React.useMemo(() => {
+        if (!schedule) return "Unassigned Group"
+        return schedule.group_title || groupTitleById.get(schedule.group_id) || schedule.group_id || "Unassigned Group"
+    }, [schedule, groupTitleById])
+
+    const resolvedRubricName = React.useMemo(() => {
+        if (!schedule) return "Not set"
+        return (
+            schedule.rubric_template_name ||
+            (schedule.rubric_template_id ? rubricNameById.get(schedule.rubric_template_id) : null) ||
+            schedule.rubric_template_id ||
+            "Not set"
+        )
+    }, [schedule, rubricNameById])
+
+    const resolvedCreatedBy = React.useMemo(() => {
+        if (!schedule) return "System"
+
+        if (schedule.created_by_name) return schedule.created_by_name
+        if (schedule.created_by_email) return schedule.created_by_email
+
+        const creatorId = schedule.created_by_id
+        if (creatorId) {
+            const user = userById.get(creatorId)
+            if (user?.name) return user.name
+            if (user?.email) return user.email
+            return creatorId
+        }
+
+        if (schedule.created_by) return schedule.created_by
+        return "System"
+    }, [schedule, userById])
+
+    const resolvedCreatedBySubline = React.useMemo(() => {
+        if (!schedule) return null
+
+        if (schedule.created_by_name) {
+            return schedule.created_by_email || schedule.created_by_id || null
+        }
+
+        if (schedule.created_by_email && schedule.created_by_id) {
+            return schedule.created_by_id
+        }
+
+        return null
+    }, [schedule])
 
     const loadSchedule = React.useCallback(async (): Promise<boolean> => {
         if (!scheduleId) {
@@ -563,12 +759,16 @@ export default function AdminDefenseScheduleDetailsPage() {
     const loadReferenceData = React.useCallback(async () => {
         setMetaLoading(true)
         try {
-            const [groupRows, rubricRows] = await Promise.all([
+            const [groupRows, rubricRows, userRows] = await Promise.all([
                 fetchThesisGroups(),
                 fetchRubricTemplates(),
+                fetchUserDirectory(),
             ])
             setGroups(groupRows)
             setRubrics(rubricRows)
+            setUsers(userRows)
+        } catch {
+            toast.error("Some reference data could not be loaded.")
         } finally {
             setMetaLoading(false)
         }
@@ -605,9 +805,14 @@ export default function AdminDefenseScheduleDetailsPage() {
     const openEditDialog = React.useCallback(() => {
         if (!schedule) return
 
+        const dateParts = parseIsoToDateParts(schedule.scheduled_at)
+
         setEditForm({
             group_id: schedule.group_id,
-            scheduled_at: toDateTimeLocalValue(schedule.scheduled_at),
+            scheduled_date: dateParts.date,
+            scheduled_hour: dateParts.hour,
+            scheduled_minute: dateParts.minute,
+            scheduled_period: dateParts.period,
             room: schedule.room ?? "",
             status: STATUS_ACTIONS.includes(schedule.status) ? schedule.status : "scheduled",
             rubric_template_id: schedule.rubric_template_id ?? "",
@@ -656,13 +861,13 @@ export default function AdminDefenseScheduleDetailsPage() {
 
         const groupId = editForm.group_id.trim()
         if (!groupId) {
-            toast.error("Please select or enter a thesis group.")
+            toast.error("Please select a thesis group.")
             return
         }
 
-        const scheduledAtIso = fromDateTimeLocalValue(editForm.scheduled_at)
+        const scheduledAtIso = buildScheduledAtIso(editForm)
         if (!scheduledAtIso) {
-            toast.error("Please provide a valid date and time.")
+            toast.error("Please select a valid schedule date and time.")
             return
         }
 
@@ -797,9 +1002,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                                 <p className="text-xs uppercase tracking-wide text-muted-foreground">
                                     Group
                                 </p>
-                                <p className="mt-1 font-medium">
-                                    {schedule.group_title || schedule.group_id || "Unassigned Group"}
-                                </p>
+                                <p className="mt-1 font-medium">{resolvedGroupTitle}</p>
                                 {schedule.group_id ? (
                                     <p className="mt-1 text-sm text-muted-foreground">{schedule.group_id}</p>
                                 ) : null}
@@ -819,16 +1022,19 @@ export default function AdminDefenseScheduleDetailsPage() {
                                 <p className="text-xs uppercase tracking-wide text-muted-foreground">
                                     Rubric Template
                                 </p>
-                                <p className="mt-1 font-medium">
-                                    {schedule.rubric_template_name || schedule.rubric_template_id || "Not set"}
-                                </p>
+                                <p className="mt-1 font-medium">{resolvedRubricName}</p>
                             </div>
 
                             <div className="rounded-lg border bg-card p-4">
                                 <p className="text-xs uppercase tracking-wide text-muted-foreground">
                                     Created By
                                 </p>
-                                <p className="mt-1 font-medium">{schedule.created_by || "Unknown"}</p>
+                                <p className="mt-1 font-medium">{resolvedCreatedBy}</p>
+                                {resolvedCreatedBySubline ? (
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                        {resolvedCreatedBySubline}
+                                    </p>
+                                ) : null}
                                 <p className="mt-1 text-sm text-muted-foreground">
                                     Created: {formatDateTime(schedule.created_at)}
                                 </p>
@@ -906,7 +1112,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                     setEditOpen(open)
                 }}
             >
-                <DialogContent className="sm:max-w-xl">
+                <DialogContent className="sm:max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>Edit Defense Schedule</DialogTitle>
                         <DialogDescription>
@@ -924,13 +1130,15 @@ export default function AdminDefenseScheduleDetailsPage() {
                                         setEditForm((prev) => ({ ...prev, group_id: value }))
                                     }
                                 >
-                                    <SelectTrigger id="edit_group_id">
+                                    <SelectTrigger id="edit_group_id" className="w-full [&>span]:truncate">
                                         <SelectValue placeholder={metaLoading ? "Loading groups..." : "Select a group"} />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {groupSelectOptions.map((group) => (
-                                            <SelectItem key={group.id} value={group.id}>
-                                                {group.title}
+                                            <SelectItem key={group.id} value={group.id} textValue={group.title}>
+                                                <span className="block max-w-130 truncate" title={group.title}>
+                                                    {group.title}
+                                                </span>
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
@@ -948,22 +1156,103 @@ export default function AdminDefenseScheduleDetailsPage() {
                         </div>
 
                         <div className="grid gap-2">
-                            <Label htmlFor="edit_scheduled_at">Date &amp; Time</Label>
-                            <Input
-                                id="edit_scheduled_at"
-                                type="datetime-local"
-                                value={editForm.scheduled_at}
-                                onChange={(e) =>
-                                    setEditForm((prev) => ({ ...prev, scheduled_at: e.target.value }))
-                                }
-                            />
+                            <Label>Schedule Date</Label>
+                            <Popover>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className={[
+                                            "w-full justify-start text-left font-normal",
+                                            !editForm.scheduled_date ? "text-muted-foreground" : "",
+                                        ].join(" ")}
+                                    >
+                                        <CalendarIcon className="mr-2 h-4 w-4" />
+                                        {editForm.scheduled_date
+                                            ? formatCalendarDate(editForm.scheduled_date)
+                                            : "Pick a date"}
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-auto p-0" align="start">
+                                    <Calendar
+                                        mode="single"
+                                        selected={editForm.scheduled_date}
+                                        onSelect={(date) =>
+                                            setEditForm((prev) => ({
+                                                ...prev,
+                                                scheduled_date: date ?? undefined,
+                                            }))
+                                        }
+                                        initialFocus
+                                    />
+                                </PopoverContent>
+                            </Popover>
+                        </div>
+
+                        <div className="grid gap-2">
+                            <Label>Schedule Time</Label>
+                            <div className="grid grid-cols-3 gap-2">
+                                <Select
+                                    value={editForm.scheduled_hour}
+                                    onValueChange={(value) =>
+                                        setEditForm((prev) => ({ ...prev, scheduled_hour: value }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="Hour" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {HOUR_OPTIONS.map((hour) => (
+                                            <SelectItem key={hour} value={hour}>
+                                                {hour}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                <Select
+                                    value={editForm.scheduled_minute}
+                                    onValueChange={(value) =>
+                                        setEditForm((prev) => ({ ...prev, scheduled_minute: value }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="Minute" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {MINUTE_OPTIONS.map((minute) => (
+                                            <SelectItem key={minute} value={minute}>
+                                                {minute}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                <Select
+                                    value={editForm.scheduled_period}
+                                    onValueChange={(value) =>
+                                        setEditForm((prev) => ({
+                                            ...prev,
+                                            scheduled_period: value as Meridiem,
+                                        }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="AM/PM" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="AM">AM</SelectItem>
+                                        <SelectItem value="PM">PM</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
                         </div>
 
                         <div className="grid gap-2">
                             <Label htmlFor="edit_room">Room</Label>
                             <Input
                                 id="edit_room"
-                                placeholder="e.g. AVR 1 or TBA"
+                                placeholder="e.g. CCS Faculty Office or AVR 1"
                                 value={editForm.room}
                                 onChange={(e) =>
                                     setEditForm((prev) => ({ ...prev, room: e.target.value }))
@@ -980,7 +1269,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                                         setEditForm((prev) => ({ ...prev, status: value as DefenseScheduleStatus }))
                                     }
                                 >
-                                    <SelectTrigger id="edit_status">
+                                    <SelectTrigger id="edit_status" className="w-full [&>span]:truncate">
                                         <SelectValue placeholder="Select status" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -1005,14 +1294,16 @@ export default function AdminDefenseScheduleDetailsPage() {
                                             }))
                                         }
                                     >
-                                        <SelectTrigger id="edit_rubric_template_id">
+                                        <SelectTrigger id="edit_rubric_template_id" className="w-full [&>span]:truncate">
                                             <SelectValue placeholder={metaLoading ? "Loading rubrics..." : "Select rubric"} />
                                         </SelectTrigger>
                                         <SelectContent>
                                             <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
                                             {rubricSelectOptions.map((rubric) => (
-                                                <SelectItem key={rubric.id} value={rubric.id}>
-                                                    {rubric.name}
+                                                <SelectItem key={rubric.id} value={rubric.id} textValue={rubric.name}>
+                                                    <span className="block max-w-130 truncate" title={rubric.name}>
+                                                        {rubric.name}
+                                                    </span>
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>

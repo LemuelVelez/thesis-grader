@@ -45,6 +45,13 @@ export interface UpsertStudentProfileResult {
     roleUpdated: boolean;
 }
 
+export interface AdminDefenseScheduleView extends DefenseScheduleRow {
+    group_title: string | null;
+    rubric_template_name: string | null;
+    created_by_name: string | null;
+    created_by_email: string | null;
+}
+
 export class AdminController {
     constructor(private readonly services: Services) { }
 
@@ -60,6 +67,13 @@ export class AdminController {
 
     async createDefenseSchedule(input: DefenseScheduleInsert): Promise<DefenseScheduleRow> {
         return this.services.defense_schedules.create(input);
+    }
+
+    async createDefenseScheduleDetailed(
+        input: DefenseScheduleInsert,
+    ): Promise<AdminDefenseScheduleView> {
+        const created = await this.createDefenseSchedule(input);
+        return this.enrichDefenseSchedule(created);
     }
 
     /* ---------------------------------- READ --------------------------------- */
@@ -82,16 +96,45 @@ export class AdminController {
         return this.services.defense_schedules.findById(id);
     }
 
+    async getDefenseScheduleByIdDetailed(
+        id: UUID,
+    ): Promise<AdminDefenseScheduleView | null> {
+        const row = await this.getDefenseScheduleById(id);
+        if (!row) return null;
+        return this.enrichDefenseSchedule(row);
+    }
+
     async getDefenseSchedules(query: ListQuery<DefenseScheduleRow> = {}): Promise<DefenseScheduleRow[]> {
         return this.services.defense_schedules.findMany(query);
+    }
+
+    async getDefenseSchedulesDetailed(
+        query: ListQuery<DefenseScheduleRow> = {},
+    ): Promise<AdminDefenseScheduleView[]> {
+        const rows = await this.getDefenseSchedules(query);
+        return Promise.all(rows.map((row) => this.enrichDefenseSchedule(row)));
     }
 
     async getDefenseSchedulesByGroup(groupId: UUID): Promise<DefenseScheduleRow[]> {
         return this.services.defense_schedules.listByGroup(groupId);
     }
 
+    async getDefenseSchedulesByGroupDetailed(
+        groupId: UUID,
+    ): Promise<AdminDefenseScheduleView[]> {
+        const rows = await this.getDefenseSchedulesByGroup(groupId);
+        return Promise.all(rows.map((row) => this.enrichDefenseSchedule(row)));
+    }
+
     async getDefenseSchedulesByPanelist(panelistId: UUID): Promise<DefenseScheduleRow[]> {
         return this.services.defense_schedules.listByPanelist(panelistId);
+    }
+
+    async getDefenseSchedulesByPanelistDetailed(
+        panelistId: UUID,
+    ): Promise<AdminDefenseScheduleView[]> {
+        const rows = await this.getDefenseSchedulesByPanelist(panelistId);
+        return Promise.all(rows.map((row) => this.enrichDefenseSchedule(row)));
     }
 
     /* --------------------------------- UPDATE -------------------------------- */
@@ -125,6 +168,15 @@ export class AdminController {
         return this.services.defense_schedules.updateOne({ id }, cleanPatch);
     }
 
+    async updateDefenseScheduleDetailed(
+        id: UUID,
+        patch: DefenseSchedulePatch,
+    ): Promise<AdminDefenseScheduleView | null> {
+        const updated = await this.updateDefenseSchedule(id, patch);
+        if (!updated) return null;
+        return this.enrichDefenseSchedule(updated);
+    }
+
     async setDefenseScheduleStatus(
         id: UUID,
         status: DefenseScheduleRow['status'],
@@ -133,6 +185,15 @@ export class AdminController {
         if (!existing) return null;
 
         return this.services.defense_schedules.setStatus(id, status);
+    }
+
+    async setDefenseScheduleStatusDetailed(
+        id: UUID,
+        status: DefenseScheduleRow['status'],
+    ): Promise<AdminDefenseScheduleView | null> {
+        const updated = await this.setDefenseScheduleStatus(id, status);
+        if (!updated) return null;
+        return this.enrichDefenseSchedule(updated);
     }
 
     async upsertStudentProfileForUser(
@@ -208,6 +269,74 @@ export class AdminController {
         const existing = await this.services.defense_schedules.findById(id);
         if (!existing) return 0;
         return this.services.defense_schedules.delete({ id });
+    }
+
+    /* ------------------------------- INTERNALS ------------------------------- */
+
+    private async resolveCreatedBy(
+        schedule: DefenseScheduleRow,
+    ): Promise<{ id: UUID | null; name: string | null; email: string | null }> {
+        let creatorId: UUID | null = schedule.created_by ?? null;
+
+        if (!creatorId) {
+            const candidateEntities = ['defense_schedules', 'defense_schedule'];
+
+            for (const entity of candidateEntities) {
+                try {
+                    const logs = await this.services.audit_logs.listByEntity(entity, schedule.id);
+                    const firstActorLog = logs
+                        .filter((log) => !!log.actor_id)
+                        .sort((a, b) => {
+                            const aTime = new Date(a.created_at).getTime();
+                            const bTime = new Date(b.created_at).getTime();
+                            return aTime - bTime;
+                        })[0];
+
+                    if (firstActorLog?.actor_id) {
+                        creatorId = firstActorLog.actor_id;
+                        break;
+                    }
+                } catch {
+                    // Best-effort fallback only.
+                }
+            }
+        }
+
+        if (!creatorId) {
+            return { id: null, name: null, email: null };
+        }
+
+        const creator = await this.services.users.findById(creatorId);
+        if (!creator) {
+            return { id: creatorId, name: null, email: null };
+        }
+
+        return {
+            id: creator.id,
+            name: creator.name ?? null,
+            email: creator.email ?? null,
+        };
+    }
+
+    private async enrichDefenseSchedule(
+        schedule: DefenseScheduleRow,
+    ): Promise<AdminDefenseScheduleView> {
+        const [group, rubricTemplate, creator] = await Promise.all([
+            this.services.thesis_groups.findById(schedule.group_id),
+            schedule.rubric_template_id
+                ? this.services.rubric_templates.findById(schedule.rubric_template_id)
+                : Promise.resolve(null),
+            this.resolveCreatedBy(schedule),
+        ]);
+
+        return {
+            ...schedule,
+            created_by: creator.id ?? schedule.created_by,
+            group_title: group?.title ?? null,
+            rubric_template_name: rubricTemplate?.name ?? null,
+            created_by_name: creator.name ?? null,
+            created_by_email: creator.email ?? null,
+        };
     }
 }
 
