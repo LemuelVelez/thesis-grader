@@ -45,6 +45,7 @@ import {
     type EvaluationPatch,
     type EvaluationRow,
     type EvaluationStatus,
+    type GroupMemberRow,
     type NotificationType,
     type RubricTemplateInsert,
     type RubricTemplatePatch,
@@ -494,6 +495,93 @@ function parseOptionalIsoDate(value: unknown): string | undefined {
     return undefined;
 }
 
+function toNonEmptyString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseGroupMemberStudentIdFromBody(
+    body: Record<string, unknown>,
+): string | null {
+    const candidates: unknown[] = [
+        body.student_id,
+        body.studentId,
+        body.student_user_id,
+        body.studentUserId,
+        body.user_id,
+        body.userId,
+        body.member_id,
+        body.memberId,
+        body.id,
+    ];
+
+    for (const candidate of candidates) {
+        const parsed = toNonEmptyString(candidate);
+        if (parsed) return parsed;
+    }
+
+    return null;
+}
+
+function extractUuidFromText(value: string): string | null {
+    const matches = value.match(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi,
+    );
+    if (!matches || matches.length === 0) return null;
+    return matches[matches.length - 1] ?? null;
+}
+
+function findGroupMemberByIdentifier(
+    members: GroupMemberRow[],
+    rawIdentifier: string,
+): GroupMemberRow | null {
+    let normalized = rawIdentifier.trim();
+
+    try {
+        normalized = decodeURIComponent(rawIdentifier).trim();
+    } catch {
+        // keep raw
+    }
+
+    if (!normalized) return null;
+
+    const exact = members.find((member) => member.student_id === normalized);
+    if (exact) return exact;
+
+    const uuid = extractUuidFromText(normalized);
+    if (!uuid) return null;
+
+    const lower = uuid.toLowerCase();
+    return (
+        members.find((member) => member.student_id.toLowerCase() === lower) ?? null
+    );
+}
+
+async function buildGroupMemberResponse(
+    member: GroupMemberRow,
+    services: DatabaseServices,
+): Promise<Record<string, unknown>> {
+    const [user, studentProfile] = await Promise.all([
+        services.users.findById(member.student_id),
+        services.students.findByUserId(member.student_id),
+    ]);
+
+    return {
+        id: member.student_id,
+        member_id: member.student_id,
+        group_id: member.group_id,
+        student_id: member.student_id,
+        user_id: member.student_id,
+        linked_user_id: member.student_id,
+        name: user?.name ?? null,
+        email: user?.email ?? null,
+        status: user?.status ?? null,
+        program: studentProfile?.program ?? null,
+        section: studentProfile?.section ?? null,
+    };
+}
+
 async function dispatchAuthRequest(
     req: NextRequest,
     action: AuthAction | null,
@@ -638,6 +726,229 @@ async function dispatchThesisGroupsRequest(
         }
 
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    // /api/*/thesis-groups/:id/members[/:memberId]
+    if (tail[1] === 'members') {
+        const group = await controller.findById(id);
+        if (!group) return json404Entity('Thesis group');
+
+        const membersController = services.group_members;
+
+        if (tail.length === 2) {
+            if (method === 'GET') {
+                const rows = await membersController.listByGroup(id);
+                const items = await Promise.all(
+                    rows.map((row) => buildGroupMemberResponse(row, services)),
+                );
+                return json200({ items });
+            }
+
+            if (method === 'POST') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const studentId = parseGroupMemberStudentIdFromBody(body);
+                if (!studentId) {
+                    return json400('studentId/userId is required.');
+                }
+
+                if (!isUuidLike(studentId)) {
+                    return json400('studentId/userId must be a valid UUID.');
+                }
+
+                const studentUser = await services.users.findById(studentId);
+                if (!studentUser) return json404Entity('Student user');
+                if (studentUser.role !== 'student') {
+                    return json400('Resolved user must have role "student".');
+                }
+
+                const existingRows = await membersController.listByGroup(id);
+                const existing = existingRows.find(
+                    (row) => row.student_id === studentId,
+                );
+                if (existing) {
+                    const item = await buildGroupMemberResponse(existing, services);
+                    return json200({ item });
+                }
+
+                const created = await membersController.create({
+                    group_id: id,
+                    student_id: studentId,
+                });
+
+                const item = await buildGroupMemberResponse(created, services);
+                return json201({ item });
+            }
+
+            return json405(['GET', 'POST', 'OPTIONS']);
+        }
+
+        const rawMemberIdentifier = tail[2];
+        if (!rawMemberIdentifier) return json404Api();
+
+        const groupMembers = await membersController.listByGroup(id);
+        const existingMember = findGroupMemberByIdentifier(
+            groupMembers,
+            rawMemberIdentifier,
+        );
+        if (!existingMember) return json404Entity('Thesis group member');
+
+        if (tail.length === 3) {
+            if (method === 'GET') {
+                const item = await buildGroupMemberResponse(existingMember, services);
+                return json200({ item });
+            }
+
+            if (method === 'PATCH' || method === 'PUT') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const nextStudentId = parseGroupMemberStudentIdFromBody(body);
+                if (!nextStudentId) {
+                    return json400('studentId/userId is required.');
+                }
+
+                if (!isUuidLike(nextStudentId)) {
+                    return json400('studentId/userId must be a valid UUID.');
+                }
+
+                const nextStudentUser = await services.users.findById(nextStudentId);
+                if (!nextStudentUser) return json404Entity('Student user');
+                if (nextStudentUser.role !== 'student') {
+                    return json400('Resolved user must have role "student".');
+                }
+
+                if (nextStudentId === existingMember.student_id) {
+                    const item = await buildGroupMemberResponse(existingMember, services);
+                    return json200({ item });
+                }
+
+                const duplicate = groupMembers.some(
+                    (row) => row.student_id === nextStudentId,
+                );
+                if (duplicate) {
+                    return json400(
+                        'Selected student is already a member of this thesis group.',
+                    );
+                }
+
+                await membersController.removeMember(id, existingMember.student_id);
+
+                const updated = await membersController.create({
+                    group_id: id,
+                    student_id: nextStudentId,
+                });
+
+                const item = await buildGroupMemberResponse(updated, services);
+                return json200({ item });
+            }
+
+            if (method === 'DELETE') {
+                const deleted = await membersController.removeMember(
+                    id,
+                    existingMember.student_id,
+                );
+                if (deleted === 0) return json404Entity('Thesis group member');
+                return json200({ deleted });
+            }
+
+            return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+        }
+
+        return json404Api();
+    }
+
+    // /api/*/thesis-groups/:id/schedules[/:scheduleId[/status]]
+    if (tail[1] === 'schedules' || tail[1] === 'defense-schedules') {
+        const group = await controller.findById(id);
+        if (!group) return json404Entity('Thesis group');
+
+        const schedulesController = services.defense_schedules;
+
+        if (tail.length === 2) {
+            if (method === 'GET') {
+                const items = await schedulesController.listByGroup(id);
+                return json200({ items });
+            }
+
+            if (method === 'POST') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const payload: DefenseScheduleInsert = {
+                    ...(body as DefenseScheduleInsert),
+                    group_id: id,
+                };
+
+                const item = await schedulesController.create(payload);
+                return json201({ item });
+            }
+
+            return json405(['GET', 'POST', 'OPTIONS']);
+        }
+
+        const scheduleId = tail[2];
+        if (!scheduleId || !isUuidLike(scheduleId)) return json404Api();
+
+        const existing = await schedulesController.findById(scheduleId);
+        if (!existing || existing.group_id !== id) {
+            return json404Entity('Defense schedule');
+        }
+
+        if (tail.length === 3) {
+            if (method === 'GET') {
+                return json200({ item: existing });
+            }
+
+            if (method === 'PATCH' || method === 'PUT') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const item = await schedulesController.updateOne(
+                    { id: scheduleId, group_id: id },
+                    body as DefenseSchedulePatch,
+                );
+                if (!item) return json404Entity('Defense schedule');
+                return json200({ item });
+            }
+
+            if (method === 'DELETE') {
+                const deleted = await schedulesController.delete({
+                    id: scheduleId,
+                    group_id: id,
+                });
+                if (deleted === 0) return json404Entity('Defense schedule');
+                return json200({ deleted });
+            }
+
+            return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+        }
+
+        if (tail.length === 4 && tail[3] === 'status') {
+            if (method !== 'PATCH' && method !== 'POST') {
+                return json405(['PATCH', 'POST', 'OPTIONS']);
+            }
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const status = body.status;
+            if (typeof status !== 'string' || status.trim().length === 0) {
+                return json400('status must be a non-empty string.');
+            }
+
+            const item = await schedulesController.setStatus(
+                scheduleId,
+                status.trim() as DefenseScheduleRow['status'],
+            );
+            if (!item || item.group_id !== id) {
+                return json404Entity('Defense schedule');
+            }
+            return json200({ item });
+        }
+
+        return json404Api();
     }
 
     return json404Api();
@@ -1818,7 +2129,15 @@ async function dispatchApiRequest(
     const method = req.method.toUpperCase();
     const slug = await resolveContextSlug(ctx);
     const segments = normalizeSegments(slug);
-    const root = resolveApiRoot(segments[0]);
+
+    // Legacy alias support:
+    // /api/thesis/groups/* -> /api/thesis-groups/*
+    const isThesisGroupsAlias =
+        segments[0] === 'thesis' && segments[1] === 'groups';
+
+    const root = isThesisGroupsAlias
+        ? ('thesis-groups' as ApiRoot)
+        : resolveApiRoot(segments[0]);
 
     if (!root) {
         return json404Api();
@@ -1843,6 +2162,7 @@ async function dispatchApiRequest(
                 defenseSchedules: '/api/defense-schedules/*',
                 rubricTemplates: '/api/rubric-templates/*',
                 thesisGroups: '/api/thesis-groups/*',
+                thesisLegacyGroups: '/api/thesis/groups/*',
                 auditLogs: '/api/audit-logs/*',
             },
         });
@@ -1857,7 +2177,7 @@ async function dispatchApiRequest(
     const guardDenied = await enforceApiGuard(req, root, services, options.guard);
     if (guardDenied) return guardDenied;
 
-    const tail = segments.slice(1);
+    const tail = isThesisGroupsAlias ? segments.slice(2) : segments.slice(1);
 
     switch (root) {
         case 'admin':
