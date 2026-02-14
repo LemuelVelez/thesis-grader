@@ -180,6 +180,25 @@ function toNullableTrimmed(value: string): string | null {
     return trimmed.length > 0 ? trimmed : null
 }
 
+function isUuidLike(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value.trim()
+    )
+}
+
+function generateUuid(): string {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID()
+    }
+
+    const template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+    return template.replace(/[xy]/g, (char) => {
+        const rand = Math.floor(Math.random() * 16)
+        const value = char === "x" ? rand : (rand & 0x3) | 0x8
+        return value.toString(16)
+    })
+}
+
 function unwrapItems(payload: unknown): unknown[] {
     if (Array.isArray(payload)) return payload
 
@@ -306,7 +325,11 @@ function normalizeMember(raw: unknown): GroupMemberItem | null {
         rec.user_id ?? rec.userId ?? rec.student_user_id ?? rec.studentUserId
     )
     const studentId = toStringOrNull(
-        rec.student_id ?? rec.studentId ?? rec.student_no ?? rec.studentNo ?? linkedUserId
+        rec.student_no ??
+        rec.studentNo ??
+        rec.student_id ??
+        rec.studentId ??
+        linkedUserId
     )
 
     const id = memberId ?? linkedUserId ?? studentId
@@ -991,6 +1014,7 @@ export default function AdminThesisGroupDetailsPage() {
 
             try {
                 let payload: Record<string, unknown> = {}
+                let manualUuidWasGenerated = false
 
                 if (memberForm.source === MEMBER_SOURCE_STUDENT) {
                     const selectedId =
@@ -1035,23 +1059,34 @@ export default function AdminThesisGroupDetailsPage() {
                             null,
                     }
                 } else {
-                    const manualStudentId = toNullableTrimmed(memberForm.manualStudentId)
+                    const manualStudentIdInput = toNullableTrimmed(memberForm.manualStudentId)
                     const manualName = toNullableTrimmed(memberForm.name)
                     const manualProgram = toNullableTrimmed(memberForm.program)
                     const manualSection = toNullableTrimmed(memberForm.section)
 
-                    if (!manualStudentId && !manualName) {
+                    if (!manualStudentIdInput && !manualName) {
                         throw new Error("Provide at least Student ID or Student Name for manual entry.")
                     }
 
+                    const manualUuid =
+                        manualStudentIdInput && isUuidLike(manualStudentIdInput)
+                            ? manualStudentIdInput
+                            : generateUuid()
+
+                    manualUuidWasGenerated = !manualStudentIdInput || !isUuidLike(manualStudentIdInput)
+
                     payload = {
-                        student_id: manualStudentId,
-                        studentId: manualStudentId,
+                        student_id: manualUuid,
+                        studentId: manualUuid,
+                        ...(manualStudentIdInput
+                            ? {
+                                student_no: manualStudentIdInput,
+                                studentNo: manualStudentIdInput,
+                            }
+                            : {}),
                         name: manualName,
                         program: manualProgram,
                         section: manualSection,
-                        user_id: null,
-                        userId: null,
                     }
                 }
 
@@ -1070,7 +1105,14 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    toast.success("Member added successfully.")
+                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualUuidWasGenerated) {
+                        toast.success("Member added successfully.", {
+                            description:
+                                "Manual entry saved with an auto-generated UUID for API compatibility.",
+                        })
+                    } else {
+                        toast.success("Member added successfully.")
+                    }
                 } else {
                     if (!memberTarget) throw new Error("No member selected for editing.")
 
@@ -1103,7 +1145,14 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    toast.success("Member updated successfully.")
+                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualUuidWasGenerated) {
+                        toast.success("Member updated successfully.", {
+                            description:
+                                "Manual entry was normalized with an auto-generated UUID for API compatibility.",
+                        })
+                    } else {
+                        toast.success("Member updated successfully.")
+                    }
                 }
 
                 setMemberDialogOpen(false)
@@ -1168,8 +1217,8 @@ export default function AdminThesisGroupDetailsPage() {
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
         memberDialogMode === "create"
-            ? "Add a member by selecting an existing Student user. If there are no available students, use manual entry."
-            : "Update member details. Student-user linked members can be reassigned if available."
+            ? "Add a member by selecting an existing Student user. Manual entries automatically receive a system UUID when needed."
+            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe."
 
     return (
         <DashboardLayout
@@ -1519,9 +1568,16 @@ export default function AdminThesisGroupDetailsPage() {
                                     </>
                                 ) : (
                                     <>
+                                        <Alert>
+                                            <AlertDescription>
+                                                You can enter any Student ID format. The system will auto-generate a valid UUID in
+                                                the background when needed.
+                                            </AlertDescription>
+                                        </Alert>
+
                                         <div className="grid gap-4 md:grid-cols-2">
                                             <div className="space-y-2">
-                                                <Label htmlFor="manual-student-id">Student ID (Optional)</Label>
+                                                <Label htmlFor="manual-student-id">Student ID / School ID (Optional)</Label>
                                                 <Input
                                                     id="manual-student-id"
                                                     value={memberForm.manualStudentId}
@@ -1588,7 +1644,7 @@ export default function AdminThesisGroupDetailsPage() {
                                         </div>
 
                                         <p className="text-xs text-muted-foreground">
-                                            For manual entry, provide at least Student ID or Student Name.
+                                            For manual entry, provide at least Student ID or Student Name. UUID mapping is handled automatically.
                                         </p>
                                     </>
                                 )}
