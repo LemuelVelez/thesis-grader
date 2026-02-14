@@ -1,51 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import {
-    AdminController,
-} from '../controllers/AdminController';
-import {
-    createAuthController,
-    type AuthControllerOptions,
-} from '../controllers/AuthController';
-import { createMiddlewareController } from '../controllers/Middleware';
-import { NotificationController } from '../controllers/NotificationController';
-import { PanelistController } from '../controllers/PanelistController';
-import { StaffController } from '../controllers/StaffController';
-import { StudentController } from '../controllers/StudentController';
-import { UserController } from '../controllers/UserController';
-import {
-    NOTIFICATION_TYPES,
-    USER_STATUSES,
-    type AuditLogInsert,
-    type AuditLogPatch,
-    type AuditLogRow,
-    type DefenseScheduleInsert,
-    type DefenseSchedulePatch,
-    type DefenseScheduleRow,
-    type EvaluationInsert,
-    type EvaluationPatch,
-    type EvaluationRow,
-    type GroupMemberRow,
-    type RubricTemplateInsert,
-    type RubricTemplatePatch,
-    type RubricTemplateRow,
-    type SchedulePanelistInsert,
-    type SchedulePanelistRow,
-    type ThesisGroupInsert,
-    type ThesisGroupPatch,
-    type ThesisGroupRow,
-    type UserRow,
-    type UUID,
-} from '../models/Model';
+import { AdminController } from '../controllers/AdminController';
+import { NOTIFICATION_TYPES, USER_STATUSES, type AuditLogInsert, type AuditLogPatch, type AuditLogRow, type DefenseScheduleInsert, type DefenseSchedulePatch, type DefenseScheduleRow, type GroupMemberRow, type RubricTemplateInsert, type RubricTemplatePatch, type RubricTemplateRow, type SchedulePanelistInsert, type SchedulePanelistRow, type ThesisGroupInsert, type ThesisGroupPatch, type ThesisGroupRow, type UserRow, type UUID } from '../models/Model';
 import type { DatabaseServices } from '../services/Services';
-
-import type {
-    ApiGuardOptions,
-    ApiRoot,
-    AuthAction,
-    AuthRouteContext,
-    CreateApiRouteHandlersOptions,
-} from './RouteTypes';
 import {
     buildGroupMemberResponse,
     findGroupMemberByIdentifierWithAliasFallback,
@@ -59,28 +16,20 @@ import {
     json201,
     json400,
     json404Api,
-    json404Auth,
     json404Entity,
     json405,
-    normalizeSegments,
     omitWhere,
     parseBoolean,
     parseGroupMemberStudentIdFromBody,
     parseListQuery,
     parseOptionalIsoDate,
     parsePositiveInt,
-    parseReadAt,
     parseStudentProfileInput,
     readJsonRecord,
-    resolveApiRoot,
-    resolveAuthAction,
     resolveCanonicalUserForMember,
-    resolveContextSlug,
     toErrorMessage,
-    toEvaluationStatus,
-    toNotificationType,
     toUserStatus,
-} from './Route.utils';
+} from './Route';
 
 interface DispatchThesisGroupsOptions {
     autoCreateMissingStudentProfile?: boolean;
@@ -236,9 +185,7 @@ async function listSchedulePanelistsBySchedule(
 
     if (typeof service.findMany === 'function') {
         const rows = await service.findMany({
-            where: {
-                schedule_id: scheduleId,
-            },
+            where: { schedule_id: scheduleId },
         });
         return Array.isArray(rows) ? rows : [];
     }
@@ -256,9 +203,7 @@ async function listSchedulePanelistsByStaff(
 
     if (typeof service.findMany === 'function') {
         const rows = await service.findMany({
-            where: {
-                staff_id: staffId,
-            },
+            where: { staff_id: staffId },
         });
         return Array.isArray(rows) ? rows : [];
     }
@@ -295,7 +240,7 @@ async function deleteSchedulePanelist(
     throw new Error('Schedule panelists service does not support delete/remove.');
 }
 
-async function dispatchSchedulePanelistsRequest(
+export async function dispatchSchedulePanelistsRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -843,76 +788,7 @@ async function dispatchSchedulePanelistsRequest(
     return json404Api();
 }
 
-async function dispatchAuthRequest(
-    req: NextRequest,
-    action: AuthAction | null,
-    servicesResolver: () => Promise<DatabaseServices>,
-    authOptions?: AuthControllerOptions,
-): Promise<Response> {
-    if (!action) return json404Auth();
-
-    const method = req.method.toUpperCase();
-
-    // Root metadata endpoint
-    if (action === 'root') {
-        if (method !== 'GET') {
-            return json405(['GET', 'OPTIONS']);
-        }
-
-        return json200({
-            service: 'auth',
-            routes: {
-                register: 'POST /api/auth/register',
-                login: 'POST /api/auth/login',
-                logout: 'POST|DELETE /api/auth/logout',
-                me: 'GET /api/auth/me',
-                refresh: 'POST /api/auth/refresh',
-                forgotPassword: 'POST /api/auth/forgot-password',
-                resetPassword: 'POST /api/auth/reset-password',
-            },
-        });
-    }
-
-    const services = await servicesResolver();
-    const auth = createAuthController(services, authOptions);
-
-    switch (action) {
-        case 'register':
-            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-            return auth.register(req);
-
-        case 'login':
-            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-            return auth.login(req);
-
-        case 'logout':
-            if (method !== 'POST' && method !== 'DELETE') {
-                return json405(['POST', 'DELETE', 'OPTIONS']);
-            }
-            return auth.logout(req);
-
-        case 'me':
-            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-            return auth.me(req);
-
-        case 'refresh':
-            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-            return auth.refresh(req);
-
-        case 'forgot-password':
-            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-            return auth.forgotPassword(req);
-
-        case 'reset-password':
-            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-            return auth.resetPassword(req);
-
-        default:
-            return json404Auth();
-    }
-}
-
-async function dispatchThesisGroupsRequest(
+export async function dispatchThesisGroupsRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -990,8 +866,6 @@ async function dispatchThesisGroupsRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
-    // /api/*/thesis-groups/:id/members[/:memberId]
-    // Supports aliases: members, member, group-members, group-member
     if (isThesisGroupMembersSegment(tail[1])) {
         const group = await controller.findById(id as UUID);
         if (!group) return json404Entity('Thesis group');
@@ -1023,7 +897,6 @@ async function dispatchThesisGroupsRequest(
                 const requiresLinkedStudentUser =
                     hasExplicitLinkedStudentUserReference(body);
 
-                // Canonicalize alias UUID -> users.id before any membership operations.
                 const resolvedStudent = await resolveCanonicalUserForMember(
                     services,
                     incomingStudentId,
@@ -1041,7 +914,6 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                // Pre-check student profile to avoid DB-level FK explosions and opaque 500s.
                 let studentProfile = studentUser
                     ? await services.students.findByUserId(canonicalStudentId as UUID).catch(() => null)
                     : null;
@@ -1177,7 +1049,6 @@ async function dispatchThesisGroupsRequest(
                 const requiresLinkedStudentUser =
                     hasExplicitLinkedStudentUserReference(body);
 
-                // Canonicalize alias UUID -> users.id before replacement create.
                 const resolvedNextStudent = await resolveCanonicalUserForMember(
                     services,
                     incomingNextStudentId,
@@ -1195,7 +1066,6 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                // Pre-check profile before attempting replacement.
                 let nextStudentProfile = nextStudentUser
                     ? await services.students.findByUserId(nextCanonicalStudentId as UUID).catch(() => null)
                     : null;
@@ -1251,8 +1121,6 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                // Safer order: create replacement first, remove old member second.
-                // This prevents accidental data loss if creation fails.
                 let replacement: GroupMemberRow;
                 try {
                     replacement = await membersController.create({
@@ -1299,7 +1167,6 @@ async function dispatchThesisGroupsRequest(
                 );
 
                 if (removed === 0) {
-                    // Roll back replacement if old member unexpectedly vanished.
                     await membersController.removeMember(
                         id as UUID,
                         replacement.student_id as UUID,
@@ -1421,7 +1288,7 @@ async function dispatchThesisGroupsRequest(
     return json404Api();
 }
 
-async function dispatchDefenseSchedulesRequest(
+export async function dispatchDefenseSchedulesRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -1472,7 +1339,6 @@ async function dispatchDefenseSchedulesRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
-    // /api/*/defense-schedules/group/:groupId
     if (tail.length === 2 && tail[0] === 'group') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
@@ -1485,7 +1351,6 @@ async function dispatchDefenseSchedulesRequest(
         return json200({ items });
     }
 
-    // /api/*/defense-schedules/panelist/:panelistId
     if (tail.length === 2 && (tail[0] === 'panelist' || tail[0] === 'staff')) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
@@ -1526,8 +1391,6 @@ async function dispatchDefenseSchedulesRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
-    // /api/*/defense-schedules/:id/panelists
-    // /api/*/defense-schedules/:id/schedule-panelists
     if (tail.length >= 2 && isDefenseSchedulePanelistsSegment(tail[1])) {
         const existing = await controller.findById(id as UUID);
         if (!existing) return json404Entity('Defense schedule');
@@ -1561,7 +1424,7 @@ async function dispatchDefenseSchedulesRequest(
     return json404Api();
 }
 
-async function dispatchRubricTemplatesRequest(
+export async function dispatchRubricTemplatesRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -1599,14 +1462,12 @@ async function dispatchRubricTemplatesRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
-    // /api/*/rubric-templates/active
     if (tail.length === 1 && tail[0] === 'active') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const items = await controller.listActive();
         return json200({ items });
     }
 
-    // /api/*/rubric-templates/active/latest
     if (tail.length === 2 && tail[0] === 'active' && tail[1] === 'latest') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const item = await controller.getActiveLatest();
@@ -1665,7 +1526,7 @@ async function dispatchRubricTemplatesRequest(
     return json404Api();
 }
 
-async function dispatchAuditLogsRequest(
+export async function dispatchAuditLogsRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -1723,7 +1584,6 @@ async function dispatchAuditLogsRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
-    // /api/*/audit-logs/actor/:actorId
     if (tail.length === 2 && tail[0] === 'actor') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const actorId = tail[1];
@@ -1735,7 +1595,6 @@ async function dispatchAuditLogsRequest(
         return json200({ items });
     }
 
-    // /api/*/audit-logs/entity/:entity[/entityId]
     if (tail.length >= 2 && tail[0] === 'entity') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const entity = tail[1];
@@ -1784,7 +1643,7 @@ async function dispatchAuditLogsRequest(
     return json404Api();
 }
 
-async function dispatchAdminRequest(
+export async function dispatchAdminRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
@@ -1831,7 +1690,6 @@ async function dispatchAdminRequest(
         );
     }
 
-    // Namespaced admin resources
     if (tail[0] === 'defense-schedules' || tail[0] === 'defense-schedule') {
         return dispatchDefenseSchedulesRequest(req, tail.slice(1), services);
     }
@@ -1869,7 +1727,6 @@ async function dispatchAdminRequest(
         });
     }
 
-    // /api/admin/rankings
     if (tail.length === 1 && tail[0] === 'rankings') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
@@ -1878,7 +1735,6 @@ async function dispatchAdminRequest(
         return json200({ items });
     }
 
-    // /api/admin/rankings/:groupId
     if (tail.length === 2 && tail[0] === 'rankings') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
@@ -1942,818 +1798,4 @@ async function dispatchAdminRequest(
     }
 
     return json404Api();
-}
-
-async function dispatchStudentRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = new StudentController(services);
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            const query = parseListQuery<UserRow>(req);
-            const items = await controller.getAll(omitWhere(query));
-            return json200({ items });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(
-                body as Parameters<StudentController['create']>[0],
-            );
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    const id = tail[0];
-    if (!id || !isUuidLike(id)) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.getById(id as UUID);
-            if (!item) return json404Entity('Student');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<StudentController['update']>[1],
-            );
-            if (!item) return json404Entity('Student');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete(id as UUID);
-            if (deleted === 0) return json404Entity('Student');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const status = toUserStatus(body.status);
-        if (!status) {
-            return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
-        }
-
-        const item = await controller.setStatus(id as UUID, status);
-        if (!item) return json404Entity('Student');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function dispatchStaffRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = new StaffController(services);
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            const query = parseListQuery<UserRow>(req);
-            const items = await controller.getAll(omitWhere(query));
-            return json200({ items });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(
-                body as Parameters<StaffController['create']>[0],
-            );
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    const id = tail[0];
-    if (!id || !isUuidLike(id)) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.getById(id as UUID);
-            if (!item) return json404Entity('Staff');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<StaffController['update']>[1],
-            );
-            if (!item) return json404Entity('Staff');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete(id as UUID);
-            if (deleted === 0) return json404Entity('Staff');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const status = toUserStatus(body.status);
-        if (!status) {
-            return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
-        }
-
-        const item = await controller.setStatus(id as UUID, status);
-        if (!item) return json404Entity('Staff');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function dispatchPanelistRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = new PanelistController(services);
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            const query = parseListQuery<UserRow>(req);
-            const items = await controller.getAll(omitWhere(query));
-            return json200({ items });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(
-                body as Parameters<PanelistController['create']>[0],
-            );
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    const id = tail[0];
-    if (!id || !isUuidLike(id)) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.getById(id as UUID);
-            if (!item) return json404Entity('Panelist');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<PanelistController['update']>[1],
-            );
-            if (!item) return json404Entity('Panelist');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete(id as UUID);
-            if (deleted === 0) return json404Entity('Panelist');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const status = toUserStatus(body.status);
-        if (!status) {
-            return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
-        }
-
-        const item = await controller.setStatus(id as UUID, status);
-        if (!item) return json404Entity('Panelist');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function dispatchUsersRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = new UserController(services);
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            const query = parseListQuery<UserRow>(req);
-            const items = await controller.getAll(query);
-            return json200({ items });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(
-                body as Parameters<UserController['create']>[0],
-            );
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    const id = tail[0];
-    if (!id || !isUuidLike(id)) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.getById(id as UUID);
-            if (!item) return json404Entity('User');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<UserController['update']>[1],
-            );
-            if (!item) return json404Entity('User');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete(id as UUID);
-            if (deleted === 0) return json404Entity('User');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const status = toUserStatus(body.status);
-        if (!status) {
-            return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
-        }
-
-        const item = await controller.setStatus(id as UUID, status);
-        if (!item) return json404Entity('User');
-        return json200({ item });
-    }
-
-    if (tail.length === 2 && tail[1] === 'avatar') {
-        if (method !== 'PATCH' && method !== 'PUT' && method !== 'POST') {
-            return json405(['PATCH', 'PUT', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const value = body.avatarKey ?? body.avatar_key;
-        if (!(typeof value === 'string' || value === null)) {
-            return json400('avatarKey must be a string or null.');
-        }
-
-        const item = await controller.setAvatarKey(id as UUID, value);
-        if (!item) return json404Entity('User');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function dispatchNotificationsRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = new NotificationController(services);
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            return json200({
-                service: 'notifications',
-                routes: {
-                    create: 'POST /api/notifications',
-                    broadcast: 'POST /api/notifications/broadcast',
-                    getById: 'GET /api/notifications/:id',
-                    update: 'PATCH|PUT /api/notifications/:id',
-                    remove: 'DELETE /api/notifications/:id',
-                    markAsRead: 'PATCH|POST /api/notifications/:id/read',
-                    listByUser: 'GET /api/notifications/user/:userId',
-                    listUnread: 'GET /api/notifications/user/:userId/unread?limit=50',
-                    listByType:
-                        'GET /api/notifications/user/:userId/type/:type',
-                    markAllAsRead:
-                        'PATCH|POST /api/notifications/user/:userId/read-all',
-                },
-            });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(
-                body as Parameters<NotificationController['create']>[0],
-            );
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    // /api/notifications/broadcast
-    if (tail.length === 1 && tail[0] === 'broadcast') {
-        if (method !== 'POST') return json405(['POST', 'OPTIONS']);
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const userIdsRaw = body.userIds;
-        const payloadRaw = body.payload;
-
-        if (!Array.isArray(userIdsRaw) || userIdsRaw.length === 0) {
-            return json400('userIds must be a non-empty string array.');
-        }
-
-        const userIds = userIdsRaw
-            .filter((v): v is string => typeof v === 'string')
-            .map((v) => v.trim())
-            .filter((v) => v.length > 0);
-
-        if (userIds.length === 0) {
-            return json400('userIds must contain at least one valid user id.');
-        }
-
-        if (!isRecord(payloadRaw)) {
-            return json400('payload must be an object.');
-        }
-
-        const items = await controller.broadcast(
-            userIds as UUID[],
-            payloadRaw as Parameters<NotificationController['broadcast']>[1],
-        );
-        return json201({ items, count: items.length });
-    }
-
-    // /api/notifications/user/:userId[...]
-    if (tail[0] === 'user') {
-        const userId = tail[1];
-        if (!userId) return json400('userId is required.');
-
-        if (tail.length === 2) {
-            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
-            const query = parseListQuery<
-                Parameters<NotificationController['getAllByUser']>[1] extends infer Q
-                ? Q extends object
-                ? Q
-                : Record<string, never>
-                : Record<string, never>
-            >(req);
-
-            const items = await controller.getAllByUser(
-                userId as UUID,
-                omitWhere(query) as Parameters<
-                    NotificationController['getAllByUser']
-                >[1],
-            );
-            return json200({ items });
-        }
-
-        if (tail.length === 3 && tail[2] === 'unread') {
-            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
-            const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit')) ?? 50;
-            const items = await controller.getUnread(userId as UUID, limit);
-            return json200({ items });
-        }
-
-        if (tail.length === 3 && tail[2] === 'read-all') {
-            if (method !== 'PATCH' && method !== 'POST') {
-                return json405(['PATCH', 'POST', 'OPTIONS']);
-            }
-
-            const body = await readJsonRecord(req);
-            const readAt = body ? parseReadAt(body) : undefined;
-            const updated = await controller.markAllAsRead(userId as UUID, readAt);
-            return json200({ updated });
-        }
-
-        if (tail.length === 4 && tail[2] === 'type') {
-            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
-            const type = toNotificationType(tail[3]);
-            if (!type) {
-                return json400(
-                    `Invalid notification type. Allowed: ${NOTIFICATION_TYPES.join(', ')}`,
-                );
-            }
-
-            const query = parseListQuery<
-                Parameters<NotificationController['getByType']>[2] extends infer Q
-                ? Q extends object
-                ? Q
-                : Record<string, never>
-                : Record<string, never>
-            >(req);
-
-            const items = await controller.getByType(
-                userId as UUID,
-                type,
-                omitWhere(query) as Parameters<NotificationController['getByType']>[2],
-            );
-            return json200({ items });
-        }
-
-        return json404Api();
-    }
-
-    // /api/notifications/:id
-    const id = tail[0];
-    if (!id) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.getById(id as UUID);
-            if (!item) return json404Entity('Notification');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<NotificationController['update']>[1],
-            );
-            if (!item) return json404Entity('Notification');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete(id as UUID);
-            if (deleted === 0) return json404Entity('Notification');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'read') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        const readAt = body ? parseReadAt(body) : undefined;
-
-        const item = await controller.markAsRead(id as UUID, readAt);
-        if (!item) return json404Entity('Notification');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function dispatchEvaluationsRequest(
-    req: NextRequest,
-    tail: string[],
-    services: DatabaseServices,
-): Promise<Response> {
-    const controller = services.evaluations;
-    const method = req.method.toUpperCase();
-
-    if (tail.length === 0) {
-        if (method === 'GET') {
-            const query = parseListQuery<EvaluationRow>(req);
-            const items = await controller.findMany(query);
-            return json200({ items });
-        }
-
-        if (method === 'POST') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.create(body as EvaluationInsert);
-            return json201({ item });
-        }
-
-        return json405(['GET', 'POST', 'OPTIONS']);
-    }
-
-    // /api/evaluations/schedule/:scheduleId
-    if (tail.length === 2 && tail[0] === 'schedule') {
-        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
-        const scheduleId = tail[1];
-        if (!scheduleId) return json400('scheduleId is required.');
-
-        const items = await controller.listBySchedule(scheduleId as UUID);
-        return json200({ items });
-    }
-
-    // /api/evaluations/evaluator/:evaluatorId
-    if (tail.length === 2 && tail[0] === 'evaluator') {
-        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
-        const evaluatorId = tail[1];
-        if (!evaluatorId) return json400('evaluatorId is required.');
-
-        const items = await controller.listByEvaluator(evaluatorId as UUID);
-        return json200({ items });
-    }
-
-    const id = tail[0];
-    if (!id) return json404Api();
-
-    if (tail.length === 1) {
-        if (method === 'GET') {
-            const item = await controller.findById(id as UUID);
-            if (!item) return json404Entity('Evaluation');
-            return json200({ item });
-        }
-
-        if (method === 'PATCH' || method === 'PUT') {
-            const body = await readJsonRecord(req);
-            if (!body) return json400('Invalid JSON body.');
-
-            const item = await controller.updateOne({ id: id as UUID }, body as EvaluationPatch);
-            if (!item) return json404Entity('Evaluation');
-            return json200({ item });
-        }
-
-        if (method === 'DELETE') {
-            const deleted = await controller.delete({ id: id as UUID });
-            if (deleted === 0) return json404Entity('Evaluation');
-            return json200({ deleted });
-        }
-
-        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
-    }
-
-    if (tail.length === 2 && tail[1] === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        if (!body) return json400('Invalid JSON body.');
-
-        const status = toEvaluationStatus(body.status);
-        if (!status) {
-            return json400('Invalid status. Provide a non-empty status string.');
-        }
-
-        const item = await controller.setStatus(id as UUID, status);
-        if (!item) return json404Entity('Evaluation');
-        return json200({ item });
-    }
-
-    if (tail.length === 2 && tail[1] === 'submit') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        const submittedAt = body
-            ? parseOptionalIsoDate(body.submittedAt ?? body.submitted_at)
-            : undefined;
-
-        const item = await controller.submit(id as UUID, submittedAt);
-        if (!item) return json404Entity('Evaluation');
-        return json200({ item });
-    }
-
-    if (tail.length === 2 && tail[1] === 'lock') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
-
-        const body = await readJsonRecord(req);
-        const lockedAt = body
-            ? parseOptionalIsoDate(body.lockedAt ?? body.locked_at)
-            : undefined;
-
-        const item = await controller.lock(id as UUID, lockedAt);
-        if (!item) return json404Entity('Evaluation');
-        return json200({ item });
-    }
-
-    return json404Api();
-}
-
-async function enforceApiGuard(
-    req: NextRequest,
-    resource: ApiRoot,
-    services: DatabaseServices,
-    guard?: ApiGuardOptions,
-): Promise<Response | null> {
-    if (resource === 'root' || resource === 'auth') return null;
-
-    const requireAuth = guard?.requireAuth ?? false;
-    const requiredRoles = guard?.rolesByResource?.[resource];
-
-    if (!requireAuth && !requiredRoles) {
-        return null;
-    }
-
-    const middleware = createMiddlewareController(services, guard?.middleware);
-    const auth = await middleware.resolve(req);
-
-    if (!auth) {
-        return middleware.unauthorized();
-    }
-
-    if (requiredRoles && !requiredRoles.includes(auth.user.role)) {
-        return middleware.forbidden('Insufficient role.');
-    }
-
-    return null;
-}
-
-export async function dispatchApiRequest(
-    req: NextRequest,
-    ctx: AuthRouteContext,
-    servicesResolver: () => Promise<DatabaseServices>,
-    options: CreateApiRouteHandlersOptions,
-): Promise<Response> {
-    const method = req.method.toUpperCase();
-    const slug = await resolveContextSlug(ctx);
-    const segments = normalizeSegments(slug);
-
-    // Legacy alias support:
-    // /api/thesis/groups/* -> /api/thesis-groups/*
-    const isThesisGroupsAlias =
-        segments[0] === 'thesis' && segments[1] === 'groups';
-
-    // New alias support:
-    // /api/defense-schedule-panelists/*
-    // /api/defense-schedule-panelist/*
-    // /api/schedule-panelists/*
-    // /api/schedule-panelist/*
-    const isSchedulePanelistsAlias =
-        segments[0] === 'defense-schedule-panelists' ||
-        segments[0] === 'defense-schedule-panelist' ||
-        segments[0] === 'schedule-panelists' ||
-        segments[0] === 'schedule-panelist';
-
-    if (isSchedulePanelistsAlias) {
-        const services = await servicesResolver();
-        const guardDenied = await enforceApiGuard(
-            req,
-            'defense-schedules',
-            services,
-            options.guard,
-        );
-        if (guardDenied) return guardDenied;
-
-        return dispatchSchedulePanelistsRequest(req, segments.slice(1), services);
-    }
-
-    const root = isThesisGroupsAlias
-        ? ('thesis-groups' as ApiRoot)
-        : resolveApiRoot(segments[0]);
-
-    if (!root) {
-        return json404Api();
-    }
-
-    if (root === 'root') {
-        if (method !== 'GET') {
-            return json405(['GET', 'OPTIONS']);
-        }
-
-        return json200({
-            service: 'api',
-            routes: {
-                auth: '/api/auth/*',
-                admin: '/api/admin/*',
-                student: '/api/student/*',
-                staff: '/api/staff/*',
-                panelist: '/api/panelist/*',
-                users: '/api/users/*',
-                notifications: '/api/notifications/*',
-                evaluations: '/api/evaluations/*',
-                defenseSchedules: '/api/defense-schedules/*',
-                defenseSchedulePanelists: '/api/defense-schedule-panelists/*',
-                rubricTemplates: '/api/rubric-templates/*',
-                thesisGroups: '/api/thesis-groups/*',
-                thesisLegacyGroups: '/api/thesis/groups/*',
-                auditLogs: '/api/audit-logs/*',
-            },
-        });
-    }
-
-    if (root === 'auth') {
-        const action = resolveAuthAction(segments.slice(1));
-        return dispatchAuthRequest(req, action, servicesResolver, options.auth);
-    }
-
-    const services = await servicesResolver();
-    const guardDenied = await enforceApiGuard(req, root, services, options.guard);
-    if (guardDenied) return guardDenied;
-
-    const tail = isThesisGroupsAlias ? segments.slice(2) : segments.slice(1);
-
-    switch (root) {
-        case 'admin':
-            return dispatchAdminRequest(req, tail, services);
-
-        case 'student':
-            return dispatchStudentRequest(req, tail, services);
-
-        case 'staff':
-            return dispatchStaffRequest(req, tail, services);
-
-        case 'panelist':
-            return dispatchPanelistRequest(req, tail, services);
-
-        case 'users':
-            return dispatchUsersRequest(req, tail, services);
-
-        case 'notifications':
-            return dispatchNotificationsRequest(req, tail, services);
-
-        case 'evaluations':
-            return dispatchEvaluationsRequest(req, tail, services);
-
-        case 'defense-schedules':
-            return dispatchDefenseSchedulesRequest(req, tail, services);
-
-        case 'rubric-templates':
-            return dispatchRubricTemplatesRequest(req, tail, services);
-
-        case 'thesis-groups':
-            return dispatchThesisGroupsRequest(req, tail, services);
-
-        case 'audit-logs':
-            return dispatchAuditLogsRequest(req, tail, services);
-
-        default:
-            return json404Api();
-    }
 }
