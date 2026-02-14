@@ -118,6 +118,21 @@ type MemberFormState = {
     section: string
 }
 
+type EnsureStudentRoleResult = {
+    updated: boolean
+    userFound: boolean
+    previousRole: string | null
+}
+
+type ManualRolePreview = {
+    checking: boolean
+    checkedId: string
+    exists: boolean | null
+    currentRole: string | null
+    currentName: string | null
+    error: string | null
+}
+
 const MEMBER_SOURCE_STUDENT: MemberSource = "student"
 const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
@@ -244,6 +259,30 @@ function extractRoleLowerFromPayload(payload: unknown): string | null {
     const detailRec = asRecord(unwrapDetail(payload))
     if (!detailRec) return null
     return extractRoleLower(detailRec)
+}
+
+function extractNameFromPayload(payload: unknown): string | null {
+    const detailRec = asRecord(unwrapDetail(payload))
+    if (!detailRec) return null
+    return toStringOrNull(detailRec.name ?? detailRec.full_name)
+}
+
+function roleLabel(role: string | null): string {
+    if (!role) return "Unknown"
+    const normalized = role.trim().toLowerCase()
+    if (!normalized) return "Unknown"
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
+function defaultManualRolePreview(checkedId = ""): ManualRolePreview {
+    return {
+        checking: false,
+        checkedId,
+        exists: null,
+        currentRole: null,
+        currentName: null,
+        error: null,
+    }
 }
 
 function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
@@ -649,6 +688,10 @@ export default function AdminThesisGroupDetailsPage() {
         defaultMemberForm(MEMBER_SOURCE_MANUAL, STUDENT_NONE_VALUE)
     )
 
+    const [manualRolePreview, setManualRolePreview] = React.useState<ManualRolePreview>(() =>
+        defaultManualRolePreview()
+    )
+
     const staffById = React.useMemo(() => {
         const map = new Map<string, StaffUserItem>()
         for (const item of staffUsers) map.set(item.id, item)
@@ -952,6 +995,102 @@ export default function AdminThesisGroupDetailsPage() {
         memberForm.studentUserId,
     ])
 
+    React.useEffect(() => {
+        if (!memberDialogOpen || memberForm.source !== MEMBER_SOURCE_MANUAL) {
+            setManualRolePreview(defaultManualRolePreview())
+            return
+        }
+
+        const candidateId = memberForm.manualStudentId.trim()
+        if (!candidateId || !isUuidLike(candidateId)) {
+            setManualRolePreview(defaultManualRolePreview(candidateId))
+            return
+        }
+
+        let disposed = false
+        const timer = window.setTimeout(async () => {
+            setManualRolePreview({
+                checking: true,
+                checkedId: candidateId,
+                exists: null,
+                currentRole: null,
+                currentName: null,
+                error: null,
+            })
+
+            try {
+                const endpoint = `/api/users/${encodeURIComponent(candidateId)}`
+                const res = await fetch(endpoint, {
+                    method: "GET",
+                    credentials: "include",
+                    cache: "no-store",
+                    headers: { Accept: "application/json" },
+                })
+                const payload = await parseResponseBodySafe(res)
+
+                if (disposed) return
+
+                if (res.status === 404) {
+                    setManualRolePreview({
+                        checking: false,
+                        checkedId: candidateId,
+                        exists: false,
+                        currentRole: null,
+                        currentName: null,
+                        error: null,
+                    })
+                    return
+                }
+
+                if (!res.ok) {
+                    const message = extractErrorMessage(
+                        payload,
+                        "Unable to check current user role for the provided UUID.",
+                        res.status
+                    )
+                    setManualRolePreview({
+                        checking: false,
+                        checkedId: candidateId,
+                        exists: null,
+                        currentRole: null,
+                        currentName: null,
+                        error: message,
+                    })
+                    return
+                }
+
+                setManualRolePreview({
+                    checking: false,
+                    checkedId: candidateId,
+                    exists: true,
+                    currentRole: extractRoleLowerFromPayload(payload),
+                    currentName: extractNameFromPayload(payload),
+                    error: null,
+                })
+            } catch (error) {
+                if (disposed) return
+
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to check current user role for the provided UUID."
+                setManualRolePreview({
+                    checking: false,
+                    checkedId: candidateId,
+                    exists: null,
+                    currentRole: null,
+                    currentName: null,
+                    error: message,
+                })
+            }
+        }, 350)
+
+        return () => {
+            disposed = true
+            window.clearTimeout(timer)
+        }
+    }, [memberDialogOpen, memberForm.source, memberForm.manualStudentId])
+
     const adviserContent = React.useMemo(() => {
         if (!group?.adviserId) {
             if (group?.manualAdviserInfo) {
@@ -1002,19 +1141,21 @@ export default function AdminThesisGroupDetailsPage() {
             program: group?.program ?? "",
             section: "",
         })
+        setManualRolePreview(defaultManualRolePreview())
     }, [availableStudentsForCreate, group?.program])
 
     /**
-     * Manual-entry override:
-     * If the entered UUID belongs to an existing user and that user is not `student`,
-     * auto-promote role to `student` before member save.
+     * Ensures that an existing user UUID has `student` role before member save.
+     * - If UUID is not linked to any user, no-op.
+     * - If linked user role is not student, auto-promote via PATCH /api/users/:id.
      */
-    const ensureManualEntryUserRoleIsStudent = React.useCallback(async (candidateId: string) => {
+    const ensureUserRoleIsStudent = React.useCallback(async (candidateId: string): Promise<EnsureStudentRoleResult> => {
         const normalizedId = candidateId.trim()
-        if (!isUuidLike(normalizedId)) return false
+        if (!isUuidLike(normalizedId)) {
+            return { updated: false, userFound: false, previousRole: null }
+        }
 
         const endpoint = `/api/users/${encodeURIComponent(normalizedId)}`
-
         const readRes = await fetch(endpoint, {
             method: "GET",
             credentials: "include",
@@ -1024,22 +1165,24 @@ export default function AdminThesisGroupDetailsPage() {
         const readPayload = await parseResponseBodySafe(readRes)
 
         if (readRes.status === 404) {
-            // No user with this UUID. This is still valid for manual flow in flexible schemas.
-            return false
+            return { updated: false, userFound: false, previousRole: null }
         }
 
         if (!readRes.ok) {
             throw new Error(
                 extractErrorMessage(
                     readPayload,
-                    "Unable to verify existing user role for manual entry.",
+                    "Unable to verify existing user role.",
                     readRes.status
                 )
             )
         }
 
         const currentRole = extractRoleLowerFromPayload(readPayload)
-        if (currentRole === "student") return false
+
+        if (currentRole === "student") {
+            return { updated: false, userFound: true, previousRole: "student" }
+        }
 
         const patchRes = await fetch(endpoint, {
             method: "PATCH",
@@ -1057,13 +1200,13 @@ export default function AdminThesisGroupDetailsPage() {
             throw new Error(
                 extractErrorMessage(
                     patchPayload,
-                    'Failed to automatically set role to "student" for manual entry.',
+                    'Failed to automatically set role to "student".',
                     patchRes.status
                 )
             )
         }
 
-        return true
+        return { updated: true, userFound: true, previousRole: currentRole }
     }, [])
 
     const openCreateMemberDialog = React.useCallback(() => {
@@ -1095,6 +1238,7 @@ export default function AdminThesisGroupDetailsPage() {
                 program: member.program ?? group?.program ?? "",
                 section: member.section ?? "",
             })
+            setManualRolePreview(defaultManualRolePreview(member.studentId ?? ""))
             setMemberActionError(null)
             setMemberDialogOpen(true)
         },
@@ -1124,7 +1268,7 @@ export default function AdminThesisGroupDetailsPage() {
             try {
                 let payload: Record<string, unknown> = {}
                 let manualUuidWasGenerated = false
-                const manualSuccessNotes: string[] = []
+                const successNotes: string[] = []
 
                 if (memberForm.source === MEMBER_SOURCE_STUDENT) {
                     const selectedId =
@@ -1149,6 +1293,13 @@ export default function AdminThesisGroupDetailsPage() {
                         selected.id !== currentEditStudentUserId
                     ) {
                         throw new Error("Selected student is already assigned to this thesis group.")
+                    }
+
+                    const roleCheck = await ensureUserRoleIsStudent(selected.id)
+                    if (roleCheck.updated) {
+                        successNotes.push(
+                            `Selected user role was auto-corrected from "${roleLabel(roleCheck.previousRole)}" to "Student".`
+                        )
                     }
 
                     payload = {
@@ -1186,15 +1337,15 @@ export default function AdminThesisGroupDetailsPage() {
                     manualUuidWasGenerated = !manualStudentIdInput || !isUuidLike(manualStudentIdInput)
 
                     if (manualUuidWasGenerated) {
-                        manualSuccessNotes.push(
+                        successNotes.push(
                             "Manual entry saved with an auto-generated UUID for API compatibility."
                         )
                     }
 
-                    const roleAutoUpdated = await ensureManualEntryUserRoleIsStudent(manualUuid)
-                    if (roleAutoUpdated) {
-                        manualSuccessNotes.push(
-                            'Existing user role was automatically updated to "student".'
+                    const roleAutoFix = await ensureUserRoleIsStudent(manualUuid)
+                    if (roleAutoFix.updated) {
+                        successNotes.push(
+                            `Existing account role was auto-corrected from "${roleLabel(roleAutoFix.previousRole)}" to "Student".`
                         )
                     }
 
@@ -1228,9 +1379,9 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualSuccessNotes.length > 0) {
+                    if (successNotes.length > 0) {
                         toast.success("Member added successfully.", {
-                            description: manualSuccessNotes.join(" "),
+                            description: successNotes.join(" "),
                         })
                     } else {
                         toast.success("Member added successfully.")
@@ -1267,9 +1418,9 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualSuccessNotes.length > 0) {
+                    if (successNotes.length > 0) {
                         toast.success("Member updated successfully.", {
-                            description: manualSuccessNotes.join(" "),
+                            description: successNotes.join(" "),
                         })
                     } else {
                         toast.success("Member updated successfully.")
@@ -1278,6 +1429,7 @@ export default function AdminThesisGroupDetailsPage() {
 
                 setMemberDialogOpen(false)
                 setMemberTarget(null)
+                setManualRolePreview(defaultManualRolePreview())
             } catch (e) {
                 const message = e instanceof Error ? e.message : "Failed to save member."
                 setMemberActionError(message)
@@ -1289,7 +1441,7 @@ export default function AdminThesisGroupDetailsPage() {
         [
             currentEditStudentUserId,
             editableStudentIds,
-            ensureManualEntryUserRoleIsStudent,
+            ensureUserRoleIsStudent,
             groupId,
             memberDialogMode,
             memberForm,
@@ -1339,8 +1491,15 @@ export default function AdminThesisGroupDetailsPage() {
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
         memberDialogMode === "create"
-            ? "Add a member by selecting an existing Student user. Manual entries auto-generate UUIDs when needed and can auto-promote existing user roles to student."
-            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe and role-auto-corrected when applicable."
+            ? "Add a member by selecting an existing Student user or via manual student entry with automatic student-role correction."
+            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe with automatic student-role correction."
+
+    const manualInputCandidate = memberForm.manualStudentId.trim()
+    const manualInputIsUuid = isUuidLike(manualInputCandidate)
+    const manualPreviewNeedsAutoFix =
+        manualRolePreview.exists === true &&
+        !!manualRolePreview.currentRole &&
+        manualRolePreview.currentRole !== "student"
 
     return (
         <DashboardLayout
@@ -1549,6 +1708,7 @@ export default function AdminThesisGroupDetailsPage() {
                     if (!open) {
                         setMemberTarget(null)
                         setMemberActionError(null)
+                        setManualRolePreview(defaultManualRolePreview())
                     }
                 }}
             >
@@ -1586,6 +1746,10 @@ export default function AdminThesisGroupDetailsPage() {
                                                             : availableStudentsForDialog[0]?.id ?? STUDENT_NONE_VALUE
                                                         : STUDENT_NONE_VALUE,
                                             }))
+
+                                            if (next !== MEMBER_SOURCE_MANUAL) {
+                                                setManualRolePreview(defaultManualRolePreview())
+                                            }
                                         }}
                                     >
                                         <SelectTrigger>
@@ -1691,22 +1855,69 @@ export default function AdminThesisGroupDetailsPage() {
                                 ) : (
                                     <>
                                         <Alert>
-                                            <AlertDescription>
-                                                You can enter any Student ID format. The system will auto-generate a valid UUID in
-                                                the background when needed.
+                                            <AlertDescription className="space-y-2">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Badge variant="secondary">Selected role: Student</Badge>
+
+                                                    {!manualInputIsUuid ? (
+                                                        <Badge variant="outline">Enter UUID to check existing account role</Badge>
+                                                    ) : manualRolePreview.checking ? (
+                                                        <Badge variant="outline">Checking existing account…</Badge>
+                                                    ) : manualRolePreview.exists === true ? (
+                                                        <Badge variant="outline">
+                                                            Current role: {roleLabel(manualRolePreview.currentRole)}
+                                                        </Badge>
+                                                    ) : manualRolePreview.exists === false ? (
+                                                        <Badge variant="outline">No existing account found for this UUID</Badge>
+                                                    ) : null}
+                                                </div>
+
+                                                {manualInputIsUuid && manualRolePreview.exists === true ? (
+                                                    <p className="text-xs">
+                                                        {manualRolePreview.currentName ? (
+                                                            <>
+                                                                Detected account:{" "}
+                                                                <span className="font-medium">{manualRolePreview.currentName}</span>.
+                                                            </>
+                                                        ) : (
+                                                            <>Detected account for this UUID.</>
+                                                        )}{" "}
+                                                        {manualPreviewNeedsAutoFix ? (
+                                                            <span className="text-amber-700">
+                                                                Role will be auto-corrected to <span className="font-medium">student</span> on save.
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-emerald-700">
+                                                                Account already has <span className="font-medium">student</span> role.
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                ) : null}
+
+                                                {manualInputIsUuid && manualRolePreview.exists === false ? (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        This UUID is not linked to an existing user account. Member creation will continue using manual entry rules.
+                                                    </p>
+                                                ) : null}
+
+                                                {manualRolePreview.error ? (
+                                                    <p className="text-xs text-destructive">{manualRolePreview.error}</p>
+                                                ) : null}
                                             </AlertDescription>
                                         </Alert>
 
-                                        <Alert>
-                                            <AlertDescription>
-                                                If the entered Student ID is an existing user UUID and that account is not
-                                                <span className="font-medium"> student</span>, the role is automatically updated to
-                                                <span className="font-medium"> student</span> before saving.
-                                            </AlertDescription>
-                                        </Alert>
-
-                                        <div className="grid gap-4 md:grid-cols-2">
+                                        <div className="grid gap-4 md:grid-cols-3">
                                             <div className="space-y-2">
+                                                <Label htmlFor="manual-role">Selected Role</Label>
+                                                <Input
+                                                    id="manual-role"
+                                                    value="student"
+                                                    readOnly
+                                                    className="font-medium capitalize"
+                                                />
+                                            </div>
+
+                                            <div className="space-y-2 md:col-span-2">
                                                 <Label htmlFor="manual-student-id">Student ID / School ID (Optional)</Label>
                                                 <Input
                                                     id="manual-student-id"
@@ -1717,11 +1928,13 @@ export default function AdminThesisGroupDetailsPage() {
                                                             manualStudentId: event.target.value,
                                                         }))
                                                     }
-                                                    placeholder="e.g., 2022-00001"
+                                                    placeholder="e.g., 2022-00001 or existing UUID"
                                                     autoComplete="off"
                                                 />
                                             </div>
+                                        </div>
 
+                                        <div className="grid gap-4 md:grid-cols-2">
                                             <div className="space-y-2">
                                                 <Label htmlFor="manual-student-name">Student Name (Optional)</Label>
                                                 <Input
@@ -1737,9 +1950,7 @@ export default function AdminThesisGroupDetailsPage() {
                                                     autoComplete="off"
                                                 />
                                             </div>
-                                        </div>
 
-                                        <div className="grid gap-4 md:grid-cols-2">
                                             <div className="space-y-2">
                                                 <Label htmlFor="manual-program">Program (Optional)</Label>
                                                 <Input
@@ -1755,26 +1966,26 @@ export default function AdminThesisGroupDetailsPage() {
                                                     autoComplete="off"
                                                 />
                                             </div>
+                                        </div>
 
-                                            <div className="space-y-2">
-                                                <Label htmlFor="manual-section">Section (Optional)</Label>
-                                                <Input
-                                                    id="manual-section"
-                                                    value={memberForm.section}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            section: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., 4A"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="manual-section">Section (Optional)</Label>
+                                            <Input
+                                                id="manual-section"
+                                                value={memberForm.section}
+                                                onChange={(event) =>
+                                                    setMemberForm((prev) => ({
+                                                        ...prev,
+                                                        section: event.target.value,
+                                                    }))
+                                                }
+                                                placeholder="e.g., 4A"
+                                                autoComplete="off"
+                                            />
                                         </div>
 
                                         <p className="text-xs text-muted-foreground">
-                                            For manual entry, provide at least Student ID or Student Name. UUID mapping and student-role correction are handled automatically when applicable.
+                                            For manual entry, provide at least Student ID or Student Name. If the Student ID is an existing user UUID, role is automatically corrected to <span className="font-medium">student</span> before saving.
                                         </p>
                                     </>
                                 )}
