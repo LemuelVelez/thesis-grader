@@ -282,6 +282,11 @@ function toNullableTrimmed(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function sanitizeSelectValue(value: string, fallback: string): string {
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : fallback
+}
+
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
@@ -726,6 +731,21 @@ export default function AdminThesisGroupsPage() {
   const createTermPreview = React.useMemo(() => buildTermPreview(createForm), [createForm])
   const editTermPreview = React.useMemo(() => buildTermPreview(editForm), [editForm])
 
+  const createAdviserSelectValue = React.useMemo(
+    () => sanitizeSelectValue(createForm.adviserUserId, ADVISER_NONE_VALUE),
+    [createForm.adviserUserId]
+  )
+
+  const editAdviserSelectValue = React.useMemo(
+    () => sanitizeSelectValue(editForm.adviserUserId, ADVISER_NONE_VALUE),
+    [editForm.adviserUserId]
+  )
+
+  const editAdviserRawValue = React.useMemo(
+    () => toNullableTrimmed(editForm.adviserUserId),
+    [editForm.adviserUserId]
+  )
+
   const staffById = React.useMemo(() => {
     const map = new Map<string, StaffUserItem>()
     for (const item of staffUsers) map.set(item.id, item)
@@ -782,7 +802,7 @@ export default function AdminThesisGroupsPage() {
     setEditForm({
       title: item.title,
       program: item.program ?? "",
-      adviserUserId: item.adviserId ?? ADVISER_NONE_VALUE,
+      adviserUserId: sanitizeSelectValue(item.adviserId ?? ADVISER_NONE_VALUE, ADVISER_NONE_VALUE),
       semester: parsed.semester,
       customSemester: parsed.customSemester,
       schoolYearStart: parsed.schoolYearStart,
@@ -975,15 +995,17 @@ export default function AdminThesisGroupsPage() {
 
   React.useEffect(() => {
     if (!createOpen) return
-    if (createForm.adviserUserId !== ADVISER_NONE_VALUE) return
+    if (createAdviserSelectValue !== ADVISER_NONE_VALUE) return
 
     const firstAvailable = availableCreateStaff[0]?.id
     if (!firstAvailable) return
 
     setCreateForm((prev) =>
-      prev.adviserUserId === ADVISER_NONE_VALUE ? { ...prev, adviserUserId: firstAvailable } : prev
+      sanitizeSelectValue(prev.adviserUserId, ADVISER_NONE_VALUE) === ADVISER_NONE_VALUE
+        ? { ...prev, adviserUserId: firstAvailable }
+        : prev
     )
-  }, [availableCreateStaff, createForm.adviserUserId, createOpen])
+  }, [availableCreateStaff, createAdviserSelectValue, createOpen])
 
   const onCreateSubmit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1008,8 +1030,11 @@ export default function AdminThesisGroupsPage() {
         return
       }
 
+      const selectedAdviserIdRaw = toNullableTrimmed(createForm.adviserUserId)
       const selectedAdviserId =
-        createForm.adviserUserId === ADVISER_NONE_VALUE ? null : createForm.adviserUserId
+        !selectedAdviserIdRaw || selectedAdviserIdRaw === ADVISER_NONE_VALUE
+          ? null
+          : selectedAdviserIdRaw
 
       if (!selectedAdviserId) {
         const message = "Please select a staff adviser. If none is available, create a Staff user first."
@@ -1104,8 +1129,11 @@ export default function AdminThesisGroupsPage() {
         return
       }
 
+      const selectedAdviserIdRaw = toNullableTrimmed(editForm.adviserUserId)
       const selectedAdviserId =
-        editForm.adviserUserId === ADVISER_NONE_VALUE ? null : editForm.adviserUserId
+        !selectedAdviserIdRaw || selectedAdviserIdRaw === ADVISER_NONE_VALUE
+          ? null
+          : selectedAdviserIdRaw
 
       if (!selectedAdviserId) {
         const message = "Please select a staff adviser. If none is available, create a Staff user first."
@@ -1313,7 +1341,9 @@ export default function AdminThesisGroupsPage() {
   )
 
   const selectedEditAdviserMissing =
-    editForm.adviserUserId !== ADVISER_NONE_VALUE && !staffById.has(editForm.adviserUserId)
+    !!editAdviserRawValue &&
+    editAdviserRawValue !== ADVISER_NONE_VALUE &&
+    !staffById.has(editAdviserRawValue)
 
   return (
     <DashboardLayout
@@ -1494,8 +1524,13 @@ export default function AdminThesisGroupsPage() {
                   <div className="space-y-2">
                     <Label>Adviser (Staff User)</Label>
                     <Select
-                      value={createForm.adviserUserId}
-                      onValueChange={(value) => setCreateForm((prev) => ({ ...prev, adviserUserId: value }))}
+                      value={createAdviserSelectValue}
+                      onValueChange={(value) =>
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          adviserUserId: sanitizeSelectValue(value, ADVISER_NONE_VALUE),
+                        }))
+                      }
                       disabled={staffLoading}
                     >
                       <SelectTrigger>
@@ -1682,8 +1717,13 @@ export default function AdminThesisGroupsPage() {
                   <div className="space-y-2">
                     <Label>Adviser (Staff User)</Label>
                     <Select
-                      value={editForm.adviserUserId}
-                      onValueChange={(value) => setEditForm((prev) => ({ ...prev, adviserUserId: value }))}
+                      value={editAdviserSelectValue}
+                      onValueChange={(value) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          adviserUserId: sanitizeSelectValue(value, ADVISER_NONE_VALUE),
+                        }))
+                      }
                       disabled={staffLoading}
                     >
                       <SelectTrigger>
@@ -1694,8 +1734,8 @@ export default function AdminThesisGroupsPage() {
                           No staff adviser selected
                         </SelectItem>
 
-                        {selectedEditAdviserMissing ? (
-                          <SelectItem value={editForm.adviserUserId}>
+                        {selectedEditAdviserMissing && editAdviserRawValue ? (
+                          <SelectItem value={editAdviserRawValue}>
                             Current assigned adviser (profile unavailable)
                           </SelectItem>
                         ) : null}
