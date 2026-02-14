@@ -539,9 +539,48 @@ function hasExplicitLinkedStudentUserReference(
     return candidates.some((candidate) => toNonEmptyString(candidate) !== null);
 }
 
+function toErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message.trim().length > 0) {
+        return error.message.trim();
+    }
+
+    if (isRecord(error)) {
+        const message = toNonEmptyString(error.message);
+        if (message) return message;
+
+        const detail = toNonEmptyString(error.detail);
+        if (detail) return detail;
+    }
+
+    return 'Unknown error.';
+}
+
+function toErrorCode(error: unknown): string | null {
+    if (!isRecord(error)) return null;
+    const raw = error.code;
+    if (typeof raw !== 'string') return null;
+    const code = raw.trim();
+    return code.length > 0 ? code : null;
+}
+
+function isForeignKeyViolation(error: unknown): boolean {
+    const code = toErrorCode(error);
+    if (code === '23503') return true;
+
+    const msg = toErrorMessage(error).toLowerCase();
+    return msg.includes('foreign key');
+}
+
+function isUniqueViolation(error: unknown): boolean {
+    const code = toErrorCode(error);
+    if (code === '23505') return true;
+
+    const msg = toErrorMessage(error).toLowerCase();
+    return msg.includes('duplicate key') || msg.includes('unique constraint');
+}
+
 function isThesisGroupMembersSegment(value: string | undefined): boolean {
     if (!value) return false;
-
     return (
         value === 'members' ||
         value === 'member' ||
@@ -784,17 +823,17 @@ async function dispatchThesisGroupsRequest(
                     return json400('studentId/userId must be a valid UUID.');
                 }
 
-                const requiresLinkedStudentUser =
-                    hasExplicitLinkedStudentUserReference(body);
                 const studentUser = await services.users.findById(studentId);
-
                 if (studentUser && studentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
+                const requiresLinkedStudentUser =
+                    hasExplicitLinkedStudentUserReference(body);
+
                 if (requiresLinkedStudentUser && !studentUser) {
                     return json400(
-                        'Linked student user was not found. Use a valid student user id or submit this member as manual entry.',
+                        'Linked student user was not found. Use a valid student user id or switch to manual entry.',
                     );
                 }
 
@@ -807,10 +846,45 @@ async function dispatchThesisGroupsRequest(
                     return json200({ item });
                 }
 
-                const created = await membersController.create({
-                    group_id: id,
-                    student_id: studentId,
-                });
+                let created: GroupMemberRow;
+                try {
+                    created = await membersController.create({
+                        group_id: id,
+                        student_id: studentId,
+                    });
+                } catch (error) {
+                    if (isUniqueViolation(error)) {
+                        const rows = await membersController.listByGroup(id);
+                        const duplicate = rows.find((row) => row.student_id === studentId);
+                        if (duplicate) {
+                            const item = await buildGroupMemberResponse(duplicate, services);
+                            return json200({ item });
+                        }
+                        return json400(
+                            'Selected student is already a member of this thesis group.',
+                        );
+                    }
+
+                    if (isForeignKeyViolation(error)) {
+                        if (!studentUser) {
+                            return json400(
+                                'Manual entries are not supported by the current database schema. Please create/select a Student user first, then add that user as a member.',
+                            );
+                        }
+
+                        return json400(
+                            'Unable to add thesis group member because required student profile records are missing.',
+                        );
+                    }
+
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to add thesis group member.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
 
                 const item = await buildGroupMemberResponse(created, services);
                 return json201({ item });
@@ -848,17 +922,17 @@ async function dispatchThesisGroupsRequest(
                     return json400('studentId/userId must be a valid UUID.');
                 }
 
-                const requiresLinkedStudentUser =
-                    hasExplicitLinkedStudentUserReference(body);
                 const nextStudentUser = await services.users.findById(nextStudentId);
-
                 if (nextStudentUser && nextStudentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
                 }
 
+                const requiresLinkedStudentUser =
+                    hasExplicitLinkedStudentUserReference(body);
+
                 if (requiresLinkedStudentUser && !nextStudentUser) {
                     return json400(
-                        'Linked student user was not found. Use a valid student user id or submit this member as manual entry.',
+                        'Linked student user was not found. Use a valid student user id or switch to manual entry.',
                     );
                 }
 
@@ -876,14 +950,54 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                await membersController.removeMember(id, existingMember.student_id);
+                // Safer order: create replacement first, remove old member second.
+                // This prevents accidental data loss if creation fails.
+                let replacement: GroupMemberRow;
+                try {
+                    replacement = await membersController.create({
+                        group_id: id,
+                        student_id: nextStudentId,
+                    });
+                } catch (error) {
+                    if (isUniqueViolation(error)) {
+                        return json400(
+                            'Selected student is already a member of this thesis group.',
+                        );
+                    }
 
-                const updated = await membersController.create({
-                    group_id: id,
-                    student_id: nextStudentId,
-                });
+                    if (isForeignKeyViolation(error)) {
+                        if (!nextStudentUser) {
+                            return json400(
+                                'Manual entries are not supported by the current database schema. Please create/select a Student user first, then add that user as a member.',
+                            );
+                        }
 
-                const item = await buildGroupMemberResponse(updated, services);
+                        return json400(
+                            'Unable to update thesis group member because required student profile records are missing.',
+                        );
+                    }
+
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to update thesis group member.',
+                            message: toErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+
+                const removed = await membersController.removeMember(
+                    id,
+                    existingMember.student_id,
+                );
+
+                if (removed === 0) {
+                    // Roll back replacement if old member unexpectedly vanished.
+                    await membersController.removeMember(id, replacement.student_id);
+                    return json404Entity('Thesis group member');
+                }
+
+                const item = await buildGroupMemberResponse(replacement, services);
                 return json200({ item });
             }
 
