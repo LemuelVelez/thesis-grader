@@ -50,6 +50,7 @@ import {
     type RubricTemplateInsert,
     type RubricTemplatePatch,
     type RubricTemplateRow,
+    type StudentRow,
     type ThesisGroupInsert,
     type ThesisGroupPatch,
     type ThesisGroupRow,
@@ -623,13 +624,56 @@ function findGroupMemberByIdentifier(
     );
 }
 
+/**
+ * Runtime-safe user lookup.
+ * Prevents response-shaping failures from crashing member create/update/list
+ * when a resolver accidentally returns partial services.
+ */
+async function safeFindUserById(
+    services: DatabaseServices,
+    userId: string,
+): Promise<UserRow | null> {
+    const usersService = (services as Partial<DatabaseServices>).users;
+
+    if (!usersService || typeof usersService.findById !== 'function') {
+        return null;
+    }
+
+    try {
+        return await usersService.findById(userId);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Runtime-safe student profile lookup.
+ * Returns null if the service is unavailable or throws.
+ */
+async function safeFindStudentProfileByUserId(
+    services: DatabaseServices,
+    userId: string,
+): Promise<StudentRow | null> {
+    const studentsService = (services as Partial<DatabaseServices>).students;
+
+    if (!studentsService || typeof studentsService.findByUserId !== 'function') {
+        return null;
+    }
+
+    try {
+        return await studentsService.findByUserId(userId);
+    } catch {
+        return null;
+    }
+}
+
 async function buildGroupMemberResponse(
     member: GroupMemberRow,
     services: DatabaseServices,
 ): Promise<Record<string, unknown>> {
     const [user, studentProfile] = await Promise.all([
-        services.users.findById(member.student_id),
-        services.students.findByUserId(member.student_id),
+        safeFindUserById(services, member.student_id),
+        safeFindStudentProfileByUserId(services, member.student_id),
     ]);
 
     return {
@@ -837,6 +881,17 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
+                // Pre-check student profile to avoid DB-level FK explosions and opaque 500s.
+                const studentProfile = studentUser
+                    ? await safeFindStudentProfileByUserId(services, studentId)
+                    : null;
+
+                if (studentUser && !studentProfile) {
+                    return json400(
+                        'Selected student user does not have a student profile record. Create the student profile first, then add the member.',
+                    );
+                }
+
                 const existingRows = await membersController.listByGroup(id);
                 const existing = existingRows.find(
                     (row) => row.student_id === studentId,
@@ -869,6 +924,12 @@ async function dispatchThesisGroupsRequest(
                         if (!studentUser) {
                             return json400(
                                 'Manual entries are not supported by the current database schema. Please create/select a Student user first, then add that user as a member.',
+                            );
+                        }
+
+                        if (!studentProfile) {
+                            return json400(
+                                'Selected student user does not have a student profile record. Create the student profile first, then add the member.',
                             );
                         }
 
@@ -936,6 +997,17 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
+                // Pre-check profile before attempting replacement.
+                const nextStudentProfile = nextStudentUser
+                    ? await safeFindStudentProfileByUserId(services, nextStudentId)
+                    : null;
+
+                if (nextStudentUser && !nextStudentProfile) {
+                    return json400(
+                        'Selected student user does not have a student profile record. Create the student profile first, then update the member.',
+                    );
+                }
+
                 if (nextStudentId === existingMember.student_id) {
                     const item = await buildGroupMemberResponse(existingMember, services);
                     return json200({ item });
@@ -969,6 +1041,12 @@ async function dispatchThesisGroupsRequest(
                         if (!nextStudentUser) {
                             return json400(
                                 'Manual entries are not supported by the current database schema. Please create/select a Student user first, then add that user as a member.',
+                            );
+                        }
+
+                        if (!nextStudentProfile) {
+                            return json400(
+                                'Selected student user does not have a student profile record. Create the student profile first, then update the member.',
                             );
                         }
 
@@ -1110,6 +1188,10 @@ async function dispatchThesisGroupsRequest(
 
     return json404Api();
 }
+
+// ... [UNCHANGED BELOW]
+// NOTE: The remainder of this file is unchanged from your current version.
+// Keep everything below exactly as-is in your project.
 
 async function dispatchDefenseSchedulesRequest(
     req: NextRequest,
