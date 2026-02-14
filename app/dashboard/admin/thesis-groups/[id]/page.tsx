@@ -642,6 +642,12 @@ export default function AdminThesisGroupDetailsPage() {
         memberForm.studentUserId !== STUDENT_NONE_VALUE &&
         !availableStudentsForDialog.some((item) => item.id === memberForm.studentUserId)
 
+    const editableStudentIds = React.useMemo(() => {
+        const set = new Set(studentIdsAlreadyUsed)
+        if (currentEditStudentUserId) set.delete(currentEditStudentUserId)
+        return set
+    }, [currentEditStudentUserId, studentIdsAlreadyUsed])
+
     const load = React.useCallback(
         async (signal: AbortSignal) => {
             if (!groupId) {
@@ -1158,12 +1164,6 @@ export default function AdminThesisGroupDetailsPage() {
             setMemberSubmitting(false)
         }
     }, [deleteMemberTarget, groupId])
-
-    const editableStudentIds = React.useMemo(() => {
-        const set = new Set(studentIdsAlreadyUsed)
-        if (currentEditStudentUserId) set.delete(currentEditStudentUserId)
-        return set
-    }, [currentEditStudentUserId, studentIdsAlreadyUsed])
 
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
