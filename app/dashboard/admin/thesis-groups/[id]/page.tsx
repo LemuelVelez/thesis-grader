@@ -120,7 +120,7 @@ type MemberFormState = {
 const MEMBER_SOURCE_STUDENT: MemberSource = "student"
 const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
-const FORCE_STUDENT_ROLE_USER_ID = "9431f3a9-30cb-4120-8f76-90ee51e7f5f3"
+const FORCE_STUDENT_ROLE_USER_ID = "a1d167c1-3089-43fd-8b13-d48fe808834d"
 const FORCE_STUDENT_ROLE_USER_ID_LOWER = FORCE_STUDENT_ROLE_USER_ID.toLowerCase()
 
 const STAFF_LIST_ENDPOINTS = [
