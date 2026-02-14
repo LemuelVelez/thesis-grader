@@ -120,6 +120,8 @@ type MemberFormState = {
 const MEMBER_SOURCE_STUDENT: MemberSource = "student"
 const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
+const FORCE_STUDENT_ROLE_USER_ID = "9431f3a9-30cb-4120-8f76-90ee51e7f5f3"
+const FORCE_STUDENT_ROLE_USER_ID_LOWER = FORCE_STUDENT_ROLE_USER_ID.toLowerCase()
 
 const STAFF_LIST_ENDPOINTS = [
     "/api/staff",
@@ -182,6 +184,11 @@ function isUuidLike(value: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         value.trim()
     )
+}
+
+function isForcedManualStudentRoleUser(value: string | null | undefined): boolean {
+    if (!value) return false
+    return value.trim().toLowerCase() === FORCE_STUDENT_ROLE_USER_ID_LOWER
 }
 
 function generateUuid(): string {
@@ -997,6 +1004,36 @@ export default function AdminThesisGroupDetailsPage() {
         })
     }, [availableStudentsForCreate, group?.program])
 
+    const ensureForcedManualUserRoleIsStudent = React.useCallback(async (userId: string) => {
+        if (!isForcedManualStudentRoleUser(userId)) return false
+
+        const endpoint = `/api/users/${encodeURIComponent(userId)}`
+        const res = await fetch(endpoint, {
+            method: "PATCH",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ role: "student" }),
+        })
+
+        const payload = await parseResponseBodySafe(res)
+
+        if (!res.ok) {
+            throw new Error(
+                extractErrorMessage(
+                    payload,
+                    `Failed to automatically set role to "student" for user ${FORCE_STUDENT_ROLE_USER_ID}.`,
+                    res.status
+                )
+            )
+        }
+
+        return true
+    }, [])
+
     const openCreateMemberDialog = React.useCallback(() => {
         setMemberDialogMode("create")
         setMemberTarget(null)
@@ -1055,6 +1092,7 @@ export default function AdminThesisGroupDetailsPage() {
             try {
                 let payload: Record<string, unknown> = {}
                 let manualUuidWasGenerated = false
+                const manualSuccessNotes: string[] = []
 
                 if (memberForm.source === MEMBER_SOURCE_STUDENT) {
                     const selectedId =
@@ -1115,6 +1153,21 @@ export default function AdminThesisGroupDetailsPage() {
 
                     manualUuidWasGenerated = !manualStudentIdInput || !isUuidLike(manualStudentIdInput)
 
+                    if (manualUuidWasGenerated) {
+                        manualSuccessNotes.push(
+                            "Manual entry saved with an auto-generated UUID for API compatibility."
+                        )
+                    }
+
+                    if (isForcedManualStudentRoleUser(manualUuid)) {
+                        const wasAutoSet = await ensureForcedManualUserRoleIsStudent(manualUuid)
+                        if (wasAutoSet) {
+                            manualSuccessNotes.push(
+                                `User ${FORCE_STUDENT_ROLE_USER_ID} was automatically set to role "student".`
+                            )
+                        }
+                    }
+
                     payload = {
                         student_id: manualUuid,
                         studentId: manualUuid,
@@ -1145,10 +1198,9 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualUuidWasGenerated) {
+                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualSuccessNotes.length > 0) {
                         toast.success("Member added successfully.", {
-                            description:
-                                "Manual entry saved with an auto-generated UUID for API compatibility.",
+                            description: manualSuccessNotes.join(" "),
                         })
                     } else {
                         toast.success("Member added successfully.")
@@ -1185,10 +1237,9 @@ export default function AdminThesisGroupDetailsPage() {
                         await refreshMembersOnly()
                     }
 
-                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualUuidWasGenerated) {
+                    if (memberForm.source === MEMBER_SOURCE_MANUAL && manualSuccessNotes.length > 0) {
                         toast.success("Member updated successfully.", {
-                            description:
-                                "Manual entry was normalized with an auto-generated UUID for API compatibility.",
+                            description: manualSuccessNotes.join(" "),
                         })
                     } else {
                         toast.success("Member updated successfully.")
@@ -1208,6 +1259,7 @@ export default function AdminThesisGroupDetailsPage() {
         [
             currentEditStudentUserId,
             editableStudentIds,
+            ensureForcedManualUserRoleIsStudent,
             groupId,
             memberDialogMode,
             memberForm,
@@ -1612,6 +1664,15 @@ export default function AdminThesisGroupDetailsPage() {
                                             <AlertDescription>
                                                 You can enter any Student ID format. The system will auto-generate a valid UUID in
                                                 the background when needed.
+                                            </AlertDescription>
+                                        </Alert>
+
+                                        <Alert>
+                                            <AlertDescription>
+                                                If Student/User ID{" "}
+                                                <span className="font-mono text-xs">{FORCE_STUDENT_ROLE_USER_ID}</span>{" "}
+                                                is used, the account role is automatically set to{" "}
+                                                <span className="font-medium">student</span> before saving.
                                             </AlertDescription>
                                         </Alert>
 
