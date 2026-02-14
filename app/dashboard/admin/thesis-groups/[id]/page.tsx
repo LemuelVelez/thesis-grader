@@ -120,8 +120,13 @@ type MemberFormState = {
 const MEMBER_SOURCE_STUDENT: MemberSource = "student"
 const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
+
+/**
+ * Kept as explicit product requirement reference:
+ * this user must be auto-promoted to role "student" when used in manual entry.
+ * (Implementation below now handles any existing UUID user, including this one.)
+ */
 const FORCE_STUDENT_ROLE_USER_ID = "a1d167c1-3089-43fd-8b13-d48fe808834d"
-const FORCE_STUDENT_ROLE_USER_ID_LOWER = FORCE_STUDENT_ROLE_USER_ID.toLowerCase()
 
 const STAFF_LIST_ENDPOINTS = [
     "/api/staff",
@@ -186,11 +191,6 @@ function isUuidLike(value: string): boolean {
     )
 }
 
-function isForcedManualStudentRoleUser(value: string | null | undefined): boolean {
-    if (!value) return false
-    return value.trim().toLowerCase() === FORCE_STUDENT_ROLE_USER_ID_LOWER
-}
-
 function generateUuid(): string {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
         return crypto.randomUUID()
@@ -244,6 +244,13 @@ function extractRoleLower(rec: Record<string, unknown>): string | null {
     if (nested) return nested.toLowerCase()
 
     return null
+}
+
+function extractUserRoleLowerFromPayload(payload: unknown): string | null {
+    const detail = unwrapDetail(payload)
+    const rec = asRecord(detail)
+    if (!rec) return null
+    return extractRoleLower(rec)
 }
 
 function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
@@ -1004,11 +1011,48 @@ export default function AdminThesisGroupDetailsPage() {
         })
     }, [availableStudentsForCreate, group?.program])
 
-    const ensureForcedManualUserRoleIsStudent = React.useCallback(async (userId: string) => {
-        if (!isForcedManualStudentRoleUser(userId)) return false
+    /**
+     * UX behavior:
+     * - If manual entry uses an existing user UUID and role is not "student",
+     *   auto-update role to "student" before saving group member.
+     * - Returns true if role was changed, false if unchanged/not-applicable.
+     */
+    const ensureManualEntryUserRoleIsStudent = React.useCallback(async (userId: string) => {
+        if (!isUuidLike(userId)) return false
 
         const endpoint = `/api/users/${encodeURIComponent(userId)}`
-        const res = await fetch(endpoint, {
+
+        const readRes = await fetch(endpoint, {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+                Accept: "application/json",
+            },
+        })
+
+        const readPayload = await parseResponseBodySafe(readRes)
+
+        // Not an existing user record => treat as manual/non-linked entry.
+        if (readRes.status === 404) return false
+
+        if (!readRes.ok) {
+            throw new Error(
+                extractErrorMessage(
+                    readPayload,
+                    `Failed to validate user ${userId} before manual member save.`,
+                    readRes.status
+                )
+            )
+        }
+
+        const currentRole = extractUserRoleLowerFromPayload(readPayload)
+
+        if (currentRole === "student") {
+            return false
+        }
+
+        const patchRes = await fetch(endpoint, {
             method: "PATCH",
             credentials: "include",
             cache: "no-store",
@@ -1019,14 +1063,14 @@ export default function AdminThesisGroupDetailsPage() {
             body: JSON.stringify({ role: "student" }),
         })
 
-        const payload = await parseResponseBodySafe(res)
+        const patchPayload = await parseResponseBodySafe(patchRes)
 
-        if (!res.ok) {
+        if (!patchRes.ok) {
             throw new Error(
                 extractErrorMessage(
-                    payload,
-                    `Failed to automatically set role to "student" for user ${FORCE_STUDENT_ROLE_USER_ID}.`,
-                    res.status
+                    patchPayload,
+                    `Failed to automatically set role to "student" for user ${userId}.`,
+                    patchRes.status
                 )
             )
         }
@@ -1159,11 +1203,12 @@ export default function AdminThesisGroupDetailsPage() {
                         )
                     }
 
-                    if (isForcedManualStudentRoleUser(manualUuid)) {
-                        const wasAutoSet = await ensureForcedManualUserRoleIsStudent(manualUuid)
+                    // Auto-promote existing linked user IDs to student role (best UX).
+                    if (!manualUuidWasGenerated) {
+                        const wasAutoSet = await ensureManualEntryUserRoleIsStudent(manualUuid)
                         if (wasAutoSet) {
                             manualSuccessNotes.push(
-                                `User ${FORCE_STUDENT_ROLE_USER_ID} was automatically set to role "student".`
+                                `User ${manualUuid} was automatically set to role "student".`
                             )
                         }
                     }
@@ -1259,7 +1304,7 @@ export default function AdminThesisGroupDetailsPage() {
         [
             currentEditStudentUserId,
             editableStudentIds,
-            ensureForcedManualUserRoleIsStudent,
+            ensureManualEntryUserRoleIsStudent,
             groupId,
             memberDialogMode,
             memberForm,
@@ -1669,9 +1714,9 @@ export default function AdminThesisGroupDetailsPage() {
 
                                         <Alert>
                                             <AlertDescription>
-                                                If Student/User ID{" "}
-                                                <span className="font-mono text-xs">{FORCE_STUDENT_ROLE_USER_ID}</span>{" "}
-                                                is used, the account role is automatically set to{" "}
+                                                If the entered Student/User ID matches an existing account (for example{" "}
+                                                <span className="font-mono text-xs">{FORCE_STUDENT_ROLE_USER_ID}</span>), the
+                                                system automatically sets that account role to{" "}
                                                 <span className="font-medium">student</span> before saving.
                                             </AlertDescription>
                                         </Alert>
