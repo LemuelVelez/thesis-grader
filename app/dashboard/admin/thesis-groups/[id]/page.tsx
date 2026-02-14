@@ -106,12 +106,6 @@ type FetchResult = {
     status: number
 }
 
-type StudentProfileProvisionAttempt = {
-    endpoint: string
-    method: "PATCH" | "POST"
-    body: Record<string, unknown>
-}
-
 type MemberDialogMode = "create" | "edit"
 
 type MemberFormState = {
@@ -166,6 +160,34 @@ function scheduleEndpoints(id: string): string[] {
     ]
 }
 
+/**
+ * Preferred dedicated endpoints for creating/updating student profile rows.
+ */
+function studentProfileEndpoints(userId: string): string[] {
+    const encoded = encodeURIComponent(userId)
+    return [
+        `/api/student/${encoded}/profile`,
+        `/api/students/${encoded}/profile`,
+        `/api/admin/student/${encoded}/profile`,
+        `/api/admin/students/${encoded}/profile`,
+    ]
+}
+
+/**
+ * Compatibility fallback endpoints if dedicated /profile routes are unavailable.
+ * Some backends wire student profile upsert through PATCH /student/:id.
+ */
+function studentProfileFallbackEndpoints(userId: string): string[] {
+    const encoded = encodeURIComponent(userId)
+    return [
+        `/api/student/${encoded}`,
+        `/api/students/${encoded}`,
+        `/api/admin/student/${encoded}`,
+        `/api/admin/students/${encoded}`,
+        `/api/users/${encoded}`,
+    ]
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null
     return value as Record<string, unknown>
@@ -190,6 +212,14 @@ function toTitleCase(value: string): string {
 
 function isValidEmail(value: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function isMissingStudentProfileMessage(value: string): boolean {
+    const normalized = value.trim().toLowerCase()
+    return (
+        normalized.includes("does not have a student profile record") ||
+        normalized.includes("create the student profile first")
+    )
 }
 
 /**
@@ -436,10 +466,6 @@ function isGenericFailureMessage(value: string): boolean {
     return /^failed to [a-z0-9\s-]+\.$/.test(normalized)
 }
 
-function isMissingStudentProfileError(message: string): boolean {
-    return /does not have a student profile record/i.test(message)
-}
-
 function extractErrorMessage(payload: unknown, fallback: string, status?: number): string {
     const rec = asRecord(payload)
     if (!rec) return fallback
@@ -635,6 +661,14 @@ export default function AdminThesisGroupDetailsPage() {
     const [createStudentEmail, setCreateStudentEmail] = React.useState("")
     const [createStudentStatus, setCreateStudentStatus] = React.useState<UserStatus>("active")
 
+    const [studentProfileDialogOpen, setStudentProfileDialogOpen] = React.useState(false)
+    const [studentProfileSubmitting, setStudentProfileSubmitting] = React.useState(false)
+    const [studentProfileError, setStudentProfileError] = React.useState<string | null>(null)
+    const [studentProfileTarget, setStudentProfileTarget] = React.useState<StudentUserItem | null>(null)
+    const [studentProfileProgram, setStudentProfileProgram] = React.useState("")
+    const [studentProfileSection, setStudentProfileSection] = React.useState("")
+    const [studentProfileMissingUserIds, setStudentProfileMissingUserIds] = React.useState<string[]>([])
+
     const staffById = React.useMemo(() => {
         const map = new Map<string, StaffUserItem>()
         for (const item of staffUsers) map.set(item.id, item)
@@ -689,6 +723,11 @@ export default function AdminThesisGroupDetailsPage() {
         [memberForm.studentUserId]
     )
 
+    const selectedStudentForMember = React.useMemo(() => {
+        if (normalizedMemberSelectValue === STUDENT_NONE_VALUE) return null
+        return studentsById.get(normalizedMemberSelectValue) ?? null
+    }, [normalizedMemberSelectValue, studentsById])
+
     const selectedStudentMissing =
         normalizedMemberSelectValue !== STUDENT_NONE_VALUE &&
         !availableStudentsForDialog.some((item) => item.id === normalizedMemberSelectValue)
@@ -698,6 +737,11 @@ export default function AdminThesisGroupDetailsPage() {
         if (currentEditStudentUserId) set.delete(currentEditStudentUserId)
         return set
     }, [currentEditStudentUserId, studentIdsAlreadyUsed])
+
+    const selectedStudentNeedsProfile = React.useMemo(() => {
+        if (!selectedStudentForMember) return false
+        return studentProfileMissingUserIds.includes(selectedStudentForMember.id)
+    }, [selectedStudentForMember, studentProfileMissingUserIds])
 
     const load = React.useCallback(
         async (signal: AbortSignal) => {
@@ -953,6 +997,161 @@ export default function AdminThesisGroupDetailsPage() {
         setCreateStudentError(null)
     }, [])
 
+    const resetStudentProfileDialog = React.useCallback(() => {
+        setStudentProfileError(null)
+        setStudentProfileTarget(null)
+        setStudentProfileProgram("")
+        setStudentProfileSection("")
+    }, [])
+
+    const markStudentProfileMissing = React.useCallback((userId: string) => {
+        setStudentProfileMissingUserIds((prev) => (prev.includes(userId) ? prev : [...prev, userId]))
+    }, [])
+
+    const clearStudentProfileMissing = React.useCallback((userId: string) => {
+        setStudentProfileMissingUserIds((prev) => prev.filter((id) => id !== userId))
+    }, [])
+
+    const openCreateStudentProfileDialog = React.useCallback(
+        (student?: StudentUserItem | null) => {
+            const target = student ?? selectedStudentForMember
+            if (!target) {
+                toast.error("Please select a student user first.")
+                return
+            }
+
+            setStudentProfileTarget(target)
+            setStudentProfileProgram(
+                toNullableTrimmed(memberForm.program) ??
+                toNullableTrimmed(target.program ?? "") ??
+                toNullableTrimmed(group?.program ?? "") ??
+                ""
+            )
+            setStudentProfileSection(
+                toNullableTrimmed(memberForm.section) ??
+                toNullableTrimmed(target.section ?? "") ??
+                ""
+            )
+            setStudentProfileError(null)
+            setStudentProfileDialogOpen(true)
+        },
+        [group?.program, memberForm.program, memberForm.section, selectedStudentForMember]
+    )
+
+    const syncStudentProfileState = React.useCallback((userId: string, program: string | null, section: string | null) => {
+        setStudentUsers((prev) =>
+            prev.map((item) => (item.id === userId ? { ...item, program, section } : item))
+        )
+    }, [])
+
+    const upsertStudentProfile = React.useCallback(async (userId: string, input: { program: string; section: string }) => {
+        const payload = {
+            program: toNullableTrimmed(input.program),
+            section: toNullableTrimmed(input.section),
+        }
+
+        const createEndpoints = studentProfileEndpoints(userId)
+        const fallbackEndpoints = studentProfileFallbackEndpoints(userId)
+
+        try {
+            return await requestFirstAvailable(createEndpoints, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            })
+        } catch (firstError) {
+            const message = firstError instanceof Error ? firstError.message.toLowerCase() : ""
+            const mayNeedPatch =
+                message.includes("already exists") ||
+                message.includes("duplicate") ||
+                message.includes("unique") ||
+                message.includes("method not allowed")
+
+            if (mayNeedPatch) {
+                try {
+                    return await requestFirstAvailable(createEndpoints, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    })
+                } catch {
+                    // continue to fallback strategy
+                }
+            }
+        }
+
+        return await requestFirstAvailable(fallbackEndpoints, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        })
+    }, [])
+
+    const handleCreateStudentProfile = React.useCallback(async () => {
+        if (studentProfileSubmitting) return
+
+        if (!studentProfileTarget) {
+            const message = "Please select a student user first."
+            setStudentProfileError(message)
+            toast.error(message)
+            return
+        }
+
+        setStudentProfileSubmitting(true)
+        setStudentProfileError(null)
+
+        const loadingToastId = toast.loading("Creating student profile...")
+
+        try {
+            const result = await upsertStudentProfile(studentProfileTarget.id, {
+                program: studentProfileProgram,
+                section: studentProfileSection,
+            })
+
+            const responseRec = asRecord(unwrapDetail(result.payload))
+            const normalizedProgram =
+                toStringOrNull(responseRec?.program ?? responseRec?.course) ??
+                toNullableTrimmed(studentProfileProgram)
+            const normalizedSection =
+                toStringOrNull(responseRec?.section) ??
+                toNullableTrimmed(studentProfileSection)
+
+            syncStudentProfileState(studentProfileTarget.id, normalizedProgram, normalizedSection)
+            clearStudentProfileMissing(studentProfileTarget.id)
+
+            if (selectedStudentForMember?.id === studentProfileTarget.id) {
+                setMemberForm((prev) => ({
+                    ...prev,
+                    program: toNullableTrimmed(prev.program) ? prev.program : normalizedProgram ?? "",
+                    section: toNullableTrimmed(prev.section) ? prev.section : normalizedSection ?? "",
+                }))
+            }
+
+            toast.success("Student profile created successfully. You can now add the member.", {
+                id: loadingToastId,
+            })
+
+            setStudentProfileDialogOpen(false)
+            resetStudentProfileDialog()
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "Failed to create student profile."
+            setStudentProfileError(message)
+            toast.error(message, { id: loadingToastId })
+        } finally {
+            setStudentProfileSubmitting(false)
+        }
+    }, [
+        clearStudentProfileMissing,
+        resetStudentProfileDialog,
+        selectedStudentForMember?.id,
+        studentProfileProgram,
+        studentProfileSection,
+        studentProfileSubmitting,
+        studentProfileTarget,
+        syncStudentProfileState,
+        upsertStudentProfile,
+    ])
+
     /**
      * Defensive guard:
      * - Ensure selected user has role "student" before member save.
@@ -1012,101 +1211,6 @@ export default function AdminThesisGroupDetailsPage() {
 
         return { existed: true, updated: true, roleBefore }
     }, [])
-
-    /**
-     * Best-effort profile provisioning for selected student before retrying member save.
-     * This is intentionally defensive and tries multiple compatible route shapes.
-     */
-    const provisionStudentProfile = React.useCallback(
-        async (
-            studentUserId: string,
-            program?: string | null,
-            section?: string | null
-        ) => {
-            const normalizedId = studentUserId.trim()
-            if (!normalizedId) {
-                throw new Error("Invalid student id for profile provisioning.")
-            }
-
-            const normalizedProgram = toNullableTrimmed(program ?? "")
-            const normalizedSection = toNullableTrimmed(section ?? "")
-
-            const patchPayload: Record<string, unknown> = {
-                program: normalizedProgram,
-                section: normalizedSection,
-            }
-
-            const createPayload: Record<string, unknown> = {
-                user_id: normalizedId,
-                userId: normalizedId,
-                student_user_id: normalizedId,
-                studentUserId: normalizedId,
-                ...patchPayload,
-            }
-
-            const encodedId = encodeURIComponent(normalizedId)
-
-            const attempts: StudentProfileProvisionAttempt[] = [
-                { endpoint: `/api/student/${encodedId}`, method: "PATCH", body: patchPayload },
-                { endpoint: `/api/students/${encodedId}`, method: "PATCH", body: patchPayload },
-                { endpoint: `/api/student/${encodedId}/profile`, method: "PATCH", body: patchPayload },
-                { endpoint: `/api/students/${encodedId}/profile`, method: "PATCH", body: patchPayload },
-                { endpoint: `/api/student-profiles/${encodedId}`, method: "PATCH", body: patchPayload },
-                { endpoint: "/api/student-profiles", method: "POST", body: createPayload },
-                { endpoint: "/api/students/profiles", method: "POST", body: createPayload },
-            ]
-
-            let lastError: Error | null = null
-
-            for (const attempt of attempts) {
-                try {
-                    const res = await fetch(attempt.endpoint, {
-                        method: attempt.method,
-                        credentials: "include",
-                        cache: "no-store",
-                        headers: {
-                            Accept: "application/json",
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify(attempt.body),
-                    })
-
-                    if (res.status === 404 || res.status === 405) {
-                        continue
-                    }
-
-                    const payload = await parseResponseBodySafe(res)
-
-                    if (!res.ok) {
-                        const message = extractErrorMessage(
-                            payload,
-                            `${attempt.endpoint} returned ${res.status}`,
-                            res.status
-                        )
-
-                        // Continue probing other compatible endpoint shapes first.
-                        if (res.status === 400 || res.status === 409 || res.status === 422) {
-                            lastError = new Error(message)
-                            continue
-                        }
-
-                        throw new Error(message)
-                    }
-
-                    return
-                } catch (error) {
-                    if (error instanceof Error && error.name === "AbortError") throw error
-                    lastError = error instanceof Error ? error : new Error("Failed to provision student profile.")
-                }
-            }
-
-            if (lastError) throw lastError
-            throw new Error(
-                "Unable to provision student profile automatically. Please create the student profile, then retry adding the member."
-            )
-        },
-        []
-    )
 
     const handleCreateStudentUser = React.useCallback(async () => {
         if (creatingStudentUser) return
@@ -1187,7 +1291,15 @@ export default function AdminThesisGroupDetailsPage() {
                 toStringOrNull(body?.message) ??
                 "Student user created successfully. Login details were sent to email."
 
-            toast.success(successMessage, { id: loadingToastId })
+            toast.success(successMessage, {
+                id: loadingToastId,
+                description: "Before adding this user as a member, create a student profile.",
+                action: {
+                    label: "Create Profile",
+                    onClick: () => openCreateStudentProfileDialog(createdStudent),
+                },
+            })
+
             setCreateStudentOpen(false)
             resetCreateStudentForm()
         } catch (e) {
@@ -1202,6 +1314,7 @@ export default function AdminThesisGroupDetailsPage() {
         createStudentName,
         createStudentStatus,
         creatingStudentUser,
+        openCreateStudentProfileDialog,
         resetCreateStudentForm,
     ])
 
@@ -1259,6 +1372,8 @@ export default function AdminThesisGroupDetailsPage() {
             setMemberSubmitting(true)
             setMemberActionError(null)
 
+            let selectedStudentSnapshot: StudentUserItem | null = null
+
             try {
                 const selectedId = normalizedMemberSelectValue === STUDENT_NONE_VALUE ? null : normalizedMemberSelectValue
                 if (!selectedId) {
@@ -1269,6 +1384,8 @@ export default function AdminThesisGroupDetailsPage() {
                 if (!selected) {
                     throw new Error("Selected student user is no longer available.")
                 }
+
+                selectedStudentSnapshot = selected
 
                 if (memberDialogMode === "create" && studentIdsAlreadyUsed.has(selected.id)) {
                     throw new Error("Selected student is already a member of this thesis group.")
@@ -1302,49 +1419,12 @@ export default function AdminThesisGroupDetailsPage() {
                     section: toNullableTrimmed(memberForm.section) ?? toNullableTrimmed(selected.section ?? "") ?? null,
                 }
 
-                const runMemberSaveWithAutoProfileProvision = async (
-                    executeSave: () => Promise<FetchResult>
-                ): Promise<FetchResult> => {
-                    try {
-                        return await executeSave()
-                    } catch (firstError) {
-                        const firstMessage = firstError instanceof Error ? firstError.message : "Failed to save member."
-                        if (!isMissingStudentProfileError(firstMessage)) {
-                            throw firstError
-                        }
-
-                        const provisioningToastId = toast.loading("Creating missing student profile...")
-
-                        try {
-                            await provisionStudentProfile(
-                                selected.id,
-                                payload.program,
-                                payload.section
-                            )
-                            toast.success("Student profile created. Retrying member save...", { id: provisioningToastId })
-                        } catch (provisionError) {
-                            const provisionMessage =
-                                provisionError instanceof Error
-                                    ? provisionError.message
-                                    : "Failed to create student profile automatically."
-                            toast.error(provisionMessage, { id: provisioningToastId })
-                            throw new Error(provisionMessage)
-                        }
-
-                        const retried = await executeSave()
-                        successNotes.push("Missing student profile was created automatically.")
-                        return retried
-                    }
-                }
-
                 if (memberDialogMode === "create") {
-                    const result = await runMemberSaveWithAutoProfileProvision(() =>
-                        requestFirstAvailable(memberEndpoints(groupId), {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(payload),
-                        })
-                    )
+                    const result = await requestFirstAvailable(memberEndpoints(groupId), {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    })
 
                     const created = normalizeMember(unwrapDetail(result.payload))
 
@@ -1352,6 +1432,10 @@ export default function AdminThesisGroupDetailsPage() {
                         setMembers((prev) => sortMembers([created, ...prev.filter((item) => item.id !== created.id)]))
                     } else {
                         await refreshMembersOnly()
+                    }
+
+                    if (selectedStudentSnapshot) {
+                        clearStudentProfileMissing(selectedStudentSnapshot.id)
                     }
 
                     if (successNotes.length > 0) {
@@ -1371,13 +1455,11 @@ export default function AdminThesisGroupDetailsPage() {
                         (base) => `${base}/${encodeURIComponent(identifier)}`
                     )
 
-                    const result = await runMemberSaveWithAutoProfileProvision(() =>
-                        requestFirstAvailable(endpoints, {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(payload),
-                        })
-                    )
+                    const result = await requestFirstAvailable(endpoints, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    })
 
                     const updated = normalizeMember(unwrapDetail(result.payload))
 
@@ -1388,6 +1470,10 @@ export default function AdminThesisGroupDetailsPage() {
                         })
                     } else {
                         await refreshMembersOnly()
+                    }
+
+                    if (selectedStudentSnapshot) {
+                        clearStudentProfileMissing(selectedStudentSnapshot.id)
                     }
 
                     if (successNotes.length > 0) {
@@ -1402,21 +1488,34 @@ export default function AdminThesisGroupDetailsPage() {
             } catch (e) {
                 const message = e instanceof Error ? e.message : "Failed to save member."
                 setMemberActionError(message)
-                toast.error(message)
+
+                if (selectedStudentSnapshot && isMissingStudentProfileMessage(message)) {
+                    markStudentProfileMissing(selectedStudentSnapshot.id)
+                    toast.error(message, {
+                        action: {
+                            label: "Create Profile",
+                            onClick: () => openCreateStudentProfileDialog(selectedStudentSnapshot),
+                        },
+                    })
+                } else {
+                    toast.error(message)
+                }
             } finally {
                 setMemberSubmitting(false)
             }
         },
         [
+            clearStudentProfileMissing,
             currentEditStudentUserId,
             editableStudentIds,
             ensureUserRoleIsStudent,
             groupId,
+            markStudentProfileMissing,
             memberDialogMode,
             memberForm,
             memberTarget,
             normalizedMemberSelectValue,
-            provisionStudentProfile,
+            openCreateStudentProfileDialog,
             refreshMembersOnly,
             studentIdsAlreadyUsed,
             studentsById,
@@ -1462,7 +1561,7 @@ export default function AdminThesisGroupDetailsPage() {
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
         memberDialogMode === "create"
-            ? "Select an existing Student user to add as a member."
+            ? "Select an existing Student user. If the user has no student profile yet, create it directly from this dialog."
             : "Update member assignment and optional profile details."
 
     return (
@@ -1686,7 +1785,22 @@ export default function AdminThesisGroupDetailsPage() {
                             <form onSubmit={onMemberSubmit} className="mt-4 space-y-4">
                                 {memberActionError ? (
                                     <Alert variant="destructive">
-                                        <AlertDescription>{memberActionError}</AlertDescription>
+                                        <AlertDescription>
+                                            <div className="space-y-3">
+                                                <p>{memberActionError}</p>
+
+                                                {isMissingStudentProfileMessage(memberActionError) && selectedStudentForMember ? (
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="secondary"
+                                                        onClick={() => openCreateStudentProfileDialog(selectedStudentForMember)}
+                                                    >
+                                                        Create Student Profile
+                                                    </Button>
+                                                ) : null}
+                                            </div>
+                                        </AlertDescription>
                                     </Alert>
                                 ) : null}
 
@@ -1744,6 +1858,26 @@ export default function AdminThesisGroupDetailsPage() {
                                         </SelectContent>
                                     </Select>
                                 </div>
+
+                                {selectedStudentNeedsProfile && selectedStudentForMember ? (
+                                    <Alert>
+                                        <AlertDescription>
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                <p>
+                                                    Selected student has no profile yet. Create the student profile to proceed.
+                                                </p>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="secondary"
+                                                    onClick={() => openCreateStudentProfileDialog(selectedStudentForMember)}
+                                                >
+                                                    Create Student Profile
+                                                </Button>
+                                            </div>
+                                        </AlertDescription>
+                                    </Alert>
+                                ) : null}
 
                                 <div className="grid gap-4 md:grid-cols-2">
                                     <div className="space-y-2">
@@ -1867,6 +2001,90 @@ export default function AdminThesisGroupDetailsPage() {
                             </Button>
                             <Button type="submit" disabled={creatingStudentUser}>
                                 {creatingStudentUser ? "Creating..." : "Create Student User"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={studentProfileDialogOpen}
+                onOpenChange={(open) => {
+                    if (!studentProfileSubmitting) setStudentProfileDialogOpen(open)
+                    if (!open && !studentProfileSubmitting) {
+                        resetStudentProfileDialog()
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Create Student Profile</DialogTitle>
+                        <DialogDescription>
+                            This creates the required student profile record so the user can be added as a thesis-group member.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <form
+                        className="space-y-4"
+                        onSubmit={(event) => {
+                            event.preventDefault()
+                            void handleCreateStudentProfile()
+                        }}
+                    >
+                        {studentProfileError ? (
+                            <Alert variant="destructive">
+                                <AlertDescription>{studentProfileError}</AlertDescription>
+                            </Alert>
+                        ) : null}
+
+                        <div className="space-y-2">
+                            <Label>Student User</Label>
+                            <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                                <p className="font-medium">{studentProfileTarget?.name ?? "—"}</p>
+                                {studentProfileTarget?.email ? (
+                                    <p className="text-xs text-muted-foreground">{studentProfileTarget.email}</p>
+                                ) : null}
+                                {studentProfileTarget?.id ? (
+                                    <p className="text-xs text-muted-foreground">User ID: {studentProfileTarget.id}</p>
+                                ) : null}
+                            </div>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label htmlFor="create-profile-program">Program</Label>
+                                <Input
+                                    id="create-profile-program"
+                                    value={studentProfileProgram}
+                                    onChange={(e) => setStudentProfileProgram(e.target.value)}
+                                    placeholder="e.g., BSIT"
+                                    autoComplete="off"
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="create-profile-section">Section</Label>
+                                <Input
+                                    id="create-profile-section"
+                                    value={studentProfileSection}
+                                    onChange={(e) => setStudentProfileSection(e.target.value)}
+                                    placeholder="e.g., 4A"
+                                    autoComplete="off"
+                                />
+                            </div>
+                        </div>
+
+                        <DialogFooter>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setStudentProfileDialogOpen(false)}
+                                disabled={studentProfileSubmitting}
+                            >
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={studentProfileSubmitting}>
+                                {studentProfileSubmitting ? "Creating..." : "Create Student Profile"}
                             </Button>
                         </DialogFooter>
                     </form>
