@@ -524,6 +524,32 @@ function parseGroupMemberStudentIdFromBody(
     return null;
 }
 
+function hasExplicitLinkedStudentUserReference(
+    body: Record<string, unknown>,
+): boolean {
+    const candidates: unknown[] = [
+        body.user_id,
+        body.userId,
+        body.student_user_id,
+        body.studentUserId,
+        body.linked_user_id,
+        body.linkedUserId,
+    ];
+
+    return candidates.some((candidate) => toNonEmptyString(candidate) !== null);
+}
+
+function isThesisGroupMembersSegment(value: string | undefined): boolean {
+    if (!value) return false;
+
+    return (
+        value === 'members' ||
+        value === 'member' ||
+        value === 'group-members' ||
+        value === 'group-member'
+    );
+}
+
 function extractUuidFromText(value: string): string | null {
     const matches = value.match(
         /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi,
@@ -729,7 +755,8 @@ async function dispatchThesisGroupsRequest(
     }
 
     // /api/*/thesis-groups/:id/members[/:memberId]
-    if (tail[1] === 'members') {
+    // Supports aliases: members, member, group-members, group-member
+    if (isThesisGroupMembersSegment(tail[1])) {
         const group = await controller.findById(id);
         if (!group) return json404Entity('Thesis group');
 
@@ -757,10 +784,18 @@ async function dispatchThesisGroupsRequest(
                     return json400('studentId/userId must be a valid UUID.');
                 }
 
+                const requiresLinkedStudentUser =
+                    hasExplicitLinkedStudentUserReference(body);
                 const studentUser = await services.users.findById(studentId);
-                if (!studentUser) return json404Entity('Student user');
-                if (studentUser.role !== 'student') {
+
+                if (studentUser && studentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
+                }
+
+                if (requiresLinkedStudentUser && !studentUser) {
+                    return json400(
+                        'Linked student user was not found. Use a valid student user id or submit this member as manual entry.',
+                    );
                 }
 
                 const existingRows = await membersController.listByGroup(id);
@@ -813,10 +848,18 @@ async function dispatchThesisGroupsRequest(
                     return json400('studentId/userId must be a valid UUID.');
                 }
 
+                const requiresLinkedStudentUser =
+                    hasExplicitLinkedStudentUserReference(body);
                 const nextStudentUser = await services.users.findById(nextStudentId);
-                if (!nextStudentUser) return json404Entity('Student user');
-                if (nextStudentUser.role !== 'student') {
+
+                if (nextStudentUser && nextStudentUser.role !== 'student') {
                     return json400('Resolved user must have role "student".');
+                }
+
+                if (requiresLinkedStudentUser && !nextStudentUser) {
+                    return json400(
+                        'Linked student user was not found. Use a valid student user id or submit this member as manual entry.',
+                    );
                 }
 
                 if (nextStudentId === existingMember.student_id) {
