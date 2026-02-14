@@ -3,7 +3,14 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import { CalendarIcon } from "lucide-react"
+import {
+    CalendarIcon,
+    Loader2,
+    PencilLine,
+    Plus,
+    Trash2,
+    UserPlus,
+} from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Badge } from "@/components/ui/badge"
@@ -60,6 +67,8 @@ type DefenseScheduleStatus =
 
 type Meridiem = "AM" | "PM"
 
+type UserStatus = "active" | "disabled" | (string & {})
+
 type PanelistLite = {
     id: string
     name: string
@@ -105,6 +114,8 @@ type UserDirectoryOption = {
     id: string
     name: string
     email: string | null
+    role: string | null
+    status: string | null
 }
 
 type ScheduleFormValues = {
@@ -126,6 +137,31 @@ type DefenseScheduleMutationPayload = {
     rubric_template_id: string | null
 }
 
+type MutationAttempt = {
+    endpoint: string
+    method: "POST" | "PATCH" | "PUT" | "DELETE"
+    body?: Record<string, unknown>
+}
+
+type ProvisionUserPayload = {
+    name: string
+    email: string
+    status: UserStatus
+}
+
+type ProvisionUserResponse = {
+    item?: unknown
+    error?: string
+    message?: string
+    emailError?: string
+}
+
+type ProvisionUserResult = {
+    user: UserDirectoryOption
+    message: string | null
+    emailError: string | null
+}
+
 const READ_ENDPOINTS = ["/api/admin/defense-schedules", "/api/defense-schedules"] as const
 const WRITE_BASE_ENDPOINTS = ["/api/admin/defense-schedules", "/api/defense-schedules"] as const
 const STATUS_ACTIONS: DefenseScheduleStatus[] = ["scheduled", "ongoing", "completed", "cancelled"]
@@ -140,6 +176,8 @@ const RUBRIC_ENDPOINTS = [
 ] as const
 
 const RUBRIC_NONE_VALUE = "__none__"
+const PANELIST_ROLE = "panelist"
+const CREATE_PANELIST_STATUSES: UserStatus[] = ["active", "disabled"]
 
 const HOUR_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"))
 const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"))
@@ -165,6 +203,32 @@ function pickNullableString(source: Record<string, unknown>, keys: string[]): st
         if (value === null) return null
     }
     return null
+}
+
+function pickRoleValue(source: Record<string, unknown>): string | null {
+    const direct = pickNullableString(source, ["role", "user_role", "userRole"])
+    if (typeof direct === "string" && direct.trim()) return direct.trim().toLowerCase()
+
+    const roles = source.roles
+    if (Array.isArray(roles)) {
+        for (const roleItem of roles) {
+            if (typeof roleItem === "string" && roleItem.trim()) {
+                return roleItem.trim().toLowerCase()
+            }
+
+            if (isRecord(roleItem)) {
+                const nested = pickString(roleItem, ["name", "role"])
+                if (nested) return nested.toLowerCase()
+            }
+        }
+    }
+
+    return null
+}
+
+function normalizeUserStatusValue(value: string | null): string | null {
+    if (!value) return null
+    return value.trim().toLowerCase() || null
 }
 
 function formatDateTime(value: string): string {
@@ -388,8 +452,12 @@ function normalizeUserOption(raw: unknown): UserDirectoryOption | null {
 
     const name = pickString(raw, ["name", "full_name", "display_name", "displayName", "email"]) ?? id
     const email = pickNullableString(raw, ["email"])
+    const role = pickRoleValue(raw)
+    const status = normalizeUserStatusValue(
+        pickNullableString(raw, ["status", "user_status", "userStatus"]),
+    )
 
-    return { id, name, email }
+    return { id, name, email, role, status }
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
@@ -441,6 +509,243 @@ function statusBadgeClass(status: DefenseScheduleStatus): string {
     }
 
     return "border-muted-foreground/30 bg-muted text-muted-foreground"
+}
+
+function isValidEmail(value: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+async function executeMutationAttempts(
+    attempts: MutationAttempt[],
+    fallbackErrorMessage: string,
+): Promise<void> {
+    const errors: string[] = []
+
+    for (const attempt of attempts) {
+        try {
+            const res = await fetch(attempt.endpoint, {
+                method: attempt.method,
+                headers: attempt.body ? { "Content-Type": "application/json" } : undefined,
+                body: attempt.body ? JSON.stringify(attempt.body) : undefined,
+            })
+
+            if (res.ok) return
+
+            if (res.status === 404 || res.status === 405) {
+                continue
+            }
+
+            errors.push(await readErrorMessage(res))
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : "Network error")
+        }
+    }
+
+    throw new Error(errors[0] ?? fallbackErrorMessage)
+}
+
+async function addPanelistToDefenseSchedule(scheduleId: string, panelistUserId: string): Promise<void> {
+    const sid = encodeURIComponent(scheduleId)
+
+    const attempts: MutationAttempt[] = [
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists`, method: "POST", body: { user_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/panelists`, method: "POST", body: { user_id: panelistUserId } },
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists`, method: "POST", body: { panelist_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/panelists`, method: "POST", body: { panelist_id: panelistUserId } },
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists`, method: "POST", body: { staff_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/panelists`, method: "POST", body: { staff_id: panelistUserId } },
+
+        { endpoint: `/api/admin/defense-schedules/${sid}/schedule-panelists`, method: "POST", body: { user_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/schedule-panelists`, method: "POST", body: { user_id: panelistUserId } },
+
+        {
+            endpoint: "/api/admin/defense-schedule-panelists",
+            method: "POST",
+            body: { defense_schedule_id: scheduleId, user_id: panelistUserId },
+        },
+        {
+            endpoint: "/api/defense-schedule-panelists",
+            method: "POST",
+            body: { defense_schedule_id: scheduleId, user_id: panelistUserId },
+        },
+        {
+            endpoint: "/api/admin/defense-schedule-panelists",
+            method: "POST",
+            body: { schedule_id: scheduleId, panelist_id: panelistUserId },
+        },
+        {
+            endpoint: "/api/defense-schedule-panelists",
+            method: "POST",
+            body: { schedule_id: scheduleId, panelist_id: panelistUserId },
+        },
+    ]
+
+    await executeMutationAttempts(
+        attempts,
+        "Failed to add panelist. Please verify panelist endpoints for defense schedules.",
+    )
+}
+
+async function removePanelistFromDefenseSchedule(scheduleId: string, panelistUserId: string): Promise<void> {
+    const sid = encodeURIComponent(scheduleId)
+    const pid = encodeURIComponent(panelistUserId)
+
+    const attempts: MutationAttempt[] = [
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists/${pid}`, method: "DELETE" },
+        { endpoint: `/api/defense-schedules/${sid}/panelists/${pid}`, method: "DELETE" },
+        { endpoint: `/api/admin/defense-schedules/${sid}/schedule-panelists/${pid}`, method: "DELETE" },
+        { endpoint: `/api/defense-schedules/${sid}/schedule-panelists/${pid}`, method: "DELETE" },
+
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists`, method: "DELETE", body: { user_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/panelists`, method: "DELETE", body: { user_id: panelistUserId } },
+        { endpoint: `/api/admin/defense-schedules/${sid}/panelists`, method: "DELETE", body: { panelist_id: panelistUserId } },
+        { endpoint: `/api/defense-schedules/${sid}/panelists`, method: "DELETE", body: { panelist_id: panelistUserId } },
+
+        { endpoint: `/api/admin/defense-schedule-panelists/${pid}`, method: "DELETE" },
+        { endpoint: `/api/defense-schedule-panelists/${pid}`, method: "DELETE" },
+        {
+            endpoint: "/api/admin/defense-schedule-panelists",
+            method: "DELETE",
+            body: { defense_schedule_id: scheduleId, user_id: panelistUserId },
+        },
+        {
+            endpoint: "/api/defense-schedule-panelists",
+            method: "DELETE",
+            body: { defense_schedule_id: scheduleId, user_id: panelistUserId },
+        },
+    ]
+
+    await executeMutationAttempts(
+        attempts,
+        "Failed to remove panelist. Please verify panelist endpoints for defense schedules.",
+    )
+}
+
+async function replaceDefenseSchedulePanelist(
+    scheduleId: string,
+    currentPanelistUserId: string,
+    nextPanelistUserId: string,
+): Promise<void> {
+    if (currentPanelistUserId === nextPanelistUserId) return
+
+    const sid = encodeURIComponent(scheduleId)
+    const currentId = encodeURIComponent(currentPanelistUserId)
+
+    const directAttempts: MutationAttempt[] = [
+        {
+            endpoint: `/api/admin/defense-schedules/${sid}/panelists/${currentId}`,
+            method: "PATCH",
+            body: { user_id: nextPanelistUserId },
+        },
+        {
+            endpoint: `/api/defense-schedules/${sid}/panelists/${currentId}`,
+            method: "PATCH",
+            body: { user_id: nextPanelistUserId },
+        },
+        {
+            endpoint: `/api/admin/defense-schedules/${sid}/panelists/${currentId}`,
+            method: "PATCH",
+            body: { panelist_id: nextPanelistUserId },
+        },
+        {
+            endpoint: `/api/defense-schedules/${sid}/panelists/${currentId}`,
+            method: "PATCH",
+            body: { panelist_id: nextPanelistUserId },
+        },
+        {
+            endpoint: `/api/admin/defense-schedules/${sid}/panelists`,
+            method: "PATCH",
+            body: { old_user_id: currentPanelistUserId, new_user_id: nextPanelistUserId },
+        },
+        {
+            endpoint: `/api/defense-schedules/${sid}/panelists`,
+            method: "PATCH",
+            body: { old_user_id: currentPanelistUserId, new_user_id: nextPanelistUserId },
+        },
+        {
+            endpoint: "/api/admin/defense-schedule-panelists",
+            method: "PATCH",
+            body: {
+                defense_schedule_id: scheduleId,
+                old_user_id: currentPanelistUserId,
+                new_user_id: nextPanelistUserId,
+            },
+        },
+        {
+            endpoint: "/api/defense-schedule-panelists",
+            method: "PATCH",
+            body: {
+                defense_schedule_id: scheduleId,
+                old_user_id: currentPanelistUserId,
+                new_user_id: nextPanelistUserId,
+            },
+        },
+    ]
+
+    let directErrorMessage: string | null = null
+
+    try {
+        await executeMutationAttempts(
+            directAttempts,
+            "Failed to update panelist using direct update endpoint.",
+        )
+        return
+    } catch (err) {
+        directErrorMessage =
+            err instanceof Error
+                ? err.message
+                : "Failed to update panelist using direct update endpoint."
+    }
+
+    try {
+        await removePanelistFromDefenseSchedule(scheduleId, currentPanelistUserId)
+        await addPanelistToDefenseSchedule(scheduleId, nextPanelistUserId)
+    } catch (fallbackErr) {
+        throw new Error(
+            fallbackErr instanceof Error
+                ? fallbackErr.message
+                : directErrorMessage ?? "Failed to update panelist assignment.",
+        )
+    }
+}
+
+async function provisionPanelistUser(
+    payload: ProvisionUserPayload,
+): Promise<ProvisionUserResult> {
+    const res = await fetch("/api/users/provision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: payload.name,
+            email: payload.email,
+            role: PANELIST_ROLE,
+            status: payload.status,
+            sendLoginDetails: true,
+        }),
+    })
+
+    const data = (await res.json()) as ProvisionUserResponse
+
+    if (!res.ok) {
+        throw new Error(data.error || data.message || "Failed to create panelist user.")
+    }
+
+    const item = extractSingle(data.item ?? data)
+    const normalized = normalizeUserOption(item)
+
+    if (!normalized) {
+        throw new Error("Panelist user was created but response payload is invalid.")
+    }
+
+    return {
+        user: {
+            ...normalized,
+            role: normalized.role ?? PANELIST_ROLE,
+            status: normalized.status ?? String(payload.status).toLowerCase(),
+        },
+        message: data.message ?? null,
+        emailError: data.emailError ?? null,
+    }
 }
 
 async function fetchDefenseScheduleById(id: string): Promise<DefenseScheduleRecord> {
@@ -670,6 +975,28 @@ export default function AdminDefenseScheduleDetailsPage() {
     const [deleteOpen, setDeleteOpen] = React.useState(false)
     const [deleteBusy, setDeleteBusy] = React.useState(false)
 
+    // Panelist CRUD states
+    const [addPanelistOpen, setAddPanelistOpen] = React.useState(false)
+    const [addPanelistBusy, setAddPanelistBusy] = React.useState(false)
+    const [addPanelistUserId, setAddPanelistUserId] = React.useState("")
+
+    const [editPanelistOpen, setEditPanelistOpen] = React.useState(false)
+    const [editPanelistBusy, setEditPanelistBusy] = React.useState(false)
+    const [editingPanelist, setEditingPanelist] = React.useState<PanelistLite | null>(null)
+    const [editPanelistUserId, setEditPanelistUserId] = React.useState("")
+
+    const [removePanelistOpen, setRemovePanelistOpen] = React.useState(false)
+    const [removePanelistBusy, setRemovePanelistBusy] = React.useState(false)
+    const [removingPanelist, setRemovingPanelist] = React.useState<PanelistLite | null>(null)
+
+    const [createPanelistUserOpen, setCreatePanelistUserOpen] = React.useState(false)
+    const [createPanelistBusy, setCreatePanelistBusy] = React.useState(false)
+    const [createPanelistName, setCreatePanelistName] = React.useState("")
+    const [createPanelistEmail, setCreatePanelistEmail] = React.useState("")
+    const [createPanelistStatus, setCreatePanelistStatus] = React.useState<UserStatus>("active")
+    const [createPanelistAssignMode, setCreatePanelistAssignMode] =
+        React.useState<"assign" | "directory">("assign")
+
     const groupTitleById = React.useMemo(
         () => new Map(groups.map((group) => [group.id, group.title])),
         [groups],
@@ -684,6 +1011,58 @@ export default function AdminDefenseScheduleDetailsPage() {
         () => new Map(users.map((user) => [user.id, user])),
         [users],
     )
+
+    const panelistUsers = React.useMemo(() => {
+        return users
+            .filter((user) => (user.role ?? "").toLowerCase() === PANELIST_ROLE)
+            .sort((a, b) => a.name.localeCompare(b.name))
+    }, [users])
+
+    const panelistCandidateOptions = React.useMemo(() => {
+        const merged: UserDirectoryOption[] = [...panelistUsers]
+
+        for (const panelist of schedule?.panelists ?? []) {
+            if (!panelist.id) continue
+            if (merged.some((u) => u.id === panelist.id)) continue
+
+            merged.push({
+                id: panelist.id,
+                name: panelist.name,
+                email: panelist.email,
+                role: PANELIST_ROLE,
+                status: "active",
+            })
+        }
+
+        return uniqueById(merged).sort((a, b) => a.name.localeCompare(b.name))
+    }, [panelistUsers, schedule])
+
+    const unassignedPanelistOptions = React.useMemo(() => {
+        if (!schedule) return panelistCandidateOptions
+
+        const assignedIds = new Set(
+            schedule.panelists.map((panelist) => panelist.id).filter(Boolean),
+        )
+
+        return panelistCandidateOptions.filter((user) => !assignedIds.has(user.id))
+    }, [panelistCandidateOptions, schedule])
+
+    const editPanelistOptions = React.useMemo(() => {
+        if (!editingPanelist) return panelistCandidateOptions
+        if (!schedule) return panelistCandidateOptions
+
+        const assignedIds = new Set(
+            schedule.panelists.map((panelist) => panelist.id).filter(Boolean),
+        )
+
+        return panelistCandidateOptions.filter(
+            (user) => user.id === editingPanelist.id || !assignedIds.has(user.id),
+        )
+    }, [editingPanelist, panelistCandidateOptions, schedule])
+
+    const hasPanelistUsers = panelistUsers.length > 0
+    const panelistMutationBusy =
+        addPanelistBusy || editPanelistBusy || removePanelistBusy || createPanelistBusy
 
     const resolvedGroupTitle = React.useMemo(() => {
         if (!schedule) return "Unassigned Group"
@@ -774,10 +1153,50 @@ export default function AdminDefenseScheduleDetailsPage() {
         }
     }, [])
 
+    const refreshScheduleSilently = React.useCallback(async () => {
+        if (!scheduleId) return
+
+        try {
+            const latest = await fetchDefenseScheduleById(scheduleId)
+            setSchedule(latest)
+        } catch {
+            await loadSchedule()
+        }
+    }, [loadSchedule, scheduleId])
+
     React.useEffect(() => {
         void loadSchedule()
         void loadReferenceData()
     }, [loadSchedule, loadReferenceData])
+
+    React.useEffect(() => {
+        if (!addPanelistOpen) return
+        if (unassignedPanelistOptions.length === 0) {
+            setAddPanelistUserId("")
+            return
+        }
+
+        if (!unassignedPanelistOptions.some((option) => option.id === addPanelistUserId)) {
+            setAddPanelistUserId(unassignedPanelistOptions[0]!.id)
+        }
+    }, [addPanelistOpen, addPanelistUserId, unassignedPanelistOptions])
+
+    React.useEffect(() => {
+        if (!editPanelistOpen || !editingPanelist) return
+        if (editPanelistOptions.length === 0) {
+            setEditPanelistUserId(editingPanelist.id)
+            return
+        }
+
+        if (!editPanelistOptions.some((option) => option.id === editPanelistUserId)) {
+            const currentInOptions = editPanelistOptions.find(
+                (option) => option.id === editingPanelist.id,
+            )
+            setEditPanelistUserId(
+                currentInOptions?.id ?? editPanelistOptions[0]!.id,
+            )
+        }
+    }, [editPanelistOpen, editingPanelist, editPanelistOptions, editPanelistUserId])
 
     const groupSelectOptions = React.useMemo(() => {
         if (!editForm.group_id) return groups
@@ -820,6 +1239,63 @@ export default function AdminDefenseScheduleDetailsPage() {
         setEditOpen(true)
     }, [schedule])
 
+    const openCreatePanelistUserDialog = React.useCallback(
+        (mode: "assign" | "directory" = "assign") => {
+            setCreatePanelistName("")
+            setCreatePanelistEmail("")
+            setCreatePanelistStatus("active")
+            setCreatePanelistAssignMode(schedule ? mode : "directory")
+            setCreatePanelistUserOpen(true)
+        },
+        [schedule],
+    )
+
+    const openAddPanelistDialog = React.useCallback(() => {
+        if (!schedule) return
+
+        if (unassignedPanelistOptions.length === 0) {
+            if (!hasPanelistUsers) {
+                openCreatePanelistUserDialog("assign")
+                return
+            }
+
+            toast.error("All panelist users are already assigned to this schedule.")
+            return
+        }
+
+        setAddPanelistUserId(unassignedPanelistOptions[0]!.id)
+        setAddPanelistOpen(true)
+    }, [hasPanelistUsers, openCreatePanelistUserDialog, schedule, unassignedPanelistOptions])
+
+    const openEditPanelistDialog = React.useCallback(
+        (panelist: PanelistLite) => {
+            if (!panelist.id) {
+                toast.error("This panelist cannot be edited because the user ID is missing.")
+                return
+            }
+
+            setEditingPanelist(panelist)
+
+            const preferred =
+                editPanelistOptions.find((option) => option.id === panelist.id)?.id ??
+                panelist.id
+
+            setEditPanelistUserId(preferred)
+            setEditPanelistOpen(true)
+        },
+        [editPanelistOptions],
+    )
+
+    const openRemovePanelistDialog = React.useCallback((panelist: PanelistLite) => {
+        if (!panelist.id) {
+            toast.error("This panelist cannot be removed because the user ID is missing.")
+            return
+        }
+
+        setRemovingPanelist(panelist)
+        setRemovePanelistOpen(true)
+    }, [])
+
     const handleSetStatus = React.useCallback(
         async (nextStatus: DefenseScheduleStatus) => {
             if (!schedule || busyStatus) return
@@ -855,6 +1331,211 @@ export default function AdminDefenseScheduleDetailsPage() {
         },
         [schedule, busyStatus],
     )
+
+    const handleAddPanelist = React.useCallback(async () => {
+        if (!schedule || addPanelistBusy) return
+
+        const userId = addPanelistUserId.trim()
+        if (!userId) {
+            toast.error("Please select a panelist user to assign.")
+            return
+        }
+
+        if (schedule.panelists.some((panelist) => panelist.id === userId)) {
+            toast.error("This panelist is already assigned to the schedule.")
+            return
+        }
+
+        setAddPanelistBusy(true)
+        setError(null)
+
+        try {
+            await addPanelistToDefenseSchedule(schedule.id, userId)
+            await refreshScheduleSilently()
+
+            const selected = panelistCandidateOptions.find((u) => u.id === userId)
+            const displayName = selected?.name || "Panelist"
+
+            setAddPanelistOpen(false)
+            toast.success(`${displayName} was added to the panel.`)
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to add panelist to this schedule."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setAddPanelistBusy(false)
+        }
+    }, [
+        addPanelistBusy,
+        addPanelistUserId,
+        panelistCandidateOptions,
+        refreshScheduleSilently,
+        schedule,
+    ])
+
+    const handleUpdatePanelist = React.useCallback(async () => {
+        if (!schedule || !editingPanelist || editPanelistBusy) return
+
+        const nextUserId = editPanelistUserId.trim()
+        if (!nextUserId) {
+            toast.error("Please select the replacement panelist user.")
+            return
+        }
+
+        if (!editingPanelist.id) {
+            toast.error("Cannot update panelist because the current panelist ID is missing.")
+            return
+        }
+
+        if (nextUserId === editingPanelist.id) {
+            toast.error("Please choose a different panelist user.")
+            return
+        }
+
+        setEditPanelistBusy(true)
+        setError(null)
+
+        try {
+            await replaceDefenseSchedulePanelist(schedule.id, editingPanelist.id, nextUserId)
+            await refreshScheduleSilently()
+
+            const selected = panelistCandidateOptions.find((u) => u.id === nextUserId)
+            const displayName = selected?.name || "panelist"
+
+            setEditPanelistOpen(false)
+            setEditingPanelist(null)
+            toast.success(`Panelist updated to ${displayName}.`)
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to update panelist assignment."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setEditPanelistBusy(false)
+        }
+    }, [
+        editPanelistBusy,
+        editPanelistUserId,
+        editingPanelist,
+        panelistCandidateOptions,
+        refreshScheduleSilently,
+        schedule,
+    ])
+
+    const handleRemovePanelist = React.useCallback(async () => {
+        if (!schedule || !removingPanelist || removePanelistBusy) return
+
+        if (!removingPanelist.id) {
+            toast.error("Cannot remove panelist because the user ID is missing.")
+            return
+        }
+
+        setRemovePanelistBusy(true)
+        setError(null)
+
+        try {
+            await removePanelistFromDefenseSchedule(schedule.id, removingPanelist.id)
+            await refreshScheduleSilently()
+
+            const displayName = removingPanelist.name || "Panelist"
+
+            setRemovePanelistOpen(false)
+            setRemovingPanelist(null)
+            toast.success(`${displayName} was removed from the panel.`)
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to remove panelist from schedule."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setRemovePanelistBusy(false)
+        }
+    }, [removePanelistBusy, refreshScheduleSilently, removingPanelist, schedule])
+
+    const handleCreatePanelistUser = React.useCallback(async () => {
+        if (createPanelistBusy) return
+
+        const name = createPanelistName.trim()
+        const email = createPanelistEmail.trim().toLowerCase()
+
+        if (!name) {
+            toast.error("Panelist name is required.")
+            return
+        }
+
+        if (!email) {
+            toast.error("Panelist email is required.")
+            return
+        }
+
+        if (!isValidEmail(email)) {
+            toast.error("Please provide a valid email address.")
+            return
+        }
+
+        setCreatePanelistBusy(true)
+        setError(null)
+
+        try {
+            const result = await provisionPanelistUser({
+                name,
+                email,
+                status: createPanelistStatus,
+            })
+
+            setUsers((prev) => uniqueById([result.user, ...prev]))
+
+            const shouldAssign =
+                createPanelistAssignMode === "assign" && !!schedule
+
+            if (shouldAssign && schedule) {
+                await addPanelistToDefenseSchedule(schedule.id, result.user.id)
+                await refreshScheduleSilently()
+            }
+
+            setAddPanelistUserId(result.user.id)
+            setCreatePanelistUserOpen(false)
+
+            setCreatePanelistName("")
+            setCreatePanelistEmail("")
+            setCreatePanelistStatus("active")
+            setCreatePanelistAssignMode(schedule ? "assign" : "directory")
+
+            if (shouldAssign) {
+                toast.success(
+                    `${result.user.name} created and assigned as panelist to this schedule.`,
+                )
+            } else {
+                toast.success(
+                    result.message ||
+                    `${result.user.name} created successfully as panelist.`,
+                )
+            }
+
+            if (result.emailError) {
+                toast.error(`Panelist created, but login email could not be sent: ${result.emailError}`)
+            }
+
+            await loadReferenceData()
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to create panelist user."
+            setError(message)
+            toast.error(message)
+        } finally {
+            setCreatePanelistBusy(false)
+        }
+    }, [
+        createPanelistAssignMode,
+        createPanelistBusy,
+        createPanelistEmail,
+        createPanelistName,
+        createPanelistStatus,
+        loadReferenceData,
+        refreshScheduleSilently,
+        schedule,
+    ])
 
     const handleSaveEdit = React.useCallback(async () => {
         if (!schedule || editBusy) return
@@ -1066,9 +1747,52 @@ export default function AdminDefenseScheduleDetailsPage() {
                         </div>
 
                         <div className="rounded-lg border bg-card p-4">
-                            <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                Panelists
-                            </p>
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Panelists
+                                    </p>
+                                    <p className="text-sm text-muted-foreground">
+                                        {schedule.panelists.length} assigned
+                                    </p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={panelistMutationBusy}
+                                        onClick={openAddPanelistDialog}
+                                    >
+                                        {addPanelistBusy ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Plus className="mr-2 h-4 w-4" />
+                                        )}
+                                        Add Panelist
+                                    </Button>
+
+                                    {!hasPanelistUsers ? (
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            disabled={panelistMutationBusy}
+                                            onClick={() => openCreatePanelistUserDialog("assign")}
+                                        >
+                                            <UserPlus className="mr-2 h-4 w-4" />
+                                            Create Panelist User
+                                        </Button>
+                                    ) : null}
+                                </div>
+                            </div>
+
+                            {!hasPanelistUsers ? (
+                                <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+                                    No users with the <span className="font-medium">panelist</span> role were found.
+                                    Create a panelist user to start assigning panelists to this schedule.
+                                </div>
+                            ) : null}
 
                             <div className="overflow-x-auto rounded-md border">
                                 <Table>
@@ -1077,12 +1801,13 @@ export default function AdminDefenseScheduleDetailsPage() {
                                             <TableHead className="min-w-56">Name</TableHead>
                                             <TableHead className="min-w-56">Email</TableHead>
                                             <TableHead className="min-w-48">ID</TableHead>
+                                            <TableHead className="min-w-48 text-right">Actions</TableHead>
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
                                         {schedule.panelists.length === 0 ? (
                                             <TableRow>
-                                                <TableCell colSpan={3} className="h-16 text-center text-muted-foreground">
+                                                <TableCell colSpan={4} className="h-16 text-center text-muted-foreground">
                                                     No panelists assigned.
                                                 </TableCell>
                                             </TableRow>
@@ -1094,6 +1819,32 @@ export default function AdminDefenseScheduleDetailsPage() {
                                                     <TableCell className="text-muted-foreground">
                                                         {panelist.id || "—"}
                                                     </TableCell>
+                                                    <TableCell>
+                                                        <div className="flex flex-wrap items-center justify-end gap-2">
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                disabled={panelistMutationBusy || !panelist.id}
+                                                                onClick={() => openEditPanelistDialog(panelist)}
+                                                            >
+                                                                <PencilLine className="mr-1.5 h-3.5 w-3.5" />
+                                                                Edit
+                                                            </Button>
+
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="outline"
+                                                                className="text-destructive hover:text-destructive"
+                                                                disabled={panelistMutationBusy || !panelist.id}
+                                                                onClick={() => openRemovePanelistDialog(panelist)}
+                                                            >
+                                                                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                                                                Remove
+                                                            </Button>
+                                                        </div>
+                                                    </TableCell>
                                                 </TableRow>
                                             ))
                                         )}
@@ -1104,6 +1855,359 @@ export default function AdminDefenseScheduleDetailsPage() {
                     </>
                 )}
             </div>
+
+            <Dialog
+                open={addPanelistOpen}
+                onOpenChange={(open) => {
+                    if (!open && addPanelistBusy) return
+                    setAddPanelistOpen(open)
+                }}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Add Panelist</DialogTitle>
+                        <DialogDescription>
+                            Assign a panelist user to this defense schedule.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="grid gap-3 py-2">
+                        {unassignedPanelistOptions.length > 0 ? (
+                            <div className="grid gap-2">
+                                <Label htmlFor="add-panelist-user">Panelist User</Label>
+                                <Select
+                                    value={addPanelistUserId}
+                                    onValueChange={setAddPanelistUserId}
+                                >
+                                    <SelectTrigger id="add-panelist-user" className="w-full [&>span]:truncate">
+                                        <SelectValue placeholder="Select panelist user" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {unassignedPanelistOptions.map((user) => (
+                                            <SelectItem
+                                                key={user.id}
+                                                value={user.id}
+                                                textValue={`${user.name} ${user.email ?? ""}`}
+                                            >
+                                                <div className="flex flex-col">
+                                                    <span className="truncate">{user.name}</span>
+                                                    <span className="text-xs text-muted-foreground">
+                                                        {user.email || user.id}
+                                                    </span>
+                                                </div>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        ) : (
+                            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                                <p>
+                                    No available panelist user can be assigned right now.
+                                </p>
+                                <Button
+                                    type="button"
+                                    className="mt-3"
+                                    variant="secondary"
+                                    onClick={() => {
+                                        setAddPanelistOpen(false)
+                                        openCreatePanelistUserDialog("assign")
+                                    }}
+                                >
+                                    <UserPlus className="mr-2 h-4 w-4" />
+                                    Create Panelist User
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => setAddPanelistOpen(false)}
+                            disabled={addPanelistBusy}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => void handleAddPanelist()}
+                            disabled={addPanelistBusy || unassignedPanelistOptions.length === 0}
+                        >
+                            {addPanelistBusy ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Adding...
+                                </>
+                            ) : (
+                                "Add Panelist"
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={editPanelistOpen}
+                onOpenChange={(open) => {
+                    if (!open && editPanelistBusy) return
+                    setEditPanelistOpen(open)
+                    if (!open) setEditingPanelist(null)
+                }}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Edit Panelist Assignment</DialogTitle>
+                        <DialogDescription>
+                            Replace the currently assigned panelist for this slot.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="grid gap-3 py-2">
+                        <div className="rounded-md border bg-muted/30 p-3">
+                            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                                Current Panelist
+                            </p>
+                            <p className="mt-1 font-medium">
+                                {editingPanelist?.name || "—"}
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                                {editingPanelist?.email || editingPanelist?.id || "—"}
+                            </p>
+                        </div>
+
+                        {editPanelistOptions.length > 0 ? (
+                            <div className="grid gap-2">
+                                <Label htmlFor="replace-panelist-user">Replace With</Label>
+                                <Select
+                                    value={editPanelistUserId}
+                                    onValueChange={setEditPanelistUserId}
+                                >
+                                    <SelectTrigger id="replace-panelist-user" className="w-full [&>span]:truncate">
+                                        <SelectValue placeholder="Select replacement panelist" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {editPanelistOptions.map((user) => (
+                                            <SelectItem
+                                                key={user.id}
+                                                value={user.id}
+                                                textValue={`${user.name} ${user.email ?? ""}`}
+                                            >
+                                                <div className="flex flex-col">
+                                                    <span className="truncate">{user.name}</span>
+                                                    <span className="text-xs text-muted-foreground">
+                                                        {user.email || user.id}
+                                                    </span>
+                                                </div>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        ) : (
+                            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                                <p>No panelist users are available.</p>
+                                <Button
+                                    type="button"
+                                    className="mt-3"
+                                    variant="secondary"
+                                    onClick={() => {
+                                        setEditPanelistOpen(false)
+                                        openCreatePanelistUserDialog("assign")
+                                    }}
+                                >
+                                    <UserPlus className="mr-2 h-4 w-4" />
+                                    Create Panelist User
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setEditPanelistOpen(false)
+                                setEditingPanelist(null)
+                            }}
+                            disabled={editPanelistBusy}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => void handleUpdatePanelist()}
+                            disabled={
+                                editPanelistBusy ||
+                                !editingPanelist ||
+                                !editPanelistUserId ||
+                                editPanelistUserId === editingPanelist.id
+                            }
+                        >
+                            {editPanelistBusy ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Updating...
+                                </>
+                            ) : (
+                                "Save Assignment"
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={createPanelistUserOpen}
+                onOpenChange={(open) => {
+                    if (!open && createPanelistBusy) return
+                    setCreatePanelistUserOpen(open)
+                }}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Create Panelist User</DialogTitle>
+                        <DialogDescription>
+                            Create a new user with the panelist role and optionally assign to this schedule.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="grid gap-4 py-2">
+                        <div className="grid gap-2">
+                            <Label htmlFor="create-panelist-name">Name</Label>
+                            <Input
+                                id="create-panelist-name"
+                                placeholder="e.g. Prof. Jane Doe"
+                                value={createPanelistName}
+                                onChange={(e) => setCreatePanelistName(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="grid gap-2">
+                            <Label htmlFor="create-panelist-email">Email</Label>
+                            <Input
+                                id="create-panelist-email"
+                                type="email"
+                                placeholder="e.g. jane.panelist@example.com"
+                                value={createPanelistEmail}
+                                onChange={(e) => setCreatePanelistEmail(e.target.value)}
+                                autoComplete="off"
+                            />
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="grid gap-2">
+                                <Label>Status</Label>
+                                <Select
+                                    value={String(createPanelistStatus)}
+                                    onValueChange={(value) => setCreatePanelistStatus(value as UserStatus)}
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="Select status" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {CREATE_PANELIST_STATUSES.map((status) => (
+                                            <SelectItem key={status} value={status}>
+                                                {toTitleCase(status)}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {schedule ? (
+                                <div className="grid gap-2">
+                                    <Label>After Create</Label>
+                                    <Select
+                                        value={createPanelistAssignMode}
+                                        onValueChange={(value) =>
+                                            setCreatePanelistAssignMode(
+                                                value === "directory" ? "directory" : "assign",
+                                            )
+                                        }
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue placeholder="Select action" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="assign">Create and assign now</SelectItem>
+                                            <SelectItem value="directory">Create only</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            ) : null}
+                        </div>
+
+                        <p className="text-xs text-muted-foreground">
+                            The new account role will be set to{" "}
+                            <span className="font-medium">Panelist</span>. Login details will be sent to the email.
+                        </p>
+                    </div>
+
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => setCreatePanelistUserOpen(false)}
+                            disabled={createPanelistBusy}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => void handleCreatePanelistUser()}
+                            disabled={createPanelistBusy}
+                        >
+                            {createPanelistBusy ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Creating...
+                                </>
+                            ) : (
+                                "Create Panelist User"
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <AlertDialog
+                open={removePanelistOpen}
+                onOpenChange={(open) => {
+                    if (!open && removePanelistBusy) return
+                    setRemovePanelistOpen(open)
+                    if (!open) setRemovingPanelist(null)
+                }}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Remove panelist from this schedule?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {removingPanelist
+                                ? `This will remove ${removingPanelist.name} from the panel list of this defense schedule.`
+                                : "This will remove the selected panelist from this schedule."}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={removePanelistBusy}>
+                            Cancel
+                        </AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={removePanelistBusy}
+                            onClick={(e) => {
+                                e.preventDefault()
+                                void handleRemovePanelist()
+                            }}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                            {removePanelistBusy ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Removing...
+                                </>
+                            ) : (
+                                "Remove Panelist"
+                            )}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             <Dialog
                 open={editOpen}
@@ -1301,7 +2405,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                                             <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
                                             {rubricSelectOptions.map((rubric) => (
                                                 <SelectItem key={rubric.id} value={rubric.id} textValue={rubric.name}>
-                                                    <span className="block max-w-130 truncate" title={rubric.name}>
+                                                    <span className="block max-w-50 truncate" title={rubric.name}>
                                                         {rubric.name}
                                                     </span>
                                                 </SelectItem>

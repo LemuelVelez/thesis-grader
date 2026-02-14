@@ -1290,7 +1290,7 @@ export default function AdminDefenseSchedulesPage() {
                                             <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
                                             {rubricSelectOptions.map((rubric) => (
                                                 <SelectItem key={rubric.id} value={rubric.id} textValue={rubric.name}>
-                                                    <span className="block max-w-130 truncate" title={rubric.name}>
+                                                    <span className="block max-w-50 truncate" title={rubric.name}>
                                                         {rubric.name}
                                                     </span>
                                                 </SelectItem>
