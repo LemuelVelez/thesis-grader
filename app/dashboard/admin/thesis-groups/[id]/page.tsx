@@ -107,38 +107,17 @@ type FetchResult = {
 }
 
 type MemberDialogMode = "create" | "edit"
-type MemberSource = "student" | "manual"
 
 type MemberFormState = {
-    source: MemberSource
     studentUserId: string
-    manualStudentId: string
-    name: string
     program: string
     section: string
 }
 
-type UserRoleLookupState = {
-    checking: boolean
-    exists: boolean | null
-    role: string | null
-    status: string | null
-    error: string | null
-    lookedUpUserId: string | null
-}
+type UserStatus = "active" | "disabled"
 
-const MEMBER_SOURCE_STUDENT: MemberSource = "student"
-const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
-
-const EMPTY_MANUAL_ROLE_LOOKUP: UserRoleLookupState = {
-    checking: false,
-    exists: null,
-    role: null,
-    status: null,
-    error: null,
-    lookedUpUserId: null,
-}
+const CREATE_USER_STATUSES: UserStatus[] = ["active", "disabled"]
 
 const STAFF_LIST_ENDPOINTS = [
     "/api/staff",
@@ -203,23 +182,8 @@ function toTitleCase(value: string): string {
     return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
 }
 
-function isUuidLike(value: string): boolean {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-        value.trim()
-    )
-}
-
-function generateUuid(): string {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        return crypto.randomUUID()
-    }
-
-    const template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
-    return template.replace(/[xy]/g, (char) => {
-        const rand = Math.floor(Math.random() * 16)
-        const value = char === "x" ? rand : (rand & 0x3) | 0x8
-        return value.toString(16)
-    })
+function isValidEmail(value: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
 function unwrapItems(payload: unknown): unknown[] {
@@ -268,23 +232,6 @@ function extractRoleLowerFromPayload(payload: unknown): string | null {
     const detailRec = asRecord(unwrapDetail(payload))
     if (!detailRec) return null
     return extractRoleLower(detailRec)
-}
-
-function extractStatusLower(rec: Record<string, unknown>): string | null {
-    const direct = toStringOrNull(rec.status ?? rec.user_status ?? rec.userStatus)
-    if (direct) return direct.toLowerCase()
-
-    const userRec = asRecord(rec.user)
-    const nested = userRec ? toStringOrNull(userRec.status ?? userRec.user_status) : null
-    if (nested) return nested.toLowerCase()
-
-    return null
-}
-
-function extractStatusLowerFromPayload(payload: unknown): string | null {
-    const detailRec = asRecord(unwrapDetail(payload))
-    if (!detailRec) return null
-    return extractStatusLower(detailRec)
 }
 
 function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
@@ -344,11 +291,21 @@ function normalizeStudentUser(raw: unknown): StudentUserItem | null {
     const rec = asRecord(raw)
     if (!rec) return null
 
-    const id = toStringOrNull(rec.id ?? rec.user_id)
+    const explicitUserId = toStringOrNull(
+        rec.user_id ??
+        rec.userId ??
+        rec.student_user_id ??
+        rec.studentUserId ??
+        rec.linked_user_id ??
+        rec.linkedUserId
+    )
+    const fallbackId = toStringOrNull(rec.id ?? rec.auth_user_id ?? rec.authUserId)
+    const id = explicitUserId ?? fallbackId
     if (!id) return null
 
     const role = extractRoleLower(rec)
     if (role && role !== "student") return null
+    if (!role && !explicitUserId) return null
 
     const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Student"
 
@@ -367,15 +324,9 @@ function normalizeMember(raw: unknown): GroupMemberItem | null {
     if (!rec) return null
 
     const memberId = toStringOrNull(rec.member_id ?? rec.memberId ?? rec.id)
-    const linkedUserId = toStringOrNull(
-        rec.user_id ?? rec.userId ?? rec.student_user_id ?? rec.studentUserId
-    )
+    const linkedUserId = toStringOrNull(rec.user_id ?? rec.userId ?? rec.student_user_id ?? rec.studentUserId)
     const studentId = toStringOrNull(
-        rec.student_no ??
-        rec.studentNo ??
-        rec.student_id ??
-        rec.studentId ??
-        linkedUserId
+        rec.student_no ?? rec.studentNo ?? rec.student_id ?? rec.studentId ?? linkedUserId
     )
 
     const id = memberId ?? linkedUserId ?? studentId
@@ -470,28 +421,16 @@ function isGenericFailureMessage(value: string): boolean {
     return /^failed to [a-z0-9\s-]+\.$/.test(normalized)
 }
 
-function extractErrorMessage(
-    payload: unknown,
-    fallback: string,
-    status?: number
-): string {
+function extractErrorMessage(payload: unknown, fallback: string, status?: number): string {
     const rec = asRecord(payload)
     if (!rec) return fallback
 
     const error = toStringOrNull(rec.error)
     const message = toStringOrNull(rec.message)
 
-    // If backend returns a generic `error` plus a richer `message`, prefer the richer one.
     if (
         message &&
-        (
-            status === 500 ||
-            status === 502 ||
-            status === 503 ||
-            status === 504 ||
-            !error ||
-            isGenericFailureMessage(error)
-        )
+        (status === 500 || status === 502 || status === 503 || status === 504 || !error || isGenericFailureMessage(error))
     ) {
         return message
     }
@@ -501,10 +440,7 @@ function extractErrorMessage(
     return fallback
 }
 
-async function fetchFirstAvailableJson(
-    endpoints: readonly string[],
-    signal: AbortSignal
-): Promise<unknown | null> {
+async function fetchFirstAvailableJson(endpoints: readonly string[], signal: AbortSignal): Promise<unknown | null> {
     let lastError: Error | null = null
 
     for (const endpoint of endpoints) {
@@ -526,11 +462,7 @@ async function fetchFirstAvailableJson(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                const message = extractErrorMessage(
-                    payload,
-                    `${endpoint} returned ${res.status}`,
-                    res.status
-                )
+                const message = extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
                 lastError = new Error(message)
                 continue
             }
@@ -548,10 +480,7 @@ async function fetchFirstAvailableJson(
     return null
 }
 
-async function fetchAllSuccessfulJson(
-    endpoints: readonly string[],
-    signal: AbortSignal
-): Promise<FetchResult[]> {
+async function fetchAllSuccessfulJson(endpoints: readonly string[], signal: AbortSignal): Promise<FetchResult[]> {
     const results: FetchResult[] = []
     let lastError: Error | null = null
 
@@ -572,9 +501,7 @@ async function fetchAllSuccessfulJson(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                lastError = new Error(
-                    extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
-                )
+                lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status))
                 continue
             }
 
@@ -599,10 +526,7 @@ async function fetchAllSuccessfulJson(
  * - For validation/auth/server errors on a compatible route, stop immediately
  *   so we don't spam multiple POST/PATCH/DELETE attempts.
  */
-async function requestFirstAvailable(
-    endpoints: readonly string[],
-    init: RequestInit
-): Promise<FetchResult> {
+async function requestFirstAvailable(endpoints: readonly string[], init: RequestInit): Promise<FetchResult> {
     let lastError: Error | null = null
 
     for (const endpoint of endpoints) {
@@ -622,9 +546,7 @@ async function requestFirstAvailable(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                throw new Error(
-                    extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
-                )
+                throw new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status))
             }
 
             return {
@@ -642,12 +564,9 @@ async function requestFirstAvailable(
     throw new Error("No compatible thesis group member endpoint found for this action.")
 }
 
-function defaultMemberForm(source: MemberSource, selectedStudentId: string): MemberFormState {
+function defaultMemberForm(selectedStudentId: string): MemberFormState {
     return {
-        source,
         studentUserId: selectedStudentId,
-        manualStudentId: "",
-        name: "",
         program: "",
         section: "",
     }
@@ -687,12 +606,15 @@ export default function AdminThesisGroupDetailsPage() {
     const [deleteMemberTarget, setDeleteMemberTarget] = React.useState<GroupMemberItem | null>(null)
 
     const [memberForm, setMemberForm] = React.useState<MemberFormState>(() =>
-        defaultMemberForm(MEMBER_SOURCE_MANUAL, STUDENT_NONE_VALUE)
+        defaultMemberForm(STUDENT_NONE_VALUE)
     )
 
-    const [manualRoleLookup, setManualRoleLookup] = React.useState<UserRoleLookupState>(
-        EMPTY_MANUAL_ROLE_LOOKUP
-    )
+    const [createStudentOpen, setCreateStudentOpen] = React.useState(false)
+    const [creatingStudentUser, setCreatingStudentUser] = React.useState(false)
+    const [createStudentError, setCreateStudentError] = React.useState<string | null>(null)
+    const [createStudentName, setCreateStudentName] = React.useState("")
+    const [createStudentEmail, setCreateStudentEmail] = React.useState("")
+    const [createStudentStatus, setCreateStudentStatus] = React.useState<UserStatus>("active")
 
     const staffById = React.useMemo(() => {
         const map = new Map<string, StaffUserItem>()
@@ -743,17 +665,7 @@ export default function AdminThesisGroupDetailsPage() {
     const availableStudentsForDialog =
         memberDialogMode === "edit" ? availableStudentsForEdit : availableStudentsForCreate
 
-    const manualEntryForced = availableStudentsForDialog.length === 0
-
-    const canShowManualOption =
-        manualEntryForced ||
-        memberForm.source === MEMBER_SOURCE_MANUAL ||
-        (memberDialogMode === "edit" &&
-            memberTarget !== null &&
-            (currentEditStudentUserId === null || memberForm.source === MEMBER_SOURCE_MANUAL))
-
     const selectedStudentMissing =
-        memberForm.source === MEMBER_SOURCE_STUDENT &&
         memberForm.studentUserId !== STUDENT_NONE_VALUE &&
         !availableStudentsForDialog.some((item) => item.id === memberForm.studentUserId)
 
@@ -832,10 +744,7 @@ export default function AdminThesisGroupDetailsPage() {
                 if (embeddedSchedules.length > 0) {
                     setSchedules(embeddedSchedules)
                 } else {
-                    const schedulesPayload = await fetchFirstAvailableJson(
-                        scheduleEndpoints(groupId),
-                        signal
-                    )
+                    const schedulesPayload = await fetchFirstAvailableJson(scheduleEndpoints(groupId), signal)
                     const scheduleItems = unwrapItems(schedulesPayload)
                         .map(normalizeSchedule)
                         .filter((s): s is DefenseScheduleItem => s !== null)
@@ -843,8 +752,7 @@ export default function AdminThesisGroupDetailsPage() {
                 }
             } catch (e) {
                 if (e instanceof Error && e.name === "AbortError") return
-                const message =
-                    e instanceof Error ? e.message : "Failed to load thesis group details."
+                const message = e instanceof Error ? e.message : "Failed to load thesis group details."
                 setGroup(null)
                 setMembers([])
                 setSchedules([])
@@ -867,8 +775,7 @@ export default function AdminThesisGroupDetailsPage() {
                 .filter((item): item is GroupMemberItem => item !== null)
             setMembers(sortMembers(items))
         } catch (e) {
-            const message =
-                e instanceof Error ? e.message : "Failed to refresh thesis group members."
+            const message = e instanceof Error ? e.message : "Failed to refresh thesis group members."
             toast.error(message)
         }
     }, [groupId])
@@ -882,9 +789,7 @@ export default function AdminThesisGroupDetailsPage() {
 
             if (results.length === 0) {
                 setStaffUsers([])
-                setStaffError(
-                    "No compatible staff endpoint found. Adviser profile preview is unavailable."
-                )
+                setStaffError("No compatible staff endpoint found. Adviser profile preview is unavailable.")
                 return
             }
 
@@ -893,9 +798,7 @@ export default function AdminThesisGroupDetailsPage() {
                 .map(normalizeStaffUser)
                 .filter((item): item is StaffUserItem => item !== null)
 
-            const merged = dedupeById(items).sort((a, b) =>
-                a.name.localeCompare(b.name, "en", { sensitivity: "base" })
-            )
+            const merged = dedupeById(items).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
 
             setStaffUsers(merged)
 
@@ -904,10 +807,7 @@ export default function AdminThesisGroupDetailsPage() {
             }
         } catch (e) {
             if (e instanceof Error && e.name === "AbortError") return
-            const message =
-                e instanceof Error
-                    ? e.message
-                    : "Failed to load staff users for adviser preview."
+            const message = e instanceof Error ? e.message : "Failed to load staff users for adviser preview."
             setStaffUsers([])
             setStaffError(message)
             toast.error(message)
@@ -925,9 +825,7 @@ export default function AdminThesisGroupDetailsPage() {
 
             if (results.length === 0) {
                 setStudentUsers([])
-                setStudentsError(
-                    "No compatible student endpoint found. Member form will allow manual entry."
-                )
+                setStudentsError("No compatible student endpoint found. Create a Student user to add members.")
                 return
             }
 
@@ -936,23 +834,16 @@ export default function AdminThesisGroupDetailsPage() {
                 .map(normalizeStudentUser)
                 .filter((item): item is StudentUserItem => item !== null)
 
-            const merged = dedupeById(items).sort((a, b) =>
-                a.name.localeCompare(b.name, "en", { sensitivity: "base" })
-            )
+            const merged = dedupeById(items).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
 
             setStudentUsers(merged)
 
             if (merged.length === 0) {
-                setStudentsError(
-                    "No student users were returned from available endpoints. You may add members manually."
-                )
+                setStudentsError("No student users were returned from available endpoints. Create a Student user to continue.")
             }
         } catch (e) {
             if (e instanceof Error && e.name === "AbortError") return
-            const message =
-                e instanceof Error
-                    ? e.message
-                    : "Failed to load student users for member assignment."
+            const message = e instanceof Error ? e.message : "Failed to load student users for member assignment."
             setStudentUsers([])
             setStudentsError(message)
             toast.error(message)
@@ -971,140 +862,20 @@ export default function AdminThesisGroupDetailsPage() {
 
     React.useEffect(() => {
         if (!memberDialogOpen) return
-        if (memberForm.source !== MEMBER_SOURCE_STUDENT) return
 
-        if (manualEntryForced) {
-            setMemberForm((prev) => ({
-                ...prev,
-                source: MEMBER_SOURCE_MANUAL,
-                studentUserId: STUDENT_NONE_VALUE,
-            }))
-            return
-        }
-
-        const exists = availableStudentsForDialog.some(
-            (student) => student.id === memberForm.studentUserId
-        )
+        const exists = availableStudentsForDialog.some((student) => student.id === memberForm.studentUserId)
         if (exists) return
 
         const firstStudent = availableStudentsForDialog[0]?.id ?? STUDENT_NONE_VALUE
         setMemberForm((prev) => ({ ...prev, studentUserId: firstStudent }))
-    }, [
-        availableStudentsForDialog,
-        manualEntryForced,
-        memberDialogOpen,
-        memberForm.source,
-        memberForm.studentUserId,
-    ])
-
-    React.useEffect(() => {
-        if (!memberDialogOpen || memberForm.source !== MEMBER_SOURCE_MANUAL) {
-            setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
-            return
-        }
-
-        const candidate = memberForm.manualStudentId.trim()
-        if (!candidate || !isUuidLike(candidate)) {
-            setManualRoleLookup((prev) => ({
-                ...EMPTY_MANUAL_ROLE_LOOKUP,
-                lookedUpUserId: candidate || null,
-                // preserve prior hard error only if user still typing UUID
-                error: null,
-            }))
-            return
-        }
-
-        let mounted = true
-        const controller = new AbortController()
-
-        const run = async () => {
-            setManualRoleLookup({
-                checking: true,
-                exists: null,
-                role: null,
-                status: null,
-                error: null,
-                lookedUpUserId: candidate,
-            })
-
-            try {
-                const endpoint = `/api/users/${encodeURIComponent(candidate)}`
-                const res = await fetch(endpoint, {
-                    method: "GET",
-                    credentials: "include",
-                    cache: "no-store",
-                    headers: { Accept: "application/json" },
-                    signal: controller.signal,
-                })
-
-                const payload = await parseResponseBodySafe(res)
-
-                if (!mounted) return
-
-                if (res.status === 404) {
-                    setManualRoleLookup({
-                        checking: false,
-                        exists: false,
-                        role: null,
-                        status: null,
-                        error: null,
-                        lookedUpUserId: candidate,
-                    })
-                    return
-                }
-
-                if (!res.ok) {
-                    throw new Error(
-                        extractErrorMessage(
-                            payload,
-                            "Unable to check the selected user role.",
-                            res.status
-                        )
-                    )
-                }
-
-                setManualRoleLookup({
-                    checking: false,
-                    exists: true,
-                    role: extractRoleLowerFromPayload(payload),
-                    status: extractStatusLowerFromPayload(payload),
-                    error: null,
-                    lookedUpUserId: candidate,
-                })
-            } catch (error) {
-                if (!mounted) return
-                if (error instanceof Error && error.name === "AbortError") return
-
-                const message =
-                    error instanceof Error
-                        ? error.message
-                        : "Unable to check the selected user role."
-
-                setManualRoleLookup({
-                    checking: false,
-                    exists: null,
-                    role: null,
-                    status: null,
-                    error: message,
-                    lookedUpUserId: candidate,
-                })
-            }
-        }
-
-        void run()
-
-        return () => {
-            mounted = false
-            controller.abort()
-        }
-    }, [memberDialogOpen, memberForm.manualStudentId, memberForm.source])
+    }, [availableStudentsForDialog, memberDialogOpen, memberForm.studentUserId])
 
     const adviserContent = React.useMemo(() => {
         if (!group?.adviserId) {
             if (group?.manualAdviserInfo) {
                 return (
                     <div className="space-y-1">
-                        <Badge variant="outline">Manual Adviser</Badge>
+                        <Badge variant="outline">Legacy Manual Adviser</Badge>
                         <p className="text-sm">{group.manualAdviserInfo}</p>
                     </div>
                 )
@@ -1132,9 +903,7 @@ export default function AdminThesisGroupDetailsPage() {
         return (
             <div className="space-y-0.5 leading-tight">
                 <div className="font-medium">{staff.name}</div>
-                {staff.email ? (
-                    <div className="text-xs text-muted-foreground">{staff.email}</div>
-                ) : null}
+                {staff.email ? <div className="text-xs text-muted-foreground">{staff.email}</div> : null}
             </div>
         )
     }, [group?.adviserId, group?.manualAdviserInfo, staffById, staffLoading])
@@ -1142,66 +911,51 @@ export default function AdminThesisGroupDetailsPage() {
     const resetCreateMemberForm = React.useCallback(() => {
         const firstStudentId = availableStudentsForCreate[0]?.id ?? STUDENT_NONE_VALUE
         setMemberForm({
-            source: availableStudentsForCreate.length > 0 ? MEMBER_SOURCE_STUDENT : MEMBER_SOURCE_MANUAL,
             studentUserId: firstStudentId,
-            manualStudentId: "",
-            name: "",
             program: group?.program ?? "",
             section: "",
         })
-        setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
     }, [availableStudentsForCreate, group?.program])
 
+    const resetCreateStudentForm = React.useCallback(() => {
+        setCreateStudentName("")
+        setCreateStudentEmail("")
+        setCreateStudentStatus("active")
+        setCreateStudentError(null)
+    }, [])
+
     /**
-     * Role guard + auto-fix for member linking:
-     * - If candidate UUID belongs to an existing user and role != student,
-     *   automatically PATCH role to "student" before member save.
+     * Defensive guard:
+     * - Ensure selected user has role "student" before member save.
      */
-    const ensureUserRoleIsStudent = React.useCallback(async (candidateId: string) => {
-        const normalizedId = candidateId.trim()
-        if (!isUuidLike(normalizedId)) {
-            return {
-                existed: false,
-                updated: false,
-                roleBefore: null as string | null,
-            }
+    const ensureUserRoleIsStudent = React.useCallback(async (candidateUserId: string) => {
+        const normalizedId = candidateUserId.trim()
+        if (!normalizedId) {
+            return { existed: false, updated: false, roleBefore: null as string | null }
         }
 
         const endpoint = `/api/users/${encodeURIComponent(normalizedId)}`
-
-        const readRes = await fetch(endpoint, {
+        const getRes = await fetch(endpoint, {
             method: "GET",
             credentials: "include",
             cache: "no-store",
             headers: { Accept: "application/json" },
         })
-        const readPayload = await parseResponseBodySafe(readRes)
 
-        if (readRes.status === 404) {
-            return {
-                existed: false,
-                updated: false,
-                roleBefore: null as string | null,
-            }
+        const getPayload = await parseResponseBodySafe(getRes)
+
+        if (getRes.status === 404) {
+            return { existed: false, updated: false, roleBefore: null as string | null }
         }
 
-        if (!readRes.ok) {
-            throw new Error(
-                extractErrorMessage(
-                    readPayload,
-                    "Unable to verify existing user role before member save.",
-                    readRes.status
-                )
-            )
+        if (!getRes.ok) {
+            throw new Error(extractErrorMessage(getPayload, "Unable to verify student role.", getRes.status))
         }
 
-        const currentRole = extractRoleLowerFromPayload(readPayload)
-        if (currentRole === "student") {
-            return {
-                existed: true,
-                updated: false,
-                roleBefore: currentRole,
-            }
+        const roleBefore = extractRoleLowerFromPayload(getPayload)
+
+        if (roleBefore === "student") {
+            return { existed: true, updated: false, roleBefore }
         }
 
         const patchRes = await fetch(endpoint, {
@@ -1214,6 +968,7 @@ export default function AdminThesisGroupDetailsPage() {
             },
             body: JSON.stringify({ role: "student" }),
         })
+
         const patchPayload = await parseResponseBodySafe(patchRes)
 
         if (!patchRes.ok) {
@@ -1226,45 +981,133 @@ export default function AdminThesisGroupDetailsPage() {
             )
         }
 
-        return {
-            existed: true,
-            updated: true,
-            roleBefore: currentRole,
-        }
+        return { existed: true, updated: true, roleBefore }
     }, [])
+
+    const handleCreateStudentUser = React.useCallback(async () => {
+        if (creatingStudentUser) return
+
+        const name = createStudentName.trim()
+        const email = createStudentEmail.trim().toLowerCase()
+
+        setCreateStudentError(null)
+
+        if (!name) {
+            const msg = "Student name is required."
+            setCreateStudentError(msg)
+            toast.error(msg)
+            return
+        }
+
+        if (!email) {
+            const msg = "Student email is required."
+            setCreateStudentError(msg)
+            toast.error(msg)
+            return
+        }
+
+        if (!isValidEmail(email)) {
+            const msg = "Please provide a valid email address."
+            setCreateStudentError(msg)
+            toast.error(msg)
+            return
+        }
+
+        setCreatingStudentUser(true)
+        const loadingToastId = toast.loading("Creating student user...")
+
+        try {
+            const res = await fetch("/api/users/provision", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                cache: "no-store",
+                body: JSON.stringify({
+                    name,
+                    email,
+                    role: "student",
+                    status: createStudentStatus,
+                    sendLoginDetails: true,
+                }),
+            })
+
+            const payload = await parseResponseBodySafe(res)
+            const body = asRecord(payload)
+
+            if (!res.ok) {
+                throw new Error(extractErrorMessage(payload, "Failed to create student user.", res.status))
+            }
+
+            const createdRaw = body?.item ?? body?.data ?? null
+            const createdStudent = normalizeStudentUser(createdRaw)
+
+            if (!createdStudent) {
+                throw new Error(
+                    "Student user was created but returned data shape is unsupported for member assignment."
+                )
+            }
+
+            setStudentUsers((prev) =>
+                dedupeById([createdStudent, ...prev]).sort((a, b) =>
+                    a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+                )
+            )
+
+            setMemberForm((prev) =>
+                prev.studentUserId === STUDENT_NONE_VALUE ? { ...prev, studentUserId: createdStudent.id } : prev
+            )
+
+            const successMessage =
+                toStringOrNull(body?.message) ??
+                "Student user created successfully. Login details were sent to email."
+
+            toast.success(successMessage, { id: loadingToastId })
+            setCreateStudentOpen(false)
+            resetCreateStudentForm()
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "Failed to create student user."
+            setCreateStudentError(message)
+            toast.error(message, { id: loadingToastId })
+        } finally {
+            setCreatingStudentUser(false)
+        }
+    }, [
+        createStudentEmail,
+        createStudentName,
+        createStudentStatus,
+        creatingStudentUser,
+        resetCreateStudentForm,
+    ])
+
+    const openCreateStudentDialog = React.useCallback(() => {
+        resetCreateStudentForm()
+        setCreateStudentOpen(true)
+    }, [resetCreateStudentForm])
 
     const openCreateMemberDialog = React.useCallback(() => {
         setMemberDialogMode("create")
         setMemberTarget(null)
         resetCreateMemberForm()
         setMemberActionError(null)
-        setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
         setMemberDialogOpen(true)
     }, [resetCreateMemberForm])
 
     const openEditMemberDialog = React.useCallback(
         (member: GroupMemberItem) => {
             const linkedId =
-                member.linkedUserId ??
-                (member.studentId && studentsById.has(member.studentId) ? member.studentId : null)
+                member.linkedUserId ?? (member.studentId && studentsById.has(member.studentId) ? member.studentId : null)
 
             const fallbackStudentId = availableStudentsForEdit[0]?.id ?? STUDENT_NONE_VALUE
-
-            const source: MemberSource = linkedId ? MEMBER_SOURCE_STUDENT : MEMBER_SOURCE_MANUAL
             const selectedStudentId = linkedId ?? fallbackStudentId
 
             setMemberDialogMode("edit")
             setMemberTarget(member)
             setMemberForm({
-                source,
                 studentUserId: selectedStudentId,
-                manualStudentId: member.studentId ?? "",
-                name: member.name ?? "",
                 program: member.program ?? group?.program ?? "",
                 section: member.section ?? "",
             })
             setMemberActionError(null)
-            setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
             setMemberDialogOpen(true)
         },
         [availableStudentsForEdit, group?.program, studentsById]
@@ -1291,103 +1134,46 @@ export default function AdminThesisGroupDetailsPage() {
             setMemberActionError(null)
 
             try {
-                let payload: Record<string, unknown> = {}
+                const selectedId = memberForm.studentUserId === STUDENT_NONE_VALUE ? null : memberForm.studentUserId
+                if (!selectedId) {
+                    throw new Error("Please select a student user. If none is available, create one first.")
+                }
+
+                const selected = studentsById.get(selectedId)
+                if (!selected) {
+                    throw new Error("Selected student user is no longer available.")
+                }
+
+                if (memberDialogMode === "create" && studentIdsAlreadyUsed.has(selected.id)) {
+                    throw new Error("Selected student is already a member of this thesis group.")
+                }
+
+                if (
+                    memberDialogMode === "edit" &&
+                    editableStudentIds.has(selected.id) &&
+                    selected.id !== currentEditStudentUserId
+                ) {
+                    throw new Error("Selected student is already assigned to this thesis group.")
+                }
+
                 const successNotes: string[] = []
 
-                if (memberForm.source === MEMBER_SOURCE_STUDENT) {
-                    const selectedId =
-                        memberForm.studentUserId === STUDENT_NONE_VALUE ? null : memberForm.studentUserId
+                const roleFix = await ensureUserRoleIsStudent(selected.id)
+                if (roleFix.updated) {
+                    const fromRole = roleFix.roleBefore ? ` from "${roleFix.roleBefore}"` : ""
+                    successNotes.push(`Linked user role was auto-updated${fromRole} to "student".`)
+                }
 
-                    if (!selectedId) {
-                        throw new Error("Please select a student user.")
-                    }
-
-                    const selected = studentsById.get(selectedId)
-                    if (!selected) {
-                        throw new Error("Selected student user is no longer available.")
-                    }
-
-                    if (memberDialogMode === "create" && studentIdsAlreadyUsed.has(selected.id)) {
-                        throw new Error("Selected student is already a member of this thesis group.")
-                    }
-
-                    if (
-                        memberDialogMode === "edit" &&
-                        editableStudentIds.has(selected.id) &&
-                        selected.id !== currentEditStudentUserId
-                    ) {
-                        throw new Error("Selected student is already assigned to this thesis group.")
-                    }
-
-                    // Defensive auto-fix to prevent backend error:
-                    // "User <uuid> must have role student"
-                    const roleFix = await ensureUserRoleIsStudent(selected.id)
-                    if (roleFix.updated) {
-                        const fromRole = roleFix.roleBefore ? ` from "${roleFix.roleBefore}"` : ""
-                        successNotes.push(
-                            `Selected linked user role was auto-updated${fromRole} to "student".`
-                        )
-                    }
-
-                    payload = {
-                        user_id: selected.id,
-                        userId: selected.id,
-                        student_user_id: selected.id,
-                        studentUserId: selected.id,
-                        student_id: selected.id,
-                        studentId: selected.id,
-                        name: selected.name,
-                        program:
-                            toNullableTrimmed(memberForm.program) ??
-                            toNullableTrimmed(selected.program ?? "") ??
-                            null,
-                        section:
-                            toNullableTrimmed(memberForm.section) ??
-                            toNullableTrimmed(selected.section ?? "") ??
-                            null,
-                    }
-                } else {
-                    const manualStudentIdInput = toNullableTrimmed(memberForm.manualStudentId)
-                    const manualName = toNullableTrimmed(memberForm.name)
-                    const manualProgram = toNullableTrimmed(memberForm.program)
-                    const manualSection = toNullableTrimmed(memberForm.section)
-
-                    if (!manualStudentIdInput && !manualName) {
-                        throw new Error("Provide at least Student ID or Student Name for manual entry.")
-                    }
-
-                    const manualUuid =
-                        manualStudentIdInput && isUuidLike(manualStudentIdInput)
-                            ? manualStudentIdInput
-                            : generateUuid()
-
-                    const manualUuidWasGenerated = !manualStudentIdInput || !isUuidLike(manualStudentIdInput)
-
-                    if (manualUuidWasGenerated) {
-                        successNotes.push(
-                            "Manual entry saved with an auto-generated UUID for API compatibility."
-                        )
-                    }
-
-                    const roleFix = await ensureUserRoleIsStudent(manualUuid)
-                    if (roleFix.updated) {
-                        const fromRole = roleFix.roleBefore ? ` from "${roleFix.roleBefore}"` : ""
-                        successNotes.push(`Existing user role was auto-updated${fromRole} to "student".`)
-                    }
-
-                    payload = {
-                        student_id: manualUuid,
-                        studentId: manualUuid,
-                        ...(manualStudentIdInput
-                            ? {
-                                student_no: manualStudentIdInput,
-                                studentNo: manualStudentIdInput,
-                            }
-                            : {}),
-                        name: manualName,
-                        program: manualProgram,
-                        section: manualSection,
-                    }
+                const payload = {
+                    user_id: selected.id,
+                    userId: selected.id,
+                    student_user_id: selected.id,
+                    studentUserId: selected.id,
+                    student_id: selected.id,
+                    studentId: selected.id,
+                    name: selected.name,
+                    program: toNullableTrimmed(memberForm.program) ?? toNullableTrimmed(selected.program ?? "") ?? null,
+                    section: toNullableTrimmed(memberForm.section) ?? toNullableTrimmed(selected.section ?? "") ?? null,
                 }
 
                 if (memberDialogMode === "create") {
@@ -1406,9 +1192,7 @@ export default function AdminThesisGroupDetailsPage() {
                     }
 
                     if (successNotes.length > 0) {
-                        toast.success("Member added successfully.", {
-                            description: successNotes.join(" "),
-                        })
+                        toast.success("Member added successfully.", { description: successNotes.join(" ") })
                     } else {
                         toast.success("Member added successfully.")
                     }
@@ -1416,10 +1200,7 @@ export default function AdminThesisGroupDetailsPage() {
                     if (!memberTarget) throw new Error("No member selected for editing.")
 
                     const identifier =
-                        memberTarget.memberId ??
-                        memberTarget.linkedUserId ??
-                        memberTarget.studentId ??
-                        memberTarget.id
+                        memberTarget.memberId ?? memberTarget.linkedUserId ?? memberTarget.studentId ?? memberTarget.id
 
                     if (!identifier) throw new Error("Unable to resolve member identifier for update.")
 
@@ -1445,9 +1226,7 @@ export default function AdminThesisGroupDetailsPage() {
                     }
 
                     if (successNotes.length > 0) {
-                        toast.success("Member updated successfully.", {
-                            description: successNotes.join(" "),
-                        })
+                        toast.success("Member updated successfully.", { description: successNotes.join(" ") })
                     } else {
                         toast.success("Member updated successfully.")
                     }
@@ -1455,7 +1234,6 @@ export default function AdminThesisGroupDetailsPage() {
 
                 setMemberDialogOpen(false)
                 setMemberTarget(null)
-                setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
             } catch (e) {
                 const message = e instanceof Error ? e.message : "Failed to save member."
                 setMemberActionError(message)
@@ -1517,16 +1295,8 @@ export default function AdminThesisGroupDetailsPage() {
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
         memberDialogMode === "create"
-            ? "Add a member by selecting an existing Student user. Manual entries auto-generate UUIDs when needed and auto-correct detected existing roles to student before save."
-            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe and role-auto-corrected when applicable."
-
-    const manualLookupRoleLabel = manualRoleLookup.role
-        ? toTitleCase(manualRoleLookup.role)
-        : "Unknown"
-
-    const manualLookupStatusLabel = manualRoleLookup.status
-        ? toTitleCase(manualRoleLookup.status)
-        : null
+            ? "Select an existing Student user to add as a member."
+            : "Update member assignment and optional profile details."
 
     return (
         <DashboardLayout
@@ -1539,10 +1309,7 @@ export default function AdminThesisGroupDetailsPage() {
                         <Link href="/dashboard/admin/thesis-groups">Back to Thesis Groups</Link>
                     </Button>
 
-                    <Button
-                        onClick={() => setRefreshKey((v) => v + 1)}
-                        disabled={loading || staffLoading || studentsLoading}
-                    >
+                    <Button onClick={() => setRefreshKey((v) => v + 1)} disabled={loading || staffLoading || studentsLoading}>
                         {loading || staffLoading || studentsLoading ? "Refreshing..." : "Refresh"}
                     </Button>
                 </div>
@@ -1566,15 +1333,11 @@ export default function AdminThesisGroupDetailsPage() {
                 ) : null}
 
                 {!group && loading ? (
-                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">
-                        Loading thesis group details...
-                    </div>
+                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">Loading thesis group details...</div>
                 ) : null}
 
                 {!group && !loading ? (
-                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">
-                        No group data found for this record.
-                    </div>
+                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">No group data found for this record.</div>
                 ) : null}
 
                 {group ? (
@@ -1627,6 +1390,13 @@ export default function AdminThesisGroupDetailsPage() {
                                             ? "Loading students..."
                                             : `Available students: ${availableStudentsForCreate.length}`}
                                     </Badge>
+
+                                    {!studentsLoading && availableStudentsForCreate.length === 0 ? (
+                                        <Button size="sm" variant="secondary" onClick={openCreateStudentDialog}>
+                                            <Plus className="mr-2 size-4" />
+                                            Create Student User
+                                        </Button>
+                                    ) : null}
 
                                     <Button onClick={openCreateMemberDialog} size="sm">
                                         <Plus className="mr-2 size-4" />
@@ -1735,7 +1505,6 @@ export default function AdminThesisGroupDetailsPage() {
                     if (!open) {
                         setMemberTarget(null)
                         setMemberActionError(null)
-                        setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
                     }
                 }}
             >
@@ -1754,276 +1523,82 @@ export default function AdminThesisGroupDetailsPage() {
                                     </Alert>
                                 ) : null}
 
+                                {availableStudentsForDialog.length === 0 ? (
+                                    <Alert>
+                                        <AlertDescription>
+                                            <div className="space-y-3">
+                                                <p>No available student users right now. Create a Student user first.</p>
+                                                <Button type="button" size="sm" variant="secondary" onClick={openCreateStudentDialog}>
+                                                    <Plus className="mr-2 size-4" />
+                                                    Create Student User
+                                                </Button>
+                                            </div>
+                                        </AlertDescription>
+                                    </Alert>
+                                ) : null}
+
                                 <div className="space-y-2">
-                                    <Label>Entry Mode</Label>
+                                    <Label>Student User</Label>
                                     <Select
-                                        value={memberForm.source}
-                                        onValueChange={(value) => {
-                                            const next = value as MemberSource
-                                            if (next === MEMBER_SOURCE_MANUAL && !canShowManualOption) return
-                                            if (next === MEMBER_SOURCE_STUDENT && manualEntryForced) return
-
-                                            setMemberForm((prev) => ({
-                                                ...prev,
-                                                source: next,
-                                                studentUserId:
-                                                    next === MEMBER_SOURCE_STUDENT
-                                                        ? prev.studentUserId !== STUDENT_NONE_VALUE
-                                                            ? prev.studentUserId
-                                                            : availableStudentsForDialog[0]?.id ?? STUDENT_NONE_VALUE
-                                                        : STUDENT_NONE_VALUE,
-                                            }))
-
-                                            if (next === MEMBER_SOURCE_STUDENT) {
-                                                setManualRoleLookup(EMPTY_MANUAL_ROLE_LOOKUP)
-                                            }
-                                        }}
+                                        value={memberForm.studentUserId}
+                                        onValueChange={(value) => setMemberForm((prev) => ({ ...prev, studentUserId: value }))}
+                                        disabled={studentsLoading || availableStudentsForDialog.length === 0}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select entry mode" />
+                                            <SelectValue
+                                                placeholder={studentsLoading ? "Loading student users..." : "Select a student user"}
+                                            />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value={MEMBER_SOURCE_STUDENT} disabled={manualEntryForced}>
-                                                Select existing student user
+                                            <SelectItem value={STUDENT_NONE_VALUE} disabled>
+                                                No student selected
                                             </SelectItem>
-                                            <SelectItem value={MEMBER_SOURCE_MANUAL} disabled={!canShowManualOption}>
-                                                Manual student entry
-                                            </SelectItem>
+
+                                            {selectedStudentMissing ? (
+                                                <SelectItem value={memberForm.studentUserId}>
+                                                    Current linked student (profile unavailable)
+                                                </SelectItem>
+                                            ) : null}
+
+                                            {availableStudentsForDialog.map((student) => {
+                                                const label = student.email ? `${student.name} (${student.email})` : student.name
+
+                                                return (
+                                                    <SelectItem key={`student-option-${student.id}`} value={student.id}>
+                                                        {label}
+                                                    </SelectItem>
+                                                )
+                                            })}
                                         </SelectContent>
                                     </Select>
-
-                                    {manualEntryForced ? (
-                                        <p className="text-xs text-amber-600">
-                                            No available student users right now. Manual entry is enabled.
-                                        </p>
-                                    ) : (
-                                        <p className="text-xs text-muted-foreground">
-                                            Choose a student user for direct assignment. Manual entry is available when needed.
-                                        </p>
-                                    )}
                                 </div>
 
-                                {memberForm.source === MEMBER_SOURCE_STUDENT ? (
-                                    <>
-                                        <div className="space-y-2">
-                                            <Label>Student User</Label>
-                                            <Select
-                                                value={memberForm.studentUserId}
-                                                onValueChange={(value) =>
-                                                    setMemberForm((prev) => ({ ...prev, studentUserId: value }))
-                                                }
-                                                disabled={studentsLoading || availableStudentsForDialog.length === 0}
-                                            >
-                                                <SelectTrigger>
-                                                    <SelectValue
-                                                        placeholder={
-                                                            studentsLoading
-                                                                ? "Loading student users..."
-                                                                : "Select a student user"
-                                                        }
-                                                    />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {selectedStudentMissing ? (
-                                                        <SelectItem value={memberForm.studentUserId}>
-                                                            Current linked student (profile unavailable)
-                                                        </SelectItem>
-                                                    ) : null}
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="member-program">Program (Optional)</Label>
+                                        <Input
+                                            id="member-program"
+                                            value={memberForm.program}
+                                            onChange={(event) => setMemberForm((prev) => ({ ...prev, program: event.target.value }))}
+                                            placeholder="e.g., BSIT"
+                                            autoComplete="off"
+                                        />
+                                    </div>
 
-                                                    {availableStudentsForDialog.map((student) => {
-                                                        const label = student.email
-                                                            ? `${student.name} (${student.email})`
-                                                            : student.name
-
-                                                        return (
-                                                            <SelectItem key={`student-option-${student.id}`} value={student.id}>
-                                                                {label}
-                                                            </SelectItem>
-                                                        )
-                                                    })}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-
-                                        <div className="grid gap-4 md:grid-cols-2">
-                                            <div className="space-y-2">
-                                                <Label htmlFor="member-program">Program (Optional)</Label>
-                                                <Input
-                                                    id="member-program"
-                                                    value={memberForm.program}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            program: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., BSIT"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-
-                                            <div className="space-y-2">
-                                                <Label htmlFor="member-section">Section (Optional)</Label>
-                                                <Input
-                                                    id="member-section"
-                                                    value={memberForm.section}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            section: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., 4A"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Alert>
-                                            <AlertDescription>
-                                                You can enter any Student ID format. The system will auto-generate a valid UUID in
-                                                the background when needed.
-                                            </AlertDescription>
-                                        </Alert>
-
-                                        <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <span className="text-xs text-muted-foreground">Selected role on save:</span>
-                                                <Badge>Student</Badge>
-
-                                                {manualRoleLookup.exists ? (
-                                                    <Badge variant="outline">
-                                                        Current role: {manualLookupRoleLabel}
-                                                    </Badge>
-                                                ) : null}
-
-                                                {manualLookupStatusLabel ? (
-                                                    <Badge variant="secondary">
-                                                        Status: {manualLookupStatusLabel}
-                                                    </Badge>
-                                                ) : null}
-                                            </div>
-
-                                            {manualRoleLookup.checking ? (
-                                                <p className="text-xs text-muted-foreground">
-                                                    Checking existing user role for this UUID...
-                                                </p>
-                                            ) : null}
-
-                                            {!manualRoleLookup.checking &&
-                                                manualRoleLookup.exists === true &&
-                                                manualRoleLookup.role &&
-                                                manualRoleLookup.role !== "student" ? (
-                                                <p className="text-xs text-amber-600">
-                                                    Existing account detected. Role will be auto-corrected to Student when you save.
-                                                </p>
-                                            ) : null}
-
-                                            {!manualRoleLookup.checking &&
-                                                manualRoleLookup.exists === true &&
-                                                manualRoleLookup.role === "student" ? (
-                                                <p className="text-xs text-emerald-600">
-                                                    Existing account already has Student role.
-                                                </p>
-                                            ) : null}
-
-                                            {!manualRoleLookup.checking &&
-                                                manualRoleLookup.exists === false &&
-                                                manualRoleLookup.lookedUpUserId &&
-                                                isUuidLike(manualRoleLookup.lookedUpUserId) ? (
-                                                <p className="text-xs text-muted-foreground">
-                                                    No existing user found for this UUID. A manual member record will be created.
-                                                </p>
-                                            ) : null}
-
-                                            {manualRoleLookup.error ? (
-                                                <p className="text-xs text-destructive">{manualRoleLookup.error}</p>
-                                            ) : null}
-                                        </div>
-
-                                        <div className="grid gap-4 md:grid-cols-2">
-                                            <div className="space-y-2">
-                                                <Label htmlFor="manual-student-id">Student ID / School ID (Optional)</Label>
-                                                <Input
-                                                    id="manual-student-id"
-                                                    value={memberForm.manualStudentId}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            manualStudentId: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., 2022-00001"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-
-                                            <div className="space-y-2">
-                                                <Label htmlFor="manual-student-name">Student Name (Optional)</Label>
-                                                <Input
-                                                    id="manual-student-name"
-                                                    value={memberForm.name}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            name: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., Juan Dela Cruz"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="grid gap-4 md:grid-cols-2">
-                                            <div className="space-y-2">
-                                                <Label htmlFor="manual-program">Program (Optional)</Label>
-                                                <Input
-                                                    id="manual-program"
-                                                    value={memberForm.program}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            program: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., BSIT"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-
-                                            <div className="space-y-2">
-                                                <Label htmlFor="manual-section">Section (Optional)</Label>
-                                                <Input
-                                                    id="manual-section"
-                                                    value={memberForm.section}
-                                                    onChange={(event) =>
-                                                        setMemberForm((prev) => ({
-                                                            ...prev,
-                                                            section: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="e.g., 4A"
-                                                    autoComplete="off"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <p className="text-xs text-muted-foreground">
-                                            For manual entry, provide at least Student ID or Student Name. UUID mapping and student-role correction are handled automatically when applicable.
-                                        </p>
-                                    </>
-                                )}
+                                    <div className="space-y-2">
+                                        <Label htmlFor="member-section">Section (Optional)</Label>
+                                        <Input
+                                            id="member-section"
+                                            value={memberForm.section}
+                                            onChange={(event) => setMemberForm((prev) => ({ ...prev, section: event.target.value }))}
+                                            placeholder="e.g., 4A"
+                                            autoComplete="off"
+                                        />
+                                    </div>
+                                </div>
 
                                 <DialogFooter>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() => setMemberDialogOpen(false)}
-                                        disabled={memberSubmitting}
-                                    >
+                                    <Button type="button" variant="outline" onClick={() => setMemberDialogOpen(false)} disabled={memberSubmitting}>
                                         Cancel
                                     </Button>
                                     <Button type="submit" disabled={memberSubmitting}>
@@ -2039,6 +1614,85 @@ export default function AdminThesisGroupDetailsPage() {
                             </form>
                         </div>
                     </ScrollArea>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={createStudentOpen}
+                onOpenChange={(open) => {
+                    if (!creatingStudentUser) setCreateStudentOpen(open)
+                    if (!open) resetCreateStudentForm()
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Create Student User</DialogTitle>
+                        <DialogDescription>
+                            A login credential email will be sent automatically after user creation.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <form
+                        className="space-y-4"
+                        onSubmit={(event) => {
+                            event.preventDefault()
+                            void handleCreateStudentUser()
+                        }}
+                    >
+                        {createStudentError ? (
+                            <Alert variant="destructive">
+                                <AlertDescription>{createStudentError}</AlertDescription>
+                            </Alert>
+                        ) : null}
+
+                        <div className="space-y-2">
+                            <Label htmlFor="create-student-name">Name</Label>
+                            <Input
+                                id="create-student-name"
+                                value={createStudentName}
+                                onChange={(e) => setCreateStudentName(e.target.value)}
+                                placeholder="e.g., Juan Dela Cruz"
+                                autoComplete="off"
+                            />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="create-student-email">Email</Label>
+                            <Input
+                                id="create-student-email"
+                                type="email"
+                                value={createStudentEmail}
+                                onChange={(e) => setCreateStudentEmail(e.target.value)}
+                                placeholder="e.g., juan.delacruz@example.edu"
+                                autoComplete="off"
+                            />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>Status</Label>
+                            <Select value={createStudentStatus} onValueChange={(value) => setCreateStudentStatus(value as UserStatus)}>
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {CREATE_USER_STATUSES.map((status) => (
+                                        <SelectItem key={`student-status-${status}`} value={status}>
+                                            {toTitleCase(status)}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setCreateStudentOpen(false)} disabled={creatingStudentUser}>
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={creatingStudentUser}>
+                                {creatingStudentUser ? "Creating..." : "Create Student User"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
                 </DialogContent>
             </Dialog>
 

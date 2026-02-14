@@ -57,6 +57,7 @@ import {
     type ThesisRole,
     type UserRow,
     type UserStatus,
+    type UUID,
 } from '../models/Model';
 import type { DatabaseServices, ListQuery } from '../services/Services';
 
@@ -624,6 +625,85 @@ function findGroupMemberByIdentifier(
     );
 }
 
+function decodeURIComponentSafe(value: string): string {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
+/**
+ * Resolves incoming member/user identifiers to canonical users.id.
+ * Uses UserController alias-aware lookup so non-canonical UUID aliases
+ * from any client are normalized server-side before group_members writes.
+ */
+async function resolveCanonicalUserForMember(
+    services: DatabaseServices,
+    candidateId: string,
+): Promise<{
+    canonicalId: string;
+    user: UserRow | null;
+    resolvedFromAlias: boolean;
+}> {
+    const normalized = candidateId.trim();
+
+    if (!normalized) {
+        return {
+            canonicalId: normalized,
+            user: null,
+            resolvedFromAlias: false,
+        };
+    }
+
+    const usersController = new UserController(services);
+
+    let user: UserRow | null = null;
+    try {
+        user = await usersController.getById(normalized as UUID);
+    } catch {
+        user = null;
+    }
+
+    if (!user) {
+        return {
+            canonicalId: normalized,
+            user: null,
+            resolvedFromAlias: false,
+        };
+    }
+
+    const canonicalId = user.id;
+    return {
+        canonicalId,
+        user,
+        resolvedFromAlias:
+            canonicalId.toLowerCase() !== normalized.toLowerCase(),
+    };
+}
+
+async function findGroupMemberByIdentifierWithAliasFallback(
+    members: GroupMemberRow[],
+    rawIdentifier: string,
+    services: DatabaseServices,
+): Promise<GroupMemberRow | null> {
+    const direct = findGroupMemberByIdentifier(members, rawIdentifier);
+    if (direct) return direct;
+
+    const decoded = decodeURIComponentSafe(rawIdentifier).trim();
+    const uuid = extractUuidFromText(decoded);
+    if (!uuid) return null;
+
+    const resolved = await resolveCanonicalUserForMember(services, uuid);
+    if (!resolved.user) return null;
+
+    if (resolved.canonicalId.toLowerCase() === uuid.toLowerCase()) {
+        return null;
+    }
+
+    return findGroupMemberByIdentifier(members, resolved.canonicalId);
+}
+
 /**
  * Runtime-safe user lookup.
  * Prevents response-shaping failures from crashing member create/update/list
@@ -640,7 +720,7 @@ async function safeFindUserById(
     }
 
     try {
-        return await usersService.findById(userId);
+        return await usersService.findById(userId as UUID);
     } catch {
         return null;
     }
@@ -661,7 +741,7 @@ async function safeFindStudentProfileByUserId(
     }
 
     try {
-        return await studentsService.findByUserId(userId);
+        return await studentsService.findByUserId(userId as UUID);
     } catch {
         return null;
     }
@@ -778,7 +858,7 @@ async function dispatchThesisGroupsRequest(
                 if (!isUuidLike(adviserId)) {
                     return json400('adviserId must be a valid UUID.');
                 }
-                const items = await controller.listByAdviser(adviserId);
+                const items = await controller.listByAdviser(adviserId as UUID);
                 return json200({ items });
             }
 
@@ -805,7 +885,7 @@ async function dispatchThesisGroupsRequest(
             return json400('adviserId must be a valid UUID.');
         }
 
-        const items = await controller.listByAdviser(adviserId);
+        const items = await controller.listByAdviser(adviserId as UUID);
         return json200({ items });
     }
 
@@ -814,7 +894,7 @@ async function dispatchThesisGroupsRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id);
+            const item = await controller.findById(id as UUID);
             if (!item) return json404Entity('Thesis group');
             return json200({ item });
         }
@@ -823,13 +903,13 @@ async function dispatchThesisGroupsRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id }, body as ThesisGroupPatch);
+            const item = await controller.updateOne({ id: id as UUID }, body as ThesisGroupPatch);
             if (!item) return json404Entity('Thesis group');
             return json200({ item });
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete({ id });
+            const deleted = await controller.delete({ id: id as UUID });
             if (deleted === 0) return json404Entity('Thesis group');
             return json200({ deleted });
         }
@@ -840,14 +920,14 @@ async function dispatchThesisGroupsRequest(
     // /api/*/thesis-groups/:id/members[/:memberId]
     // Supports aliases: members, member, group-members, group-member
     if (isThesisGroupMembersSegment(tail[1])) {
-        const group = await controller.findById(id);
+        const group = await controller.findById(id as UUID);
         if (!group) return json404Entity('Thesis group');
 
         const membersController = services.group_members;
 
         if (tail.length === 2) {
             if (method === 'GET') {
-                const rows = await membersController.listByGroup(id);
+                const rows = await membersController.listByGroup(id as UUID);
                 const items = await Promise.all(
                     rows.map((row) => buildGroupMemberResponse(row, services)),
                 );
@@ -858,22 +938,29 @@ async function dispatchThesisGroupsRequest(
                 const body = await readJsonRecord(req);
                 if (!body) return json400('Invalid JSON body.');
 
-                const studentId = parseGroupMemberStudentIdFromBody(body);
-                if (!studentId) {
+                const incomingStudentId = parseGroupMemberStudentIdFromBody(body);
+                if (!incomingStudentId) {
                     return json400('studentId/userId is required.');
                 }
 
-                if (!isUuidLike(studentId)) {
+                if (!isUuidLike(incomingStudentId)) {
                     return json400('studentId/userId must be a valid UUID.');
-                }
-
-                const studentUser = await services.users.findById(studentId);
-                if (studentUser && studentUser.role !== 'student') {
-                    return json400('Resolved user must have role "student".');
                 }
 
                 const requiresLinkedStudentUser =
                     hasExplicitLinkedStudentUserReference(body);
+
+                // Canonicalize alias UUID -> users.id before any membership operations.
+                const resolvedStudent = await resolveCanonicalUserForMember(
+                    services,
+                    incomingStudentId,
+                );
+                const canonicalStudentId = resolvedStudent.canonicalId;
+                const studentUser = resolvedStudent.user;
+
+                if (studentUser && studentUser.role !== 'student') {
+                    return json400('Resolved user must have role "student".');
+                }
 
                 if (requiresLinkedStudentUser && !studentUser) {
                     return json400(
@@ -883,7 +970,10 @@ async function dispatchThesisGroupsRequest(
 
                 // Pre-check student profile to avoid DB-level FK explosions and opaque 500s.
                 const studentProfile = studentUser
-                    ? await safeFindStudentProfileByUserId(services, studentId)
+                    ? await safeFindStudentProfileByUserId(
+                        services,
+                        canonicalStudentId,
+                    )
                     : null;
 
                 if (studentUser && !studentProfile) {
@@ -892,9 +982,9 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                const existingRows = await membersController.listByGroup(id);
+                const existingRows = await membersController.listByGroup(id as UUID);
                 const existing = existingRows.find(
-                    (row) => row.student_id === studentId,
+                    (row) => row.student_id === canonicalStudentId,
                 );
                 if (existing) {
                     const item = await buildGroupMemberResponse(existing, services);
@@ -904,13 +994,15 @@ async function dispatchThesisGroupsRequest(
                 let created: GroupMemberRow;
                 try {
                     created = await membersController.create({
-                        group_id: id,
-                        student_id: studentId,
+                        group_id: id as UUID,
+                        student_id: canonicalStudentId as UUID,
                     });
                 } catch (error) {
                     if (isUniqueViolation(error)) {
-                        const rows = await membersController.listByGroup(id);
-                        const duplicate = rows.find((row) => row.student_id === studentId);
+                        const rows = await membersController.listByGroup(id as UUID);
+                        const duplicate = rows.find(
+                            (row) => row.student_id === canonicalStudentId,
+                        );
                         if (duplicate) {
                             const item = await buildGroupMemberResponse(duplicate, services);
                             return json200({ item });
@@ -957,10 +1049,11 @@ async function dispatchThesisGroupsRequest(
         const rawMemberIdentifier = tail[2];
         if (!rawMemberIdentifier) return json404Api();
 
-        const groupMembers = await membersController.listByGroup(id);
-        const existingMember = findGroupMemberByIdentifier(
+        const groupMembers = await membersController.listByGroup(id as UUID);
+        const existingMember = await findGroupMemberByIdentifierWithAliasFallback(
             groupMembers,
             rawMemberIdentifier,
+            services,
         );
         if (!existingMember) return json404Entity('Thesis group member');
 
@@ -974,22 +1067,29 @@ async function dispatchThesisGroupsRequest(
                 const body = await readJsonRecord(req);
                 if (!body) return json400('Invalid JSON body.');
 
-                const nextStudentId = parseGroupMemberStudentIdFromBody(body);
-                if (!nextStudentId) {
+                const incomingNextStudentId = parseGroupMemberStudentIdFromBody(body);
+                if (!incomingNextStudentId) {
                     return json400('studentId/userId is required.');
                 }
 
-                if (!isUuidLike(nextStudentId)) {
+                if (!isUuidLike(incomingNextStudentId)) {
                     return json400('studentId/userId must be a valid UUID.');
-                }
-
-                const nextStudentUser = await services.users.findById(nextStudentId);
-                if (nextStudentUser && nextStudentUser.role !== 'student') {
-                    return json400('Resolved user must have role "student".');
                 }
 
                 const requiresLinkedStudentUser =
                     hasExplicitLinkedStudentUserReference(body);
+
+                // Canonicalize alias UUID -> users.id before replacement create.
+                const resolvedNextStudent = await resolveCanonicalUserForMember(
+                    services,
+                    incomingNextStudentId,
+                );
+                const nextCanonicalStudentId = resolvedNextStudent.canonicalId;
+                const nextStudentUser = resolvedNextStudent.user;
+
+                if (nextStudentUser && nextStudentUser.role !== 'student') {
+                    return json400('Resolved user must have role "student".');
+                }
 
                 if (requiresLinkedStudentUser && !nextStudentUser) {
                     return json400(
@@ -999,7 +1099,10 @@ async function dispatchThesisGroupsRequest(
 
                 // Pre-check profile before attempting replacement.
                 const nextStudentProfile = nextStudentUser
-                    ? await safeFindStudentProfileByUserId(services, nextStudentId)
+                    ? await safeFindStudentProfileByUserId(
+                        services,
+                        nextCanonicalStudentId,
+                    )
                     : null;
 
                 if (nextStudentUser && !nextStudentProfile) {
@@ -1008,13 +1111,16 @@ async function dispatchThesisGroupsRequest(
                     );
                 }
 
-                if (nextStudentId === existingMember.student_id) {
+                if (
+                    nextCanonicalStudentId.toLowerCase() ===
+                    existingMember.student_id.toLowerCase()
+                ) {
                     const item = await buildGroupMemberResponse(existingMember, services);
                     return json200({ item });
                 }
 
                 const duplicate = groupMembers.some(
-                    (row) => row.student_id === nextStudentId,
+                    (row) => row.student_id === nextCanonicalStudentId,
                 );
                 if (duplicate) {
                     return json400(
@@ -1027,8 +1133,8 @@ async function dispatchThesisGroupsRequest(
                 let replacement: GroupMemberRow;
                 try {
                     replacement = await membersController.create({
-                        group_id: id,
-                        student_id: nextStudentId,
+                        group_id: id as UUID,
+                        student_id: nextCanonicalStudentId as UUID,
                     });
                 } catch (error) {
                     if (isUniqueViolation(error)) {
@@ -1065,13 +1171,16 @@ async function dispatchThesisGroupsRequest(
                 }
 
                 const removed = await membersController.removeMember(
-                    id,
-                    existingMember.student_id,
+                    id as UUID,
+                    existingMember.student_id as UUID,
                 );
 
                 if (removed === 0) {
                     // Roll back replacement if old member unexpectedly vanished.
-                    await membersController.removeMember(id, replacement.student_id);
+                    await membersController.removeMember(
+                        id as UUID,
+                        replacement.student_id as UUID,
+                    );
                     return json404Entity('Thesis group member');
                 }
 
@@ -1081,8 +1190,8 @@ async function dispatchThesisGroupsRequest(
 
             if (method === 'DELETE') {
                 const deleted = await membersController.removeMember(
-                    id,
-                    existingMember.student_id,
+                    id as UUID,
+                    existingMember.student_id as UUID,
                 );
                 if (deleted === 0) return json404Entity('Thesis group member');
                 return json200({ deleted });
@@ -1096,14 +1205,14 @@ async function dispatchThesisGroupsRequest(
 
     // /api/*/thesis-groups/:id/schedules[/:scheduleId[/status]]
     if (tail[1] === 'schedules' || tail[1] === 'defense-schedules') {
-        const group = await controller.findById(id);
+        const group = await controller.findById(id as UUID);
         if (!group) return json404Entity('Thesis group');
 
         const schedulesController = services.defense_schedules;
 
         if (tail.length === 2) {
             if (method === 'GET') {
-                const items = await schedulesController.listByGroup(id);
+                const items = await schedulesController.listByGroup(id as UUID);
                 return json200({ items });
             }
 
@@ -1113,7 +1222,7 @@ async function dispatchThesisGroupsRequest(
 
                 const payload: DefenseScheduleInsert = {
                     ...(body as DefenseScheduleInsert),
-                    group_id: id,
+                    group_id: id as UUID,
                 };
 
                 const item = await schedulesController.create(payload);
@@ -1126,7 +1235,7 @@ async function dispatchThesisGroupsRequest(
         const scheduleId = tail[2];
         if (!scheduleId || !isUuidLike(scheduleId)) return json404Api();
 
-        const existing = await schedulesController.findById(scheduleId);
+        const existing = await schedulesController.findById(scheduleId as UUID);
         if (!existing || existing.group_id !== id) {
             return json404Entity('Defense schedule');
         }
@@ -1141,7 +1250,7 @@ async function dispatchThesisGroupsRequest(
                 if (!body) return json400('Invalid JSON body.');
 
                 const item = await schedulesController.updateOne(
-                    { id: scheduleId, group_id: id },
+                    { id: scheduleId as UUID, group_id: id as UUID },
                     body as DefenseSchedulePatch,
                 );
                 if (!item) return json404Entity('Defense schedule');
@@ -1150,8 +1259,8 @@ async function dispatchThesisGroupsRequest(
 
             if (method === 'DELETE') {
                 const deleted = await schedulesController.delete({
-                    id: scheduleId,
-                    group_id: id,
+                    id: scheduleId as UUID,
+                    group_id: id as UUID,
                 });
                 if (deleted === 0) return json404Entity('Defense schedule');
                 return json200({ deleted });
@@ -1174,7 +1283,7 @@ async function dispatchThesisGroupsRequest(
             }
 
             const item = await schedulesController.setStatus(
-                scheduleId,
+                scheduleId as UUID,
                 status.trim() as DefenseScheduleRow['status'],
             );
             if (!item || item.group_id !== id) {
@@ -1188,10 +1297,6 @@ async function dispatchThesisGroupsRequest(
 
     return json404Api();
 }
-
-// ... [UNCHANGED BELOW]
-// NOTE: The remainder of this file is unchanged from your current version.
-// Keep everything below exactly as-is in your project.
 
 async function dispatchDefenseSchedulesRequest(
     req: NextRequest,
@@ -1216,7 +1321,7 @@ async function dispatchDefenseSchedulesRequest(
                 if (!isUuidLike(groupId)) {
                     return json400('groupId must be a valid UUID.');
                 }
-                const items = await controller.listByGroup(groupId);
+                const items = await controller.listByGroup(groupId as UUID);
                 return json200({ items });
             }
 
@@ -1224,7 +1329,7 @@ async function dispatchDefenseSchedulesRequest(
                 if (!isUuidLike(panelistId)) {
                     return json400('panelistId/staffId must be a valid UUID.');
                 }
-                const items = await controller.listByPanelist(panelistId);
+                const items = await controller.listByPanelist(panelistId as UUID);
                 return json200({ items });
             }
 
@@ -1253,7 +1358,7 @@ async function dispatchDefenseSchedulesRequest(
             return json400('groupId must be a valid UUID.');
         }
 
-        const items = await controller.listByGroup(groupId);
+        const items = await controller.listByGroup(groupId as UUID);
         return json200({ items });
     }
 
@@ -1266,7 +1371,7 @@ async function dispatchDefenseSchedulesRequest(
             return json400('panelistId/staffId must be a valid UUID.');
         }
 
-        const items = await controller.listByPanelist(panelistId);
+        const items = await controller.listByPanelist(panelistId as UUID);
         return json200({ items });
     }
 
@@ -1275,7 +1380,7 @@ async function dispatchDefenseSchedulesRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id);
+            const item = await controller.findById(id as UUID);
             if (!item) return json404Entity('Defense schedule');
             return json200({ item });
         }
@@ -1284,13 +1389,13 @@ async function dispatchDefenseSchedulesRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id }, body as DefenseSchedulePatch);
+            const item = await controller.updateOne({ id: id as UUID }, body as DefenseSchedulePatch);
             if (!item) return json404Entity('Defense schedule');
             return json200({ item });
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete({ id });
+            const deleted = await controller.delete({ id: id as UUID });
             if (deleted === 0) return json404Entity('Defense schedule');
             return json200({ deleted });
         }
@@ -1312,7 +1417,7 @@ async function dispatchDefenseSchedulesRequest(
         }
 
         const item = await controller.setStatus(
-            id,
+            id as UUID,
             status.trim() as DefenseScheduleRow['status'],
         );
         if (!item) return json404Entity('Defense schedule');
@@ -1379,7 +1484,7 @@ async function dispatchRubricTemplatesRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id);
+            const item = await controller.findById(id as UUID);
             if (!item) return json404Entity('Rubric template');
             return json200({ item });
         }
@@ -1388,13 +1493,13 @@ async function dispatchRubricTemplatesRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id }, body as RubricTemplatePatch);
+            const item = await controller.updateOne({ id: id as UUID }, body as RubricTemplatePatch);
             if (!item) return json404Entity('Rubric template');
             return json200({ item });
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete({ id });
+            const deleted = await controller.delete({ id: id as UUID });
             if (deleted === 0) return json404Entity('Rubric template');
             return json200({ deleted });
         }
@@ -1418,7 +1523,7 @@ async function dispatchRubricTemplatesRequest(
             return json400('active must be provided as a boolean.');
         }
 
-        const item = await controller.setActive(id, active);
+        const item = await controller.setActive(id as UUID, active);
         if (!item) return json404Entity('Rubric template');
         return json200({ item });
     }
@@ -1451,7 +1556,7 @@ async function dispatchAuditLogsRequest(
                 if (!isUuidLike(actorId)) {
                     return json400('actorId must be a valid UUID.');
                 }
-                where.actor_id = actorId;
+                where.actor_id = actorId as UUID;
             }
 
             if (entity) {
@@ -1462,7 +1567,7 @@ async function dispatchAuditLogsRequest(
                 if (!isUuidLike(entityId)) {
                     return json400('entityId must be a valid UUID.');
                 }
-                where.entity_id = entityId;
+                where.entity_id = entityId as UUID;
             }
 
             if (Object.keys(where).length > 0) {
@@ -1492,7 +1597,7 @@ async function dispatchAuditLogsRequest(
             return json400('actorId must be a valid UUID.');
         }
 
-        const items = await controller.listByActor(actorId);
+        const items = await controller.listByActor(actorId as UUID);
         return json200({ items });
     }
 
@@ -1507,7 +1612,10 @@ async function dispatchAuditLogsRequest(
             return json400('entityId must be a valid UUID.');
         }
 
-        const items = await controller.listByEntity(entity, entityId);
+        const items = await controller.listByEntity(
+            entity,
+            entityId ? (entityId as UUID) : undefined,
+        );
         return json200({ items });
     }
 
@@ -1516,7 +1624,7 @@ async function dispatchAuditLogsRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id);
+            const item = await controller.findById(id as UUID);
             if (!item) return json404Entity('Audit log');
             return json200({ item });
         }
@@ -1525,13 +1633,13 @@ async function dispatchAuditLogsRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id }, body as AuditLogPatch);
+            const item = await controller.updateOne({ id: id as UUID }, body as AuditLogPatch);
             if (!item) return json404Entity('Audit log');
             return json200({ item });
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete({ id });
+            const deleted = await controller.delete({ id: id as UUID });
             if (deleted === 0) return json404Entity('Audit log');
             return json200({ deleted });
         }
@@ -1613,7 +1721,7 @@ async function dispatchAdminRequest(
             return json400('groupId is required and must be a valid UUID.');
         }
 
-        const item = await services.v_thesis_group_rankings.byGroup(groupId);
+        const item = await services.v_thesis_group_rankings.byGroup(groupId as UUID);
         if (!item) return json404Entity('Ranking');
         return json200({ item });
     }
@@ -1623,7 +1731,7 @@ async function dispatchAdminRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Admin');
             return json200({ item });
         }
@@ -1633,7 +1741,7 @@ async function dispatchAdminRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<AdminController['update']>[1],
             );
             if (!item) return json404Entity('Admin');
@@ -1641,7 +1749,7 @@ async function dispatchAdminRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('Admin');
             return json200({ deleted });
         }
@@ -1662,7 +1770,7 @@ async function dispatchAdminRequest(
             return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Admin');
         return json200({ item });
     }
@@ -1703,7 +1811,7 @@ async function dispatchStudentRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Student');
             return json200({ item });
         }
@@ -1713,7 +1821,7 @@ async function dispatchStudentRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<StudentController['update']>[1],
             );
             if (!item) return json404Entity('Student');
@@ -1721,7 +1829,7 @@ async function dispatchStudentRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('Student');
             return json200({ deleted });
         }
@@ -1742,7 +1850,7 @@ async function dispatchStudentRequest(
             return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Student');
         return json200({ item });
     }
@@ -1783,7 +1891,7 @@ async function dispatchStaffRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Staff');
             return json200({ item });
         }
@@ -1793,7 +1901,7 @@ async function dispatchStaffRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<StaffController['update']>[1],
             );
             if (!item) return json404Entity('Staff');
@@ -1801,7 +1909,7 @@ async function dispatchStaffRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('Staff');
             return json200({ deleted });
         }
@@ -1822,7 +1930,7 @@ async function dispatchStaffRequest(
             return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Staff');
         return json200({ item });
     }
@@ -1863,7 +1971,7 @@ async function dispatchPanelistRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Panelist');
             return json200({ item });
         }
@@ -1873,7 +1981,7 @@ async function dispatchPanelistRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<PanelistController['update']>[1],
             );
             if (!item) return json404Entity('Panelist');
@@ -1881,7 +1989,7 @@ async function dispatchPanelistRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('Panelist');
             return json200({ deleted });
         }
@@ -1902,7 +2010,7 @@ async function dispatchPanelistRequest(
             return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Panelist');
         return json200({ item });
     }
@@ -1943,7 +2051,7 @@ async function dispatchUsersRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('User');
             return json200({ item });
         }
@@ -1953,7 +2061,7 @@ async function dispatchUsersRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<UserController['update']>[1],
             );
             if (!item) return json404Entity('User');
@@ -1961,7 +2069,7 @@ async function dispatchUsersRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('User');
             return json200({ deleted });
         }
@@ -1982,7 +2090,7 @@ async function dispatchUsersRequest(
             return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('User');
         return json200({ item });
     }
@@ -2000,7 +2108,7 @@ async function dispatchUsersRequest(
             return json400('avatarKey must be a string or null.');
         }
 
-        const item = await controller.setAvatarKey(id, value);
+        const item = await controller.setAvatarKey(id as UUID, value);
         if (!item) return json404Entity('User');
         return json200({ item });
     }
@@ -2078,7 +2186,7 @@ async function dispatchNotificationsRequest(
         }
 
         const items = await controller.broadcast(
-            userIds,
+            userIds as UUID[],
             payloadRaw as Parameters<NotificationController['broadcast']>[1],
         );
         return json201({ items, count: items.length });
@@ -2101,7 +2209,7 @@ async function dispatchNotificationsRequest(
             >(req);
 
             const items = await controller.getAllByUser(
-                userId,
+                userId as UUID,
                 omitWhere(query) as Parameters<
                     NotificationController['getAllByUser']
                 >[1],
@@ -2113,7 +2221,7 @@ async function dispatchNotificationsRequest(
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
             const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit')) ?? 50;
-            const items = await controller.getUnread(userId, limit);
+            const items = await controller.getUnread(userId as UUID, limit);
             return json200({ items });
         }
 
@@ -2124,7 +2232,7 @@ async function dispatchNotificationsRequest(
 
             const body = await readJsonRecord(req);
             const readAt = body ? parseReadAt(body) : undefined;
-            const updated = await controller.markAllAsRead(userId, readAt);
+            const updated = await controller.markAllAsRead(userId as UUID, readAt);
             return json200({ updated });
         }
 
@@ -2147,7 +2255,7 @@ async function dispatchNotificationsRequest(
             >(req);
 
             const items = await controller.getByType(
-                userId,
+                userId as UUID,
                 type,
                 omitWhere(query) as Parameters<NotificationController['getByType']>[2],
             );
@@ -2163,7 +2271,7 @@ async function dispatchNotificationsRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.getById(id);
+            const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Notification');
             return json200({ item });
         }
@@ -2173,7 +2281,7 @@ async function dispatchNotificationsRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const item = await controller.update(
-                id,
+                id as UUID,
                 body as Parameters<NotificationController['update']>[1],
             );
             if (!item) return json404Entity('Notification');
@@ -2181,7 +2289,7 @@ async function dispatchNotificationsRequest(
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete(id);
+            const deleted = await controller.delete(id as UUID);
             if (deleted === 0) return json404Entity('Notification');
             return json200({ deleted });
         }
@@ -2197,7 +2305,7 @@ async function dispatchNotificationsRequest(
         const body = await readJsonRecord(req);
         const readAt = body ? parseReadAt(body) : undefined;
 
-        const item = await controller.markAsRead(id, readAt);
+        const item = await controller.markAsRead(id as UUID, readAt);
         if (!item) return json404Entity('Notification');
         return json200({ item });
     }
@@ -2238,7 +2346,7 @@ async function dispatchEvaluationsRequest(
         const scheduleId = tail[1];
         if (!scheduleId) return json400('scheduleId is required.');
 
-        const items = await controller.listBySchedule(scheduleId);
+        const items = await controller.listBySchedule(scheduleId as UUID);
         return json200({ items });
     }
 
@@ -2249,7 +2357,7 @@ async function dispatchEvaluationsRequest(
         const evaluatorId = tail[1];
         if (!evaluatorId) return json400('evaluatorId is required.');
 
-        const items = await controller.listByEvaluator(evaluatorId);
+        const items = await controller.listByEvaluator(evaluatorId as UUID);
         return json200({ items });
     }
 
@@ -2258,7 +2366,7 @@ async function dispatchEvaluationsRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id);
+            const item = await controller.findById(id as UUID);
             if (!item) return json404Entity('Evaluation');
             return json200({ item });
         }
@@ -2267,13 +2375,13 @@ async function dispatchEvaluationsRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id }, body as EvaluationPatch);
+            const item = await controller.updateOne({ id: id as UUID }, body as EvaluationPatch);
             if (!item) return json404Entity('Evaluation');
             return json200({ item });
         }
 
         if (method === 'DELETE') {
-            const deleted = await controller.delete({ id });
+            const deleted = await controller.delete({ id: id as UUID });
             if (deleted === 0) return json404Entity('Evaluation');
             return json200({ deleted });
         }
@@ -2294,7 +2402,7 @@ async function dispatchEvaluationsRequest(
             return json400('Invalid status. Provide a non-empty status string.');
         }
 
-        const item = await controller.setStatus(id, status);
+        const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Evaluation');
         return json200({ item });
     }
@@ -2309,7 +2417,7 @@ async function dispatchEvaluationsRequest(
             ? parseOptionalIsoDate(body.submittedAt ?? body.submitted_at)
             : undefined;
 
-        const item = await controller.submit(id, submittedAt);
+        const item = await controller.submit(id as UUID, submittedAt);
         if (!item) return json404Entity('Evaluation');
         return json200({ item });
     }
@@ -2324,7 +2432,7 @@ async function dispatchEvaluationsRequest(
             ? parseOptionalIsoDate(body.lockedAt ?? body.locked_at)
             : undefined;
 
-        const item = await controller.lock(id, lockedAt);
+        const item = await controller.lock(id as UUID, lockedAt);
         if (!item) return json404Entity('Evaluation');
         return json200({ item });
     }
