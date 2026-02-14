@@ -30,6 +30,34 @@ export function getS3Client() {
     return client
 }
 
+export function normalizeS3ObjectKey(key: string): string {
+    return String(key ?? "").trim().replace(/^\/+/, "")
+}
+
+/**
+ * Build the canonical S3 object URL for a key.
+ * Example:
+ * https://<bucket>.s3.<region>.amazonaws.com/<encoded-key>
+ */
+export function buildS3ObjectUrl(key: string): string {
+    const normalizedKey = normalizeS3ObjectKey(key)
+    if (!normalizedKey) {
+        throw new Error("S3 object key is required to build object URL.")
+    }
+
+    const encodedKey = normalizedKey
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/")
+
+    // us-east-1 also supports the shorter endpoint format.
+    if (env.AWS_REGION === "us-east-1") {
+        return `https://${env.S3_BUCKET_NAME}.s3.amazonaws.com/${encodedKey}`
+    }
+
+    return `https://${env.S3_BUCKET_NAME}.s3.${env.AWS_REGION}.amazonaws.com/${encodedKey}`
+}
+
 export async function createPresignedPutUrl(opts: {
     key: string
     contentType: string

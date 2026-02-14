@@ -4,7 +4,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveDatabaseServices } from '../../../../../database/services/resolver';
 import type { DatabaseServices } from '../../../../../database/services/Services';
 import type { UserPatch, UserRow } from '../../../../../database/models/Model';
-import { createPresignedGetUrl, createPresignedPutUrl } from '@/lib/s3';
+import {
+    buildS3ObjectUrl,
+    createPresignedGetUrl,
+    createPresignedPutUrl,
+} from '@/lib/s3';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +20,12 @@ function json(status: number, payload: Record<string, unknown>): NextResponse {
     const hasOk = Object.prototype.hasOwnProperty.call(payload, 'ok');
     return NextResponse.json(
         hasOk ? payload : { ok: status >= 200 && status < 300, ...payload },
-        { status },
+        {
+            status,
+            headers: {
+                'Cache-Control': 'no-store',
+            },
+        },
     );
 }
 
@@ -36,6 +45,14 @@ function trimToString(value: unknown): string | null {
     if (typeof value !== 'string') return null;
     const v = value.trim();
     return v.length > 0 ? v : null;
+}
+
+function firstNonEmptyString(values: unknown[]): string | null {
+    for (const value of values) {
+        const s = trimToString(value);
+        if (s) return s;
+    }
+    return null;
 }
 
 function sha256(value: string): string {
@@ -104,11 +121,13 @@ async function resolveAuthedUser(
 
 function sanitizeFilename(filename: string): string {
     const base = filename.split(/[\\/]/).pop() ?? 'avatar';
-    return base
-        .replace(/[^\w.-]+/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^\.+/, '')
-        .slice(0, 120) || 'avatar';
+    return (
+        base
+            .replace(/[^\w.-]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^\.+/, '')
+            .slice(0, 120) || 'avatar'
+    );
 }
 
 function getExtension(filename: string): string {
@@ -126,60 +145,52 @@ function buildAvatarKey(userId: string, filename: string): string {
     return `avatars/${userId}/${stamp}-${rand}${ext}`;
 }
 
-function envFirst(keys: string[]): string | null {
-    for (const key of keys) {
-        const value = trimToString(process.env[key]);
-        if (value) return value;
+function isHttpUrl(value: string): boolean {
+    try {
+        const u = new URL(value);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+        return false;
     }
-    return null;
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-    return baseUrl.replace(/\/+$/, '');
-}
-
-function normalizeKeyPath(key: string): string {
-    return key.replace(/^\/+/, '');
+function normalizeKey(value: string): string {
+    return value.trim().replace(/^\/+/, '');
 }
 
 /**
- * Creates a persistent avatar URL string to store in DB.
- * Priority:
- * 1) explicit public base URL envs
- * 2) standard S3 HTTPS URL
- * 3) null if not derivable
+ * Accepts either:
+ * - raw key: avatars/<userId>/...
+ * - full URL: https://bucket.s3.region.amazonaws.com/avatars/<userId>/...
+ * Returns extracted key if possible.
  */
-function buildPersistentAvatarUrl(key: string): string | null {
-    const normalizedKey = normalizeKeyPath(key);
+function extractAvatarKey(input: string): string | null {
+    const raw = trimToString(input);
+    if (!raw) return null;
 
-    const explicitBaseUrl = envFirst([
-        'S3_PUBLIC_BASE_URL',
-        'NEXT_PUBLIC_S3_PUBLIC_BASE_URL',
-        'AWS_S3_PUBLIC_BASE_URL',
-        'CLOUDFRONT_PUBLIC_BASE_URL',
-        'R2_PUBLIC_BASE_URL',
-    ]);
-
-    if (explicitBaseUrl) {
-        return `${normalizeBaseUrl(explicitBaseUrl)}/${normalizedKey}`;
+    if (!isHttpUrl(raw)) {
+        const key = normalizeKey(raw);
+        return key.length > 0 ? key : null;
     }
 
-    const bucket = envFirst(['S3_BUCKET', 'AWS_S3_BUCKET', 'AWS_BUCKET_NAME']);
-    const region = envFirst(['AWS_REGION', 'S3_REGION']);
+    try {
+        const u = new URL(raw);
+        const pathname = u.pathname.replace(/^\/+/, '');
+        if (!pathname) return null;
 
-    if (bucket && region) {
-        return `https://${bucket}.s3.${region}.amazonaws.com/${normalizedKey}`;
+        try {
+            const decoded = decodeURIComponent(pathname);
+            return decoded.length > 0 ? decoded : null;
+        } catch {
+            return pathname;
+        }
+    } catch {
+        return null;
     }
-    if (bucket) {
-        return `https://${bucket}.s3.amazonaws.com/${normalizedKey}`;
-    }
-
-    return null;
 }
 
-function readAvatarUrlFromUser(user: UserRow): string | null {
-    const raw = (user as unknown as { avatar_url?: unknown }).avatar_url;
-    return trimToString(raw);
+function isOwnAvatarKey(key: string, userId: string): boolean {
+    return key.startsWith(`avatars/${userId}/`);
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -193,35 +204,71 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             return res;
         }
 
-        const avatarKey = trimToString(
+        const storedAvatar = trimToString(
             (user as unknown as { avatar_key?: unknown }).avatar_key ?? null,
         );
 
-        if (!avatarKey) {
+        if (!storedAvatar) {
             return json(200, {
                 item: {
                     id: user.id,
                     avatar_key: null,
                     avatar_url: null,
+                    avatar_object_url: null,
                     url: null,
                 },
             });
         }
 
-        const avatarUrlFromDb = readAvatarUrlFromUser(user);
-        const avatarUrl = avatarUrlFromDb ?? buildPersistentAvatarUrl(avatarKey);
+        const storedIsUrl = isHttpUrl(storedAvatar);
+        const extractedKey = extractAvatarKey(storedAvatar);
 
-        const url = await createPresignedGetUrl({
-            key: avatarKey,
-            expiresInSeconds: 300,
-        });
+        if (extractedKey && !isOwnAvatarKey(extractedKey, user.id)) {
+            // Safety: never expose another user's avatar path.
+            return json(200, {
+                item: {
+                    id: user.id,
+                    avatar_key: null,
+                    avatar_url: null,
+                    avatar_object_url: null,
+                    url: null,
+                },
+            });
+        }
 
+        let resolvedAvatarUrl: string;
+
+        if (storedIsUrl) {
+            // New format: DB already stores full object URL
+            resolvedAvatarUrl = storedAvatar;
+        } else if (extractedKey) {
+            // Legacy format: DB stores key. Build object URL for best UX.
+            resolvedAvatarUrl = buildS3ObjectUrl(extractedKey);
+
+            // Best-effort migration: convert stored key -> object URL
+            try {
+                const patchPayload: UserPatch = { avatar_key: resolvedAvatarUrl };
+                await services.users.updateOne({ id: user.id }, patchPayload);
+            } catch {
+                // Do not fail GET if migration update fails.
+            }
+        } else {
+            // Fallback for unexpected legacy data
+            resolvedAvatarUrl = await createPresignedGetUrl({
+                key: storedAvatar,
+                expiresInSeconds: 3600,
+                responseContentDisposition: 'inline',
+            });
+        }
+
+        // Keep compatibility fields for existing frontend parsers.
         return json(200, {
             item: {
                 id: user.id,
-                avatar_key: avatarKey,
-                avatar_url: avatarUrl,
-                url,
+                avatar_key: extractedKey ?? storedAvatar,
+                avatar_url: resolvedAvatarUrl,
+                avatar_object_url: resolvedAvatarUrl,
+                url: resolvedAvatarUrl,
             },
         });
     } catch (error) {
@@ -254,13 +301,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
 
         const key = buildAvatarKey(user.id, filename);
-        const url = await createPresignedPutUrl({
+        const uploadUrl = await createPresignedPutUrl({
             key,
             contentType,
             expiresInSeconds: 60,
         });
+        const objectUrl = buildS3ObjectUrl(key);
 
-        return json(200, { key, url });
+        // Backward-compatible response:
+        // - url: upload URL (legacy clients)
+        // - uploadUrl: explicit upload URL
+        // - objectUrl: URL that should be saved in DB
+        return json(200, { key, url: uploadUrl, uploadUrl, objectUrl });
     } catch (error) {
         return json(500, {
             error: 'Failed to prepare avatar upload.',
@@ -283,29 +335,38 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
         const body = await readJsonRecord(req);
         if (!body) return json(400, { error: 'Invalid JSON body.' });
 
-        const key = trimToString(body.key);
-        if (!key) return json(400, { error: 'key is required.' });
+        // Accept either key or URL payloads for compatibility.
+        const rawKeyOrUrl = firstNonEmptyString([
+            body.key,
+            body.objectUrl,
+            body.object_url,
+            body.avatarUrl,
+            body.avatar_url,
+            body.url,
+        ]);
 
-        const expectedPrefix = `avatars/${user.id}/`;
-        if (!key.startsWith(expectedPrefix)) {
+        if (!rawKeyOrUrl) {
+            return json(400, {
+                error: 'Provide key or object URL (objectUrl/url/avatar_url).',
+            });
+        }
+
+        const key = extractAvatarKey(rawKeyOrUrl);
+        if (!key) return json(400, { error: 'Invalid avatar key/object URL.' });
+
+        if (!isOwnAvatarKey(key, user.id)) {
             return json(400, { error: 'Invalid avatar key for current user.' });
         }
 
-        const persistentAvatarUrl = buildPersistentAvatarUrl(key);
+        const objectUrl = buildS3ObjectUrl(key);
 
-        // Save BOTH key + persistent URL in DB
-        const patchPayload = {
-            avatar_key: key,
-            avatar_url: persistentAvatarUrl,
-        } as unknown as UserPatch;
+        // ✅ Save OBJECT URL in DB (per requirement), not raw key.
+        const patchPayload: UserPatch = {
+            avatar_key: objectUrl,
+        };
 
         const updated = await services.users.updateOne({ id: user.id }, patchPayload);
         if (!updated) return json(404, { error: 'User not found.' });
-
-        const signedGetUrl = await createPresignedGetUrl({
-            key,
-            expiresInSeconds: 300,
-        });
 
         try {
             await services.audit_logs.create({
@@ -313,22 +374,19 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
                 action: 'users.me.avatar.update',
                 entity: 'users',
                 entity_id: user.id,
-                details: { avatar_key: key, avatar_url: persistentAvatarUrl },
+                details: { avatar_key: key, avatar_object_url: objectUrl },
             });
         } catch {
             // Do not fail if audit logging fails.
         }
 
-        const updatedAvatarUrl =
-            trimToString((updated as unknown as { avatar_url?: unknown }).avatar_url) ??
-            persistentAvatarUrl;
-
         return json(200, {
             item: {
                 id: updated.id,
                 avatar_key: key,
-                avatar_url: updatedAvatarUrl,
-                url: signedGetUrl,
+                avatar_url: objectUrl,
+                avatar_object_url: objectUrl,
+                url: objectUrl,
             },
         });
     } catch (error) {
@@ -350,11 +408,10 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
             return res;
         }
 
-        // Clear BOTH key + url in DB
-        const patchPayload = {
+        // ✅ Clear ONLY avatar_key column
+        const patchPayload: UserPatch = {
             avatar_key: null,
-            avatar_url: null,
-        } as unknown as UserPatch;
+        };
 
         const updated = await services.users.updateOne({ id: user.id }, patchPayload);
         if (!updated) return json(404, { error: 'User not found.' });
@@ -376,6 +433,8 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
                 id: updated.id,
                 avatar_key: null,
                 avatar_url: null,
+                avatar_object_url: null,
+                url: null,
             },
         });
     } catch (error) {

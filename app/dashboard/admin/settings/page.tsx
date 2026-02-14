@@ -51,6 +51,7 @@ type Me = {
     name: string
     email: string
     role: string
+    avatar?: string | null
     avatar_key: string | null
 } | null
 
@@ -71,6 +72,24 @@ function initials(name: string) {
     return (a + b).toUpperCase()
 }
 
+/**
+ * Keep behavior consistent with components/nav-user.tsx:
+ * 1) prefer direct avatar field
+ * 2) if avatar_key is already a URL/path, use it directly
+ * 3) otherwise rely on useAuth().avatarUrl (resolved from /api/users/me/avatar)
+ */
+function inferDirectAvatarUrl(u: any): string {
+    const direct = String(u?.avatar ?? "").trim()
+    if (direct) return direct
+
+    const key = String(u?.avatar_key ?? "").trim()
+    if (!key) return ""
+    if (/^https?:\/\//i.test(key)) return key
+    if (key.startsWith("/")) return key
+
+    return ""
+}
+
 function passwordScore(pw: string) {
     const s = String(pw || "")
     let score = 0
@@ -87,8 +106,38 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
     const router = useRouter()
 
     // ✅ global auth + avatar state
-    const { loading, user, refresh, avatarUrl, refreshAvatarUrl } = useAuth()
+    const { loading, user, refresh, avatarUrl: authAvatarUrl, refreshAvatarUrl } = useAuth()
     const me = (user as any as Me) ?? null
+
+    const directAvatarUrl = React.useMemo(() => inferDirectAvatarUrl(me), [me])
+    const displayAvatarUrl = React.useMemo(
+        () => directAvatarUrl || String(authAvatarUrl ?? "").trim() || "",
+        [directAvatarUrl, authAvatarUrl],
+    )
+
+    // Keep same "resolve once when missing" behavior as nav-user.tsx
+    const lastAvatarKeyRef = React.useRef<string>("")
+    React.useEffect(() => {
+        if (loading) return
+        if (!me) return
+
+        const key = String(me?.avatar_key ?? "").trim()
+        if (!key) return
+
+        // Already have a directly usable URL in user object
+        if (directAvatarUrl) return
+
+        // Already resolved by auth hook
+        if (String(authAvatarUrl ?? "").trim()) return
+
+        // Avoid repeat fetches for same key
+        if (lastAvatarKeyRef.current === key) return
+        lastAvatarKeyRef.current = key
+
+        Promise.resolve(refreshAvatarUrl?.()).catch(() => {
+            // ignore, AvatarFallback will still render initials
+        })
+    }, [loading, me?.id, me?.avatar_key, directAvatarUrl, authAvatarUrl, refreshAvatarUrl])
 
     // profile
     const [name, setName] = React.useState("")
@@ -240,14 +289,19 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
         setAvatarBusy(true)
         const tId = toast.loading("Preparing upload...")
         try {
-            // 1) request presigned PUT URL + key
+            // 1) request presigned PUT URL + key (+ objectUrl on newer API)
             const pres = await fetch("/api/users/me/avatar", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ filename: file.name, contentType: file.type }),
             })
             const presData = (await pres.json().catch(() => ({}))) as any
-            if (!pres.ok || !presData?.ok || !presData?.url || !presData?.key) {
+
+            const uploadUrl = String(presData?.uploadUrl ?? presData?.url ?? "").trim()
+            const key = String(presData?.key ?? "").trim()
+            const objectUrl = String(presData?.objectUrl ?? "").trim()
+
+            if (!pres.ok || !presData?.ok || !uploadUrl || !key) {
                 toast.error(presData?.message || "Failed to prepare upload.", { id: tId })
                 return
             }
@@ -255,7 +309,7 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
             toast.loading("Uploading image...", { id: tId })
 
             // 2) PUT to S3
-            const put = await fetch(presData.url, {
+            const put = await fetch(uploadUrl, {
                 method: "PUT",
                 headers: { "Content-Type": file.type },
                 body: file,
@@ -267,11 +321,13 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
 
             toast.loading("Saving avatar...", { id: tId })
 
-            // 3) save key
+            // 3) Save avatar reference (prefer objectUrl when provided, keep key for compatibility)
+            const patchPayload = objectUrl ? { objectUrl, key } : { key }
+
             const patch = await fetch("/api/users/me/avatar", {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ key: presData.key }),
+                body: JSON.stringify(patchPayload),
             })
             const patchData = (await patch.json().catch(() => ({}))) as any
             if (!patch.ok || !patchData?.ok) {
@@ -453,7 +509,8 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                         <div className="flex flex-col items-center text-center gap-2">
                                             <Avatar className="h-20 w-20 overflow-hidden">
                                                 <AvatarImage
-                                                    src={avatarUrl ?? undefined}
+                                                    key={displayAvatarUrl || "avatar-mobile-fallback"}
+                                                    src={displayAvatarUrl || undefined}
                                                     alt={me.name}
                                                     className="h-full w-full object-cover"
                                                 />
@@ -814,7 +871,12 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                     <CardContent className="space-y-4">
                                         <div className="flex items-center gap-3">
                                             <Avatar className="h-12 w-12 overflow-hidden">
-                                                <AvatarImage src={avatarUrl ?? undefined} alt={me.name} className="h-full w-full object-cover" />
+                                                <AvatarImage
+                                                    key={displayAvatarUrl || "avatar-desktop-fallback"}
+                                                    src={displayAvatarUrl || undefined}
+                                                    alt={me.name}
+                                                    className="h-full w-full object-cover"
+                                                />
                                                 <AvatarFallback>{initials(me.name)}</AvatarFallback>
                                             </Avatar>
 
@@ -1008,7 +1070,8 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                     <div className="flex items-center gap-3">
                                                         <Avatar className="h-16 w-16 overflow-hidden">
                                                             <AvatarImage
-                                                                src={avatarUrl ?? undefined}
+                                                                key={displayAvatarUrl || "avatar-tab-fallback"}
+                                                                src={displayAvatarUrl || undefined}
                                                                 alt={me.name}
                                                                 className="h-full w-full object-cover"
                                                             />
@@ -1052,7 +1115,7 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                         Avatar storage
                                                     </AlertTitle>
                                                     <AlertDescription>
-                                                        Upload uses a presigned URL, then saves the avatar key to your account.
+                                                        Upload uses a presigned URL for secure transfer, then stores your avatar reference for reliable loading across the app.
                                                     </AlertDescription>
                                                 </Alert>
 
@@ -1060,8 +1123,7 @@ export function RoleSettingsPage({ config }: { config: SettingsPageConfig }) {
                                                     <AccordionItem value="help-avatar">
                                                         <AccordionTrigger>Why do I need to upload first?</AccordionTrigger>
                                                         <AccordionContent className="text-sm text-muted-foreground">
-                                                            The app uses a presigned URL for secure direct uploads. After upload, the server stores the image key in your user
-                                                            profile.
+                                                            The app uses a presigned URL for secure direct uploads. After upload, the server stores the avatar reference in your user profile.
                                                         </AccordionContent>
                                                     </AccordionItem>
                                                 </Accordion>
