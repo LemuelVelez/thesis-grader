@@ -277,6 +277,48 @@ function toNullableTrimmed(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function buildThesisGroupMutationPayload(input: {
+  title: string
+  program: string
+  term: string | null
+  adviserId: string | null
+  manualAdviserInfo: string
+}): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    title: input.title,
+    program: toNullableTrimmed(input.program),
+    term: input.term,
+    adviser_id: input.adviserId,
+  }
+
+  // Send manual adviser info only when no staff adviser is selected and a value exists.
+  // This avoids sending null/unsupported fields that can trigger 500s on some backends.
+  if (input.adviserId === null) {
+    const manual = toNullableTrimmed(input.manualAdviserInfo)
+    if (manual !== null) {
+      payload.manual_adviser_info = manual
+    }
+  }
+
+  return payload
+}
+
+function normalizeActionError(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : fallback
+  const msg = (raw ?? "").trim()
+
+  if (!msg) return fallback
+
+  // Friendlier UX for backend schema mismatch errors.
+  if (
+    /manual_adviser_info|manualadviserinfo|adviserid|column .* does not exist/i.test(msg)
+  ) {
+    return "Unable to save due to a server field mismatch. Please refresh and try again."
+  }
+
+  return msg
+}
+
 function parseResponseBodySafe(res: Response): Promise<unknown | null> {
   return res.text().then((text) => {
     if (!text) return null
@@ -813,32 +855,31 @@ export default function AdminThesisGroupsPage() {
         }
       }
 
-      const manualAdviserInfo =
-        selectedAdviserId === null ? toNullableTrimmed(createForm.manualAdviserInfo) : null
+      const payload = buildThesisGroupMutationPayload({
+        title,
+        program: createForm.program,
+        term: termBuilt.term,
+        adviserId: selectedAdviserId,
+        manualAdviserInfo: createForm.manualAdviserInfo,
+      })
+
+      const loadingToastId = toast.loading("Creating thesis group...")
 
       try {
         await requestFirstAvailable(writeBases, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            program: toNullableTrimmed(createForm.program),
-            term: termBuilt.term,
-            adviser_id: selectedAdviserId,
-            adviserId: selectedAdviserId,
-            manual_adviser_info: manualAdviserInfo,
-            manualAdviserInfo: manualAdviserInfo,
-          }),
+          body: JSON.stringify(payload),
         })
 
         setCreateOpen(false)
         resetCreateForm()
         setRefreshKey((v) => v + 1)
-        toast.success("Thesis group created successfully.")
+        toast.success("Thesis group created successfully.", { id: loadingToastId })
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to create thesis group."
+        const message = normalizeActionError(e, "Failed to create thesis group.")
         setActionError(message)
-        toast.error(message)
+        toast.error(message, { id: loadingToastId })
       } finally {
         setSubmitting(false)
       }
@@ -917,23 +958,22 @@ export default function AdminThesisGroupsPage() {
         }
       }
 
-      const manualAdviserInfo =
-        selectedAdviserId === null ? toNullableTrimmed(editForm.manualAdviserInfo) : null
+      const payload = buildThesisGroupMutationPayload({
+        title,
+        program: editForm.program,
+        term: termBuilt.term,
+        adviserId: selectedAdviserId,
+        manualAdviserInfo: editForm.manualAdviserInfo,
+      })
+
+      const loadingToastId = toast.loading("Saving changes...")
 
       try {
         const endpoints = writeBases.map((base) => `${base}/${editTarget.id}`)
         const result = await requestFirstAvailable(endpoints, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            program: toNullableTrimmed(editForm.program),
-            term: termBuilt.term,
-            adviser_id: selectedAdviserId,
-            adviserId: selectedAdviserId,
-            manual_adviser_info: manualAdviserInfo,
-            manualAdviserInfo: manualAdviserInfo,
-          }),
+          body: JSON.stringify(payload),
         })
 
         const updated = normalizeGroup(unwrapItem(result.payload))
@@ -947,11 +987,11 @@ export default function AdminThesisGroupsPage() {
 
         setEditOpen(false)
         setEditTarget(null)
-        toast.success("Thesis group updated successfully.")
+        toast.success("Thesis group updated successfully.", { id: loadingToastId })
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to update thesis group."
+        const message = normalizeActionError(e, "Failed to update thesis group.")
         setActionError(message)
-        toast.error(message)
+        toast.error(message, { id: loadingToastId })
       } finally {
         setSubmitting(false)
       }
@@ -972,6 +1012,8 @@ export default function AdminThesisGroupsPage() {
     setSubmitting(true)
     setActionError(null)
 
+    const loadingToastId = toast.loading("Deleting thesis group...")
+
     try {
       const endpoints = writeBases.map((base) => `${base}/${deleteTarget.id}`)
       await requestFirstAvailable(endpoints, { method: "DELETE" })
@@ -979,11 +1021,11 @@ export default function AdminThesisGroupsPage() {
       setGroups((prev) => prev.filter((item) => item.id !== deleteTarget.id))
       setDeleteOpen(false)
       setDeleteTarget(null)
-      toast.success("Thesis group deleted successfully.")
+      toast.success("Thesis group deleted successfully.", { id: loadingToastId })
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to delete thesis group."
+      const message = normalizeActionError(e, "Failed to delete thesis group.")
       setActionError(message)
-      toast.error(message)
+      toast.error(message, { id: loadingToastId })
     } finally {
       setSubmitting(false)
     }
