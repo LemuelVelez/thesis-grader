@@ -6,7 +6,7 @@ import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -97,6 +97,12 @@ function getInitials(name: string) {
     if (parts.length === 0) return "U"
     if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
     return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase()
+}
+
+function resolveAvatarObjectUrl(avatarKey: string | null): string | null {
+    const value = avatarKey?.trim()
+    if (!value) return null
+    return /^https?:\/\//i.test(value) ? value : null
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -543,16 +549,45 @@ export default function AdminUsersPage() {
                                                         user.status === "active"
                                                             ? "disabled"
                                                             : "active"
+                                                    const avatarObjectUrl =
+                                                        resolveAvatarObjectUrl(user.avatar_key)
 
                                                     return (
                                                         <TableRow key={user.id}>
                                                             <TableCell>
                                                                 <div className="flex items-center gap-3">
-                                                                    <Avatar className="h-9 w-9">
-                                                                        <AvatarFallback>
-                                                                            {getInitials(user.name)}
-                                                                        </AvatarFallback>
-                                                                    </Avatar>
+                                                                    {avatarObjectUrl ? (
+                                                                        <a
+                                                                            href={avatarObjectUrl}
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            className="inline-flex rounded-full focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                                                            aria-label={`Open ${user.name}'s avatar image`}
+                                                                            title="Open avatar image"
+                                                                        >
+                                                                            <Avatar className="h-9 w-9">
+                                                                                <AvatarImage
+                                                                                    src={avatarObjectUrl}
+                                                                                    alt={`${user.name} avatar`}
+                                                                                    className="h-full w-full object-cover"
+                                                                                />
+                                                                                <AvatarFallback>
+                                                                                    {getInitials(
+                                                                                        user.name,
+                                                                                    )}
+                                                                                </AvatarFallback>
+                                                                            </Avatar>
+                                                                        </a>
+                                                                    ) : (
+                                                                        <Avatar className="h-9 w-9">
+                                                                            <AvatarFallback>
+                                                                                {getInitials(
+                                                                                    user.name,
+                                                                                )}
+                                                                            </AvatarFallback>
+                                                                        </Avatar>
+                                                                    )}
+
                                                                     <div className="min-w-0">
                                                                         <p className="truncate font-medium">
                                                                             {user.name}
@@ -560,6 +595,11 @@ export default function AdminUsersPage() {
                                                                         <p className="truncate text-xs text-muted-foreground">
                                                                             {user.id}
                                                                         </p>
+                                                                        {avatarObjectUrl ? (
+                                                                            <p className="truncate text-[11px] text-muted-foreground">
+                                                                                Avatar object URL available
+                                                                            </p>
+                                                                        ) : null}
                                                                     </div>
                                                                 </div>
                                                             </TableCell>

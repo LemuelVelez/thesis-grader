@@ -18,7 +18,7 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -84,6 +84,12 @@ function getInitials(name: string) {
     if (parts.length === 0) return "U"
     if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
     return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase()
+}
+
+function resolveAvatarObjectUrl(avatarKey: string | null): string | null {
+    const value = avatarKey?.trim()
+    if (!value) return null
+    return /^https?:\/\//i.test(value) ? value : null
 }
 
 function isValidEmail(value: string) {
@@ -193,6 +199,21 @@ export default function AdminUserDetailsPage() {
     React.useEffect(() => {
         void loadUser()
     }, [loadUser])
+
+    const avatarObjectUrl = React.useMemo(
+        () => resolveAvatarObjectUrl(user?.avatar_key ?? null),
+        [user?.avatar_key],
+    )
+
+    const copyAvatarObjectUrl = React.useCallback(async () => {
+        if (!avatarObjectUrl) return
+        try {
+            await navigator.clipboard.writeText(avatarObjectUrl)
+            toast.success("Avatar object URL copied.")
+        } catch {
+            toast.error("Unable to copy avatar object URL.")
+        }
+    }, [avatarObjectUrl])
 
     const profileDirty = React.useMemo(() => {
         if (!user) return false
@@ -414,11 +435,34 @@ export default function AdminUserDetailsPage() {
                             <CardContent className="space-y-4">
                                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="flex items-center gap-3">
-                                        <Avatar className="h-12 w-12">
-                                            <AvatarFallback>
-                                                {getInitials(user.name)}
-                                            </AvatarFallback>
-                                        </Avatar>
+                                        {avatarObjectUrl ? (
+                                            <a
+                                                href={avatarObjectUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="inline-flex rounded-full focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                                aria-label={`Open ${user.name}'s avatar image`}
+                                                title="Open avatar image"
+                                            >
+                                                <Avatar className="h-12 w-12">
+                                                    <AvatarImage
+                                                        src={avatarObjectUrl}
+                                                        alt={`${user.name} avatar`}
+                                                        className="h-full w-full object-cover"
+                                                    />
+                                                    <AvatarFallback>
+                                                        {getInitials(user.name)}
+                                                    </AvatarFallback>
+                                                </Avatar>
+                                            </a>
+                                        ) : (
+                                            <Avatar className="h-12 w-12">
+                                                <AvatarFallback>
+                                                    {getInitials(user.name)}
+                                                </AvatarFallback>
+                                            </Avatar>
+                                        )}
+
                                         <div>
                                             <p className="text-base font-semibold">{user.name}</p>
                                             <p className="text-sm text-muted-foreground">
@@ -452,10 +496,59 @@ export default function AdminUserDetailsPage() {
                                     </div>
 
                                     <div className="rounded-md border p-3">
-                                        <p className="text-xs text-muted-foreground">Avatar Key</p>
-                                        <p className="mt-1 break-all text-sm font-medium">
-                                            {user.avatar_key || "No avatar key"}
+                                        <p className="text-xs text-muted-foreground">
+                                            Avatar Object URL
                                         </p>
+
+                                        {avatarObjectUrl ? (
+                                            <div className="mt-2 space-y-3">
+                                                <Input
+                                                    value={avatarObjectUrl}
+                                                    readOnly
+                                                    aria-label="Avatar object URL"
+                                                />
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="secondary"
+                                                        onClick={() =>
+                                                            void copyAvatarObjectUrl()
+                                                        }
+                                                    >
+                                                        Copy URL
+                                                    </Button>
+                                                    <Button asChild size="sm" variant="outline">
+                                                        <a
+                                                            href={avatarObjectUrl}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                        >
+                                                            Open Image
+                                                        </a>
+                                                    </Button>
+                                                </div>
+                                                <div className="flex items-center gap-3 rounded-md border bg-muted/30 p-3">
+                                                    <Avatar className="h-14 w-14">
+                                                        <AvatarImage
+                                                            src={avatarObjectUrl}
+                                                            alt={`${user.name} avatar preview`}
+                                                            className="h-full w-full object-cover"
+                                                        />
+                                                        <AvatarFallback>
+                                                            {getInitials(user.name)}
+                                                        </AvatarFallback>
+                                                    </Avatar>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Live preview from saved avatar object URL.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <p className="mt-1 break-all text-sm font-medium">
+                                                {user.avatar_key || "No avatar object URL"}
+                                            </p>
+                                        )}
                                     </div>
 
                                     <div className="rounded-md border p-3">
