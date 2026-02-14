@@ -3,8 +3,11 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
     Table,
@@ -25,6 +28,13 @@ type ThesisGroupDetail = {
     updatedAt: string | null
 }
 
+type StaffUserItem = {
+    id: string
+    name: string
+    email: string | null
+    status: string | null
+}
+
 type GroupMemberItem = {
     studentId: string
     name: string | null
@@ -39,6 +49,11 @@ type DefenseScheduleItem = {
     status: string | null
     rubricTemplateId: string | null
 }
+
+const STAFF_LIST_ENDPOINTS = [
+    "/api/staff",
+    `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
+] as const
 
 function detailEndpoints(id: string): string[] {
     return [
@@ -134,6 +149,26 @@ function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
     }
 }
 
+function normalizeStaffUser(raw: unknown): StaffUserItem | null {
+    const rec = asRecord(raw)
+    if (!rec) return null
+
+    const id = toStringOrNull(rec.id ?? rec.user_id)
+    if (!id) return null
+
+    const role = toStringOrNull(rec.role)?.toLowerCase()
+    if (role && role !== "staff") return null
+
+    const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Staff"
+
+    return {
+        id,
+        name,
+        email: toStringOrNull(rec.email),
+        status: toStringOrNull(rec.status),
+    }
+}
+
 function normalizeMember(raw: unknown): GroupMemberItem | null {
     const rec = asRecord(raw)
     if (!rec) return null
@@ -176,7 +211,7 @@ function formatDateTime(value: string | null): string {
 }
 
 async function fetchFirstAvailableJson(
-    endpoints: string[],
+    endpoints: readonly string[],
     signal: AbortSignal
 ): Promise<unknown | null> {
     let lastError: Error | null = null
@@ -224,11 +259,20 @@ export default function AdminThesisGroupDetailsPage() {
     }, [params])
 
     const [group, setGroup] = React.useState<ThesisGroupDetail | null>(null)
+    const [staffUsers, setStaffUsers] = React.useState<StaffUserItem[]>([])
     const [members, setMembers] = React.useState<GroupMemberItem[]>([])
     const [schedules, setSchedules] = React.useState<DefenseScheduleItem[]>([])
     const [loading, setLoading] = React.useState<boolean>(true)
+    const [staffLoading, setStaffLoading] = React.useState<boolean>(true)
     const [error, setError] = React.useState<string | null>(null)
+    const [staffError, setStaffError] = React.useState<string | null>(null)
     const [refreshKey, setRefreshKey] = React.useState<number>(0)
+
+    const staffById = React.useMemo(() => {
+        const map = new Map<string, StaffUserItem>()
+        for (const item of staffUsers) map.set(item.id, item)
+        return map
+    }, [staffUsers])
 
     const load = React.useCallback(
         async (signal: AbortSignal) => {
@@ -310,10 +354,13 @@ export default function AdminThesisGroupDetailsPage() {
                 }
             } catch (e) {
                 if (e instanceof Error && e.name === "AbortError") return
+                const message =
+                    e instanceof Error ? e.message : "Failed to load thesis group details."
                 setGroup(null)
                 setMembers([])
                 setSchedules([])
-                setError(e instanceof Error ? e.message : "Failed to load thesis group details.")
+                setError(message)
+                toast.error(message)
             } finally {
                 setLoading(false)
             }
@@ -321,16 +368,83 @@ export default function AdminThesisGroupDetailsPage() {
         [groupId]
     )
 
+    const loadStaffUsers = React.useCallback(async (signal: AbortSignal) => {
+        setStaffLoading(true)
+        setStaffError(null)
+
+        try {
+            const payload = await fetchFirstAvailableJson(STAFF_LIST_ENDPOINTS, signal)
+
+            if (!payload) {
+                setStaffUsers([])
+                setStaffError(
+                    "No compatible staff endpoint found. Adviser profile preview is unavailable."
+                )
+                return
+            }
+
+            const items = unwrapItems(payload)
+                .map(normalizeStaffUser)
+                .filter((item): item is StaffUserItem => item !== null)
+                .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
+
+            setStaffUsers(items)
+        } catch (e) {
+            if (e instanceof Error && e.name === "AbortError") return
+            const message =
+                e instanceof Error
+                    ? e.message
+                    : "Failed to load staff users for adviser preview."
+            setStaffUsers([])
+            setStaffError(message)
+            toast.error(message)
+        } finally {
+            setStaffLoading(false)
+        }
+    }, [])
+
     React.useEffect(() => {
         const controller = new AbortController()
         void load(controller.signal)
+        void loadStaffUsers(controller.signal)
         return () => controller.abort()
-    }, [load, refreshKey])
+    }, [load, loadStaffUsers, refreshKey])
+
+    const adviserContent = React.useMemo(() => {
+        if (!group?.adviserId) {
+            return <span className="text-muted-foreground">Not assigned</span>
+        }
+
+        const staff = staffById.get(group.adviserId)
+        if (!staff) {
+            if (staffLoading) {
+                return <span className="text-muted-foreground">Loading adviser profile…</span>
+            }
+
+            return (
+                <div className="space-y-1">
+                    <Badge variant="outline">Assigned Staff Adviser</Badge>
+                    <p className="text-xs text-muted-foreground">
+                        Staff profile details are not available from the current endpoint.
+                    </p>
+                </div>
+            )
+        }
+
+        return (
+            <div className="space-y-0.5 leading-tight">
+                <div className="font-medium">{staff.name}</div>
+                {staff.email ? (
+                    <div className="text-xs text-muted-foreground">{staff.email}</div>
+                ) : null}
+            </div>
+        )
+    }, [group?.adviserId, staffById, staffLoading])
 
     return (
         <DashboardLayout
             title={group ? `Thesis Group: ${group.title}` : "Thesis Group Details"}
-            description="View thesis group profile, members, and defense schedules."
+            description="View thesis group profile, members, defense schedules, and assigned staff adviser."
         >
             <div className="space-y-6">
                 <div className="flex flex-wrap items-center gap-2">
@@ -338,15 +452,24 @@ export default function AdminThesisGroupDetailsPage() {
                         <Link href="/dashboard/admin/thesis-groups">Back to Thesis Groups</Link>
                     </Button>
 
-                    <Button onClick={() => setRefreshKey((v) => v + 1)} disabled={loading}>
-                        {loading ? "Refreshing..." : "Refresh"}
+                    <Button
+                        onClick={() => setRefreshKey((v) => v + 1)}
+                        disabled={loading || staffLoading}
+                    >
+                        {loading || staffLoading ? "Refreshing..." : "Refresh"}
                     </Button>
                 </div>
 
                 {error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-                        {error}
-                    </div>
+                    <Alert variant="destructive">
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {staffError ? (
+                    <Alert>
+                        <AlertDescription>{staffError}</AlertDescription>
+                    </Alert>
                 ) : null}
 
                 {!group && loading ? (
@@ -385,8 +508,8 @@ export default function AdminThesisGroupDetailsPage() {
                                             <TableCell>{group.term ?? "—"}</TableCell>
                                         </TableRow>
                                         <TableRow>
-                                            <TableCell className="font-medium">Adviser ID</TableCell>
-                                            <TableCell>{group.adviserId ?? "—"}</TableCell>
+                                            <TableCell className="font-medium">Adviser</TableCell>
+                                            <TableCell>{adviserContent}</TableCell>
                                         </TableRow>
                                         <TableRow>
                                             <TableCell className="font-medium">Created</TableCell>

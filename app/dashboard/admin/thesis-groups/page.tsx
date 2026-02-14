@@ -4,6 +4,7 @@ import * as React from "react"
 import Link from "next/link"
 import type { ColumnDef } from "@tanstack/react-table"
 import { MoreHorizontal, Plus } from "lucide-react"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import DataTable from "@/components/data-table"
@@ -56,10 +57,18 @@ type ThesisGroupListItem = {
   updatedAt: string | null
 }
 
+type StaffUserItem = {
+  id: string
+  name: string
+  email: string | null
+  status: string | null
+}
+
 type ThesisGroupFormState = {
   title: string
   program: string
-  adviserId: string
+  adviserUserId: string
+  manualAdviserInfo: string
   semester: string
   customSemester: string
   schoolYearStart: string
@@ -78,11 +87,17 @@ const LIST_ENDPOINTS = [
   "/api/admin/thesis/groups",
 ] as const
 
+const STAFF_LIST_ENDPOINTS = [
+  "/api/staff",
+  `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
+] as const
+
 const WRITE_BASE_ENDPOINTS = [...LIST_ENDPOINTS]
 
 const STANDARD_SEMESTERS = ["1st Semester", "2nd Semester", "Summer"] as const
 const SEMESTER_NONE_VALUE = "__none__"
 const SEMESTER_OTHER_VALUE = "__other__"
+const ADVISER_NONE_VALUE = "__none_adviser__"
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
@@ -163,11 +178,39 @@ function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
   }
 }
 
+function normalizeStaffUser(raw: unknown): StaffUserItem | null {
+  const rec = asRecord(raw)
+  if (!rec) return null
+
+  const id = toStringOrNull(rec.id ?? rec.user_id)
+  if (!id) return null
+
+  const role = toStringOrNull(rec.role)?.toLowerCase()
+  if (role && role !== "staff") return null
+
+  const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Staff"
+
+  return {
+    id,
+    name,
+    email: toStringOrNull(rec.email),
+    status: toStringOrNull(rec.status),
+  }
+}
+
 function sortNewest(items: ThesisGroupListItem[]): ThesisGroupListItem[] {
   return [...items].sort((a, b) => {
     const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
     const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
     return tb - ta
+  })
+}
+
+function sortStaff(items: StaffUserItem[]): StaffUserItem[] {
+  return [...items].sort((a, b) => {
+    const nameCompare = a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+    if (nameCompare !== 0) return nameCompare
+    return a.id.localeCompare(b.id)
   })
 }
 
@@ -215,7 +258,8 @@ function defaultCreateFormState(): ThesisGroupFormState {
   return {
     title: "",
     program: "",
-    adviserId: "",
+    adviserUserId: ADVISER_NONE_VALUE,
+    manualAdviserInfo: "",
     semester: "1st Semester",
     customSemester: "",
     schoolYearStart: currentYearText(),
@@ -226,7 +270,8 @@ function defaultEditFormState(): ThesisGroupFormState {
   return {
     title: "",
     program: "",
-    adviserId: "",
+    adviserUserId: ADVISER_NONE_VALUE,
+    manualAdviserInfo: "",
     semester: SEMESTER_NONE_VALUE,
     customSemester: "",
     schoolYearStart: currentYearText(),
@@ -326,6 +371,10 @@ function buildTermPreview(form: ThesisGroupFormState): string {
   return built.term ?? "No term"
 }
 
+function isDisabledStaff(staff: StaffUserItem): boolean {
+  return (staff.status ?? "").trim().toLowerCase() === "disabled"
+}
+
 async function fetchFirstAvailableJson(
   endpoints: readonly string[],
   signal: AbortSignal
@@ -411,8 +460,13 @@ async function requestFirstAvailable(
 
 export default function AdminThesisGroupsPage() {
   const [groups, setGroups] = React.useState<ThesisGroupListItem[]>([])
+  const [staffUsers, setStaffUsers] = React.useState<StaffUserItem[]>([])
+
   const [loading, setLoading] = React.useState<boolean>(true)
+  const [staffLoading, setStaffLoading] = React.useState<boolean>(true)
   const [error, setError] = React.useState<string | null>(null)
+  const [staffError, setStaffError] = React.useState<string | null>(null)
+
   const [refreshKey, setRefreshKey] = React.useState<number>(0)
   const [activeBaseEndpoint, setActiveBaseEndpoint] = React.useState<string | null>(null)
 
@@ -421,7 +475,7 @@ export default function AdminThesisGroupsPage() {
   const [deleteOpen, setDeleteOpen] = React.useState(false)
 
   const [submitting, setSubmitting] = React.useState(false)
-  const [formError, setFormError] = React.useState<string | null>(null)
+  const [actionError, setActionError] = React.useState<string | null>(null)
 
   const [createForm, setCreateForm] = React.useState<ThesisGroupFormState>(defaultCreateFormState())
 
@@ -441,9 +495,48 @@ export default function AdminThesisGroupsPage() {
   const createTermPreview = React.useMemo(() => buildTermPreview(createForm), [createForm])
   const editTermPreview = React.useMemo(() => buildTermPreview(editForm), [editForm])
 
+  const staffById = React.useMemo(() => {
+    const map = new Map<string, StaffUserItem>()
+    for (const item of staffUsers) map.set(item.id, item)
+    return map
+  }, [staffUsers])
+
+  const takenAdviserIds = React.useMemo(() => {
+    const set = new Set<string>()
+    for (const item of groups) {
+      if (item.adviserId) set.add(item.adviserId)
+    }
+    return set
+  }, [groups])
+
+  const availableCreateStaff = React.useMemo(
+    () =>
+      staffUsers.filter(
+        (staff) => !takenAdviserIds.has(staff.id) && !isDisabledStaff(staff)
+      ),
+    [staffUsers, takenAdviserIds]
+  )
+
+  const takenAdviserIdsForEdit = React.useMemo(() => {
+    const set = new Set(takenAdviserIds)
+    if (editTarget?.adviserId) set.delete(editTarget.adviserId)
+    return set
+  }, [editTarget?.adviserId, takenAdviserIds])
+
+  const availableEditStaff = React.useMemo(
+    () =>
+      staffUsers.filter(
+        (staff) => !takenAdviserIdsForEdit.has(staff.id) && !isDisabledStaff(staff)
+      ),
+    [staffUsers, takenAdviserIdsForEdit]
+  )
+
+  const createCanUseManualAdviser = availableCreateStaff.length === 0
+  const editCanUseManualAdviser = availableEditStaff.length === 0
+
   const resetCreateForm = React.useCallback(() => {
     setCreateForm(defaultCreateFormState())
-    setFormError(null)
+    setActionError(null)
   }, [])
 
   const openEditDialog = React.useCallback((item: ThesisGroupListItem) => {
@@ -452,22 +545,23 @@ export default function AdminThesisGroupsPage() {
     setEditForm({
       title: item.title,
       program: item.program ?? "",
-      adviserId: item.adviserId ?? "",
+      adviserUserId: item.adviserId ?? ADVISER_NONE_VALUE,
+      manualAdviserInfo: "",
       semester: parsed.semester,
       customSemester: parsed.customSemester,
       schoolYearStart: parsed.schoolYearStart,
     })
-    setFormError(null)
+    setActionError(null)
     setEditOpen(true)
   }, [])
 
   const openDeleteDialog = React.useCallback((item: ThesisGroupListItem) => {
     setDeleteTarget(item)
-    setFormError(null)
+    setActionError(null)
     setDeleteOpen(true)
   }, [])
 
-  const load = React.useCallback(
+  const loadGroups = React.useCallback(
     async (signal: AbortSignal) => {
       setLoading(true)
       setError(null)
@@ -493,9 +587,11 @@ export default function AdminThesisGroupsPage() {
         setGroups(sortNewest(normalized))
       } catch (e) {
         if (e instanceof Error && e.name === "AbortError") return
+        const message = e instanceof Error ? e.message : "Failed to load thesis groups."
         setGroups([])
         setActiveBaseEndpoint(null)
-        setError(e instanceof Error ? e.message : "Failed to load thesis groups.")
+        setError(message)
+        toast.error(message)
       } finally {
         setLoading(false)
       }
@@ -503,30 +599,121 @@ export default function AdminThesisGroupsPage() {
     []
   )
 
+  const loadStaffUsers = React.useCallback(async (signal: AbortSignal) => {
+    setStaffLoading(true)
+    setStaffError(null)
+
+    try {
+      const result = await fetchFirstAvailableJson(STAFF_LIST_ENDPOINTS, signal)
+
+      if (!result) {
+        setStaffUsers([])
+        setStaffError(
+          "No compatible staff endpoint found. Adviser selection will use manual fallback only."
+        )
+        return
+      }
+
+      const normalized = unwrapItems(result.payload)
+        .map(normalizeStaffUser)
+        .filter((item): item is StaffUserItem => item !== null)
+
+      setStaffUsers(sortStaff(normalized))
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return
+      const message =
+        e instanceof Error
+          ? e.message
+          : "Failed to load staff users for adviser selection."
+      setStaffUsers([])
+      setStaffError(message)
+      toast.error(message)
+    } finally {
+      setStaffLoading(false)
+    }
+  }, [])
+
   React.useEffect(() => {
     const controller = new AbortController()
-    void load(controller.signal)
+    void loadGroups(controller.signal)
+    void loadStaffUsers(controller.signal)
     return () => controller.abort()
-  }, [load, refreshKey])
+  }, [loadGroups, loadStaffUsers, refreshKey])
+
+  React.useEffect(() => {
+    if (!createOpen) return
+    if (createForm.adviserUserId !== ADVISER_NONE_VALUE) return
+
+    const firstAvailable = availableCreateStaff[0]?.id
+    if (!firstAvailable) return
+
+    setCreateForm((prev) =>
+      prev.adviserUserId === ADVISER_NONE_VALUE
+        ? { ...prev, adviserUserId: firstAvailable }
+        : prev
+    )
+  }, [availableCreateStaff, createForm.adviserUserId, createOpen])
 
   const onCreateSubmit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       setSubmitting(true)
-      setFormError(null)
+      setActionError(null)
 
       const title = createForm.title.trim()
       if (!title) {
-        setFormError("Thesis title is required.")
+        const message = "Thesis title is required."
+        setActionError(message)
+        toast.error(message)
         setSubmitting(false)
         return
       }
 
       const termBuilt = buildTermFromForm(createForm)
       if (termBuilt.error) {
-        setFormError(termBuilt.error)
+        setActionError(termBuilt.error)
+        toast.error(termBuilt.error)
         setSubmitting(false)
         return
+      }
+
+      const selectedAdviserId =
+        createForm.adviserUserId === ADVISER_NONE_VALUE ? null : createForm.adviserUserId
+
+      if (!selectedAdviserId && availableCreateStaff.length > 0) {
+        const message = "Please select an available staff adviser."
+        setActionError(message)
+        toast.error(message)
+        setSubmitting(false)
+        return
+      }
+
+      if (selectedAdviserId) {
+        const selectedStaff = staffById.get(selectedAdviserId)
+        if (!selectedStaff) {
+          const message = "Selected staff adviser no longer exists."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
+
+        if (isDisabledStaff(selectedStaff)) {
+          const message = "Selected staff adviser is disabled. Please choose another."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
+
+        if (takenAdviserIds.has(selectedAdviserId)) {
+          const message =
+            "Selected staff adviser is already assigned to another thesis group."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
       }
 
       try {
@@ -537,20 +724,30 @@ export default function AdminThesisGroupsPage() {
             title,
             program: toNullableTrimmed(createForm.program),
             term: termBuilt.term,
-            adviser_id: toNullableTrimmed(createForm.adviserId),
+            adviser_id: selectedAdviserId,
           }),
         })
 
         setCreateOpen(false)
         resetCreateForm()
         setRefreshKey((v) => v + 1)
+        toast.success("Thesis group created successfully.")
       } catch (e) {
-        setFormError(e instanceof Error ? e.message : "Failed to create thesis group.")
+        const message = e instanceof Error ? e.message : "Failed to create thesis group."
+        setActionError(message)
+        toast.error(message)
       } finally {
         setSubmitting(false)
       }
     },
-    [createForm, resetCreateForm, writeBases]
+    [
+      availableCreateStaff.length,
+      createForm,
+      resetCreateForm,
+      staffById,
+      takenAdviserIds,
+      writeBases,
+    ]
   )
 
   const onEditSubmit = React.useCallback(
@@ -559,20 +756,62 @@ export default function AdminThesisGroupsPage() {
       if (!editTarget) return
 
       setSubmitting(true)
-      setFormError(null)
+      setActionError(null)
 
       const title = editForm.title.trim()
       if (!title) {
-        setFormError("Thesis title is required.")
+        const message = "Thesis title is required."
+        setActionError(message)
+        toast.error(message)
         setSubmitting(false)
         return
       }
 
       const termBuilt = buildTermFromForm(editForm)
       if (termBuilt.error) {
-        setFormError(termBuilt.error)
+        setActionError(termBuilt.error)
+        toast.error(termBuilt.error)
         setSubmitting(false)
         return
+      }
+
+      const selectedAdviserId =
+        editForm.adviserUserId === ADVISER_NONE_VALUE ? null : editForm.adviserUserId
+
+      if (!selectedAdviserId && availableEditStaff.length > 0) {
+        const message = "Please select an available staff adviser."
+        setActionError(message)
+        toast.error(message)
+        setSubmitting(false)
+        return
+      }
+
+      if (selectedAdviserId) {
+        const selectedStaff = staffById.get(selectedAdviserId)
+        if (!selectedStaff) {
+          const message = "Selected staff adviser no longer exists."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
+
+        if (takenAdviserIdsForEdit.has(selectedAdviserId)) {
+          const message =
+            "Selected staff adviser is already assigned to another thesis group."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
+
+        if (isDisabledStaff(selectedStaff) && selectedAdviserId !== editTarget.adviserId) {
+          const message = "Selected staff adviser is disabled. Please choose another."
+          setActionError(message)
+          toast.error(message)
+          setSubmitting(false)
+          return
+        }
       }
 
       try {
@@ -584,7 +823,7 @@ export default function AdminThesisGroupsPage() {
             title,
             program: toNullableTrimmed(editForm.program),
             term: termBuilt.term,
-            adviser_id: toNullableTrimmed(editForm.adviserId),
+            adviser_id: selectedAdviserId,
           }),
         })
 
@@ -599,20 +838,30 @@ export default function AdminThesisGroupsPage() {
 
         setEditOpen(false)
         setEditTarget(null)
+        toast.success("Thesis group updated successfully.")
       } catch (e) {
-        setFormError(e instanceof Error ? e.message : "Failed to update thesis group.")
+        const message = e instanceof Error ? e.message : "Failed to update thesis group."
+        setActionError(message)
+        toast.error(message)
       } finally {
         setSubmitting(false)
       }
     },
-    [editForm, editTarget, writeBases]
+    [
+      availableEditStaff.length,
+      editForm,
+      editTarget,
+      staffById,
+      takenAdviserIdsForEdit,
+      writeBases,
+    ]
   )
 
   const onDeleteConfirm = React.useCallback(async () => {
     if (!deleteTarget) return
 
     setSubmitting(true)
-    setFormError(null)
+    setActionError(null)
 
     try {
       const endpoints = writeBases.map((base) => `${base}/${deleteTarget.id}`)
@@ -621,8 +870,11 @@ export default function AdminThesisGroupsPage() {
       setGroups((prev) => prev.filter((item) => item.id !== deleteTarget.id))
       setDeleteOpen(false)
       setDeleteTarget(null)
+      toast.success("Thesis group deleted successfully.")
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : "Failed to delete thesis group.")
+      const message = e instanceof Error ? e.message : "Failed to delete thesis group."
+      setActionError(message)
+      toast.error(message)
     } finally {
       setSubmitting(false)
     }
@@ -649,6 +901,28 @@ export default function AdminThesisGroupsPage() {
         accessorKey: "program",
         header: "Program",
         cell: ({ row }) => row.original.program ?? "—",
+      },
+      {
+        id: "adviser",
+        header: "Adviser",
+        cell: ({ row }) => {
+          const adviserId = row.original.adviserId
+          if (!adviserId) return "—"
+
+          const staff = staffById.get(adviserId)
+          if (!staff) {
+            return <Badge variant="outline">Assigned staff user</Badge>
+          }
+
+          return (
+            <div className="leading-tight">
+              <div>{staff.name}</div>
+              {staff.email ? (
+                <div className="text-xs text-muted-foreground">{staff.email}</div>
+              ) : null}
+            </div>
+          )
+        },
       },
       {
         accessorKey: "term",
@@ -701,13 +975,17 @@ export default function AdminThesisGroupsPage() {
         ),
       },
     ],
-    [openDeleteDialog, openEditDialog]
+    [openDeleteDialog, openEditDialog, staffById]
   )
+
+  const selectedEditAdviserMissing =
+    editForm.adviserUserId !== ADVISER_NONE_VALUE &&
+    !staffById.has(editForm.adviserUserId)
 
   return (
     <DashboardLayout
       title="Thesis Groups"
-      description="Create, view, update, and delete thesis groups including thesis title and term."
+      description="Create, view, update, and delete thesis groups with staff adviser assignment and friendly fallback flows."
     >
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -721,9 +999,21 @@ export default function AdminThesisGroupsPage() {
             Add Thesis Group
           </Button>
 
-          <Button onClick={() => setRefreshKey((v) => v + 1)} disabled={loading} variant="outline">
-            {loading ? "Refreshing..." : "Refresh"}
+          <Button
+            onClick={() => setRefreshKey((v) => v + 1)}
+            disabled={loading || staffLoading}
+            variant="outline"
+          >
+            {loading || staffLoading ? "Refreshing..." : "Refresh"}
           </Button>
+
+          <Badge variant="outline">
+            {staffLoading ? "Loading advisers..." : `Staff advisers: ${staffUsers.length}`}
+          </Badge>
+
+          <Badge variant="outline">
+            Available for new group: {availableCreateStaff.length}
+          </Badge>
         </div>
 
         {error ? (
@@ -732,9 +1022,9 @@ export default function AdminThesisGroupsPage() {
           </Alert>
         ) : null}
 
-        {formError ? (
-          <Alert variant="destructive">
-            <AlertDescription>{formError}</AlertDescription>
+        {staffError ? (
+          <Alert>
+            <AlertDescription>{staffError}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -750,18 +1040,27 @@ export default function AdminThesisGroupsPage() {
         open={createOpen}
         onOpenChange={(open) => {
           if (!submitting) setCreateOpen(open)
-          if (!open) resetCreateForm()
+          if (!open) {
+            resetCreateForm()
+            setActionError(null)
+          }
         }}
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Create Thesis Group</DialogTitle>
             <DialogDescription>
-              Add a new thesis group, choose the semester from dropdown, then customize only the year.
+              Assign an adviser from Staff users. If no staff adviser is available, use the manual adviser info fallback.
             </DialogDescription>
           </DialogHeader>
 
           <form onSubmit={onCreateSubmit} className="space-y-4">
+            {actionError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{actionError}</AlertDescription>
+              </Alert>
+            ) : null}
+
             <div className="space-y-2">
               <Label htmlFor="create-title">Thesis Title</Label>
               <Input
@@ -862,21 +1161,97 @@ export default function AdminThesisGroupsPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="create-adviser">Adviser ID</Label>
-              <Input
-                id="create-adviser"
-                value={createForm.adviserId}
-                onChange={(event) =>
-                  setCreateForm((prev) => ({ ...prev, adviserId: event.target.value }))
-                }
-                placeholder="UUID (optional)"
-                autoComplete="off"
-              />
+            <div className="rounded-lg border p-3 space-y-3">
+              <div className="space-y-2">
+                <Label>Adviser (Staff User)</Label>
+                <Select
+                  value={createForm.adviserUserId}
+                  onValueChange={(value) =>
+                    setCreateForm((prev) => ({ ...prev, adviserUserId: value }))
+                  }
+                  disabled={staffLoading}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      value={ADVISER_NONE_VALUE}
+                      disabled={availableCreateStaff.length > 0}
+                    >
+                      No staff adviser selected
+                    </SelectItem>
+
+                    {staffUsers.map((staff) => {
+                      const taken = takenAdviserIds.has(staff.id)
+                      const disabledAccount = isDisabledStaff(staff)
+                      const disabled = taken || disabledAccount
+                      const suffix = taken
+                        ? " • Already assigned"
+                        : disabledAccount
+                          ? " • Disabled"
+                          : ""
+                      const label = staff.email
+                        ? `${staff.name} (${staff.email})${suffix}`
+                        : `${staff.name}${suffix}`
+
+                      return (
+                        <SelectItem
+                          key={`create-adviser-${staff.id}`}
+                          value={staff.id}
+                          disabled={disabled}
+                        >
+                          {label}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+
+                {staffLoading ? (
+                  <p className="text-xs text-muted-foreground">Loading staff users…</p>
+                ) : availableCreateStaff.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Select from available Staff users. Assigned/disabled staff are disabled.
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-600">
+                    No available staff adviser right now. You may proceed with manual adviser information.
+                  </p>
+                )}
+              </div>
+
+              {createCanUseManualAdviser ? (
+                <div className="space-y-2">
+                  <Label htmlFor="create-manual-adviser">Manual Adviser Information (Optional)</Label>
+                  <Input
+                    id="create-manual-adviser"
+                    value={createForm.manualAdviserInfo}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({
+                        ...prev,
+                        manualAdviserInfo: event.target.value,
+                      }))
+                    }
+                    placeholder="e.g., Prof. Maria Santos - CICT Department"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use this when no staff user is currently available for assignment.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={submitting}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateOpen(false)}
+                disabled={submitting}
+              >
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting}>
@@ -891,18 +1266,27 @@ export default function AdminThesisGroupsPage() {
         open={editOpen}
         onOpenChange={(open) => {
           if (!submitting) setEditOpen(open)
-          if (!open) setEditTarget(null)
+          if (!open) {
+            setEditTarget(null)
+            setActionError(null)
+          }
         }}
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Edit Thesis Group</DialogTitle>
             <DialogDescription>
-              Update thesis title, semester dropdown, and customize school year.
+              Update thesis details and assign an available staff adviser with conflict protection.
             </DialogDescription>
           </DialogHeader>
 
           <form onSubmit={onEditSubmit} className="space-y-4">
+            {actionError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{actionError}</AlertDescription>
+              </Alert>
+            ) : null}
+
             <div className="space-y-2">
               <Label htmlFor="edit-title">Thesis Title</Label>
               <Input
@@ -1002,21 +1386,110 @@ export default function AdminThesisGroupsPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="edit-adviser">Adviser ID</Label>
-              <Input
-                id="edit-adviser"
-                value={editForm.adviserId}
-                onChange={(event) =>
-                  setEditForm((prev) => ({ ...prev, adviserId: event.target.value }))
-                }
-                placeholder="UUID (optional)"
-                autoComplete="off"
-              />
+            <div className="rounded-lg border p-3 space-y-3">
+              <div className="space-y-2">
+                <Label>Adviser (Staff User)</Label>
+                <Select
+                  value={editForm.adviserUserId}
+                  onValueChange={(value) =>
+                    setEditForm((prev) => ({ ...prev, adviserUserId: value }))
+                  }
+                  disabled={staffLoading}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={staffLoading ? "Loading staff users..." : "Select adviser"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      value={ADVISER_NONE_VALUE}
+                      disabled={availableEditStaff.length > 0}
+                    >
+                      No staff adviser selected
+                    </SelectItem>
+
+                    {selectedEditAdviserMissing ? (
+                      <SelectItem value={editForm.adviserUserId}>
+                        Current assigned adviser (profile unavailable)
+                      </SelectItem>
+                    ) : null}
+
+                    {staffUsers.map((staff) => {
+                      const selected = editForm.adviserUserId === staff.id
+                      const takenByOtherGroup = takenAdviserIdsForEdit.has(staff.id)
+                      const disabledAccount = isDisabledStaff(staff)
+
+                      const disabled =
+                        takenByOtherGroup || (disabledAccount && !selected)
+
+                      const suffix = takenByOtherGroup
+                        ? " • Already assigned"
+                        : disabledAccount && !selected
+                          ? " • Disabled"
+                          : selected
+                            ? " • Current"
+                            : ""
+
+                      const label = staff.email
+                        ? `${staff.name} (${staff.email})${suffix}`
+                        : `${staff.name}${suffix}`
+
+                      return (
+                        <SelectItem
+                          key={`edit-adviser-${staff.id}`}
+                          value={staff.id}
+                          disabled={disabled}
+                        >
+                          {label}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+
+                {staffLoading ? (
+                  <p className="text-xs text-muted-foreground">Loading staff users…</p>
+                ) : availableEditStaff.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Assigned/disabled staff are disabled unless it is the current adviser.
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-600">
+                    No alternative available staff adviser. You may proceed with manual adviser information.
+                  </p>
+                )}
+              </div>
+
+              {editCanUseManualAdviser ? (
+                <div className="space-y-2">
+                  <Label htmlFor="edit-manual-adviser">Manual Adviser Information (Optional)</Label>
+                  <Input
+                    id="edit-manual-adviser"
+                    value={editForm.manualAdviserInfo}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        manualAdviserInfo: event.target.value,
+                      }))
+                    }
+                    placeholder="e.g., External adviser details"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use this when no staff user is currently available for assignment.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setEditOpen(false)} disabled={submitting}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setEditOpen(false)}
+                disabled={submitting}
+              >
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting}>
@@ -1031,7 +1504,10 @@ export default function AdminThesisGroupsPage() {
         open={deleteOpen}
         onOpenChange={(open) => {
           if (!submitting) setDeleteOpen(open)
-          if (!open) setDeleteTarget(null)
+          if (!open) {
+            setDeleteTarget(null)
+            setActionError(null)
+          }
         }}
       >
         <AlertDialogContent>
@@ -1046,6 +1522,12 @@ export default function AdminThesisGroupsPage() {
               ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {actionError ? (
+            <Alert variant="destructive">
+              <AlertDescription>{actionError}</AlertDescription>
+            </Alert>
+          ) : null}
 
           <AlertDialogFooter>
             <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
