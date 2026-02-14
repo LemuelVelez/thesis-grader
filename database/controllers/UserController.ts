@@ -7,6 +7,16 @@ import type {
 } from '../models/Model';
 import type { ListQuery, PageResult, Services } from '../services/Services';
 
+const USER_ID_ALIAS_KEYS = [
+    'auth_user_id',
+    'authUserId',
+    'user_id',
+    'userId',
+    'external_id',
+    'externalId',
+    'uid',
+] as const;
+
 function stripUndefined<T extends object>(input: T): Partial<T> {
     const out: Partial<T> = {};
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
@@ -20,6 +30,44 @@ function stripUndefined<T extends object>(input: T): Partial<T> {
 export class UserController {
     constructor(private readonly services: Services) { }
 
+    /**
+     * Resolves a user by canonical users.id first, then by common alternate identity keys.
+     * This hardens /api/users/:id against identity mismatch (e.g. auth_user_id vs users.id).
+     */
+    private async findByIdOrAlias(id: UUID): Promise<UserRow | null> {
+        // 1) Canonical lookup
+        try {
+            const direct = await this.services.users.findById(id);
+            if (direct) return direct;
+        } catch {
+            // Continue to alias lookup
+        }
+
+        // 2) Alias lookup (best effort, schema-dependent)
+        for (const aliasKey of USER_ID_ALIAS_KEYS) {
+            try {
+                const query = {
+                    where: { [aliasKey]: id } as unknown as Partial<UserRow>,
+                    limit: 1,
+                } as ListQuery<UserRow>;
+
+                const matches = await this.services.users.findMany(query);
+                if (Array.isArray(matches) && matches.length > 0 && matches[0]) {
+                    return matches[0];
+                }
+            } catch {
+                // Ignore per-alias failures (unknown column, adapter constraints, etc.)
+            }
+        }
+
+        return null;
+    }
+
+    private async resolveCanonicalId(id: UUID): Promise<UUID | null> {
+        const user = await this.findByIdOrAlias(id);
+        return user?.id ?? null;
+    }
+
     /* --------------------------------- CREATE -------------------------------- */
 
     async create(payload: UserInsert): Promise<UserRow> {
@@ -29,7 +77,7 @@ export class UserController {
     /* ---------------------------------- READ --------------------------------- */
 
     async getById(id: UUID): Promise<UserRow | null> {
-        return this.services.users.findById(id);
+        return this.findByIdOrAlias(id);
     }
 
     async getByEmail(email: string): Promise<UserRow | null> {
@@ -52,18 +100,30 @@ export class UserController {
 
     async update(id: UUID, patch: UserPatch): Promise<UserRow | null> {
         const cleanPatch = stripUndefined(patch) as UserPatch;
+
+        // Empty patch should still return resolved user (including alias id inputs)
         if (Object.keys(cleanPatch).length === 0) {
-            return this.services.users.findById(id);
+            return this.findByIdOrAlias(id);
         }
-        return this.services.users.updateOne({ id }, cleanPatch);
+
+        const canonicalId = await this.resolveCanonicalId(id);
+        if (!canonicalId) return null;
+
+        return this.services.users.updateOne({ id: canonicalId }, cleanPatch);
     }
 
     async setStatus(id: UUID, status: UserStatus): Promise<UserRow | null> {
-        return this.services.users.setStatus(id, status);
+        const canonicalId = await this.resolveCanonicalId(id);
+        if (!canonicalId) return null;
+
+        return this.services.users.setStatus(canonicalId, status);
     }
 
     async setAvatarKey(id: UUID, avatarKey: string | null): Promise<UserRow | null> {
-        return this.services.users.setAvatarKey(id, avatarKey);
+        const canonicalId = await this.resolveCanonicalId(id);
+        if (!canonicalId) return null;
+
+        return this.services.users.setAvatarKey(canonicalId, avatarKey);
     }
 
     async upsertByEmail(createPayload: UserInsert, patch: UserPatch = {}): Promise<UserRow> {
@@ -79,7 +139,10 @@ export class UserController {
     /* --------------------------------- DELETE -------------------------------- */
 
     async delete(id: UUID): Promise<number> {
-        return this.services.users.delete({ id });
+        const canonicalId = await this.resolveCanonicalId(id);
+        if (!canonicalId) return 0;
+
+        return this.services.users.delete({ id: canonicalId });
     }
 }
 

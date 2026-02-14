@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
 import * as React from "react"
@@ -121,13 +122,6 @@ const MEMBER_SOURCE_STUDENT: MemberSource = "student"
 const MEMBER_SOURCE_MANUAL: MemberSource = "manual"
 const STUDENT_NONE_VALUE = "__none_student__"
 
-/**
- * Kept as explicit product requirement reference:
- * this user must be auto-promoted to role "student" when used in manual entry.
- * (Implementation below now handles any existing UUID user, including this one.)
- */
-const FORCE_STUDENT_ROLE_USER_ID = "a1d167c1-3089-43fd-8b13-d48fe808834d"
-
 const STAFF_LIST_ENDPOINTS = [
     "/api/staff",
     `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
@@ -246,11 +240,10 @@ function extractRoleLower(rec: Record<string, unknown>): string | null {
     return null
 }
 
-function extractUserRoleLowerFromPayload(payload: unknown): string | null {
-    const detail = unwrapDetail(payload)
-    const rec = asRecord(detail)
-    if (!rec) return null
-    return extractRoleLower(rec)
+function extractRoleLowerFromPayload(payload: unknown): string | null {
+    const detailRec = asRecord(unwrapDetail(payload))
+    if (!detailRec) return null
+    return extractRoleLower(detailRec)
 }
 
 function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
@@ -1012,45 +1005,41 @@ export default function AdminThesisGroupDetailsPage() {
     }, [availableStudentsForCreate, group?.program])
 
     /**
-     * UX behavior:
-     * - If manual entry uses an existing user UUID and role is not "student",
-     *   auto-update role to "student" before saving group member.
-     * - Returns true if role was changed, false if unchanged/not-applicable.
+     * Manual-entry override:
+     * If the entered UUID belongs to an existing user and that user is not `student`,
+     * auto-promote role to `student` before member save.
      */
-    const ensureManualEntryUserRoleIsStudent = React.useCallback(async (userId: string) => {
-        if (!isUuidLike(userId)) return false
+    const ensureManualEntryUserRoleIsStudent = React.useCallback(async (candidateId: string) => {
+        const normalizedId = candidateId.trim()
+        if (!isUuidLike(normalizedId)) return false
 
-        const endpoint = `/api/users/${encodeURIComponent(userId)}`
+        const endpoint = `/api/users/${encodeURIComponent(normalizedId)}`
 
         const readRes = await fetch(endpoint, {
             method: "GET",
             credentials: "include",
             cache: "no-store",
-            headers: {
-                Accept: "application/json",
-            },
+            headers: { Accept: "application/json" },
         })
-
         const readPayload = await parseResponseBodySafe(readRes)
 
-        // Not an existing user record => treat as manual/non-linked entry.
-        if (readRes.status === 404) return false
+        if (readRes.status === 404) {
+            // No user with this UUID. This is still valid for manual flow in flexible schemas.
+            return false
+        }
 
         if (!readRes.ok) {
             throw new Error(
                 extractErrorMessage(
                     readPayload,
-                    `Failed to validate user ${userId} before manual member save.`,
+                    "Unable to verify existing user role for manual entry.",
                     readRes.status
                 )
             )
         }
 
-        const currentRole = extractUserRoleLowerFromPayload(readPayload)
-
-        if (currentRole === "student") {
-            return false
-        }
+        const currentRole = extractRoleLowerFromPayload(readPayload)
+        if (currentRole === "student") return false
 
         const patchRes = await fetch(endpoint, {
             method: "PATCH",
@@ -1062,14 +1051,13 @@ export default function AdminThesisGroupDetailsPage() {
             },
             body: JSON.stringify({ role: "student" }),
         })
-
         const patchPayload = await parseResponseBodySafe(patchRes)
 
         if (!patchRes.ok) {
             throw new Error(
                 extractErrorMessage(
                     patchPayload,
-                    `Failed to automatically set role to "student" for user ${userId}.`,
+                    'Failed to automatically set role to "student" for manual entry.',
                     patchRes.status
                 )
             )
@@ -1203,14 +1191,11 @@ export default function AdminThesisGroupDetailsPage() {
                         )
                     }
 
-                    // Auto-promote existing linked user IDs to student role (best UX).
-                    if (!manualUuidWasGenerated) {
-                        const wasAutoSet = await ensureManualEntryUserRoleIsStudent(manualUuid)
-                        if (wasAutoSet) {
-                            manualSuccessNotes.push(
-                                `User ${manualUuid} was automatically set to role "student".`
-                            )
-                        }
+                    const roleAutoUpdated = await ensureManualEntryUserRoleIsStudent(manualUuid)
+                    if (roleAutoUpdated) {
+                        manualSuccessNotes.push(
+                            'Existing user role was automatically updated to "student".'
+                        )
                     }
 
                     payload = {
@@ -1354,8 +1339,8 @@ export default function AdminThesisGroupDetailsPage() {
     const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
     const memberDialogDescription =
         memberDialogMode === "create"
-            ? "Add a member by selecting an existing Student user. Manual entries automatically receive a system UUID when needed."
-            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe."
+            ? "Add a member by selecting an existing Student user. Manual entries auto-generate UUIDs when needed and can auto-promote existing user roles to student."
+            : "Update member details. Student-user linked members can be reassigned if available. Manual entries are UUID-safe and role-auto-corrected when applicable."
 
     return (
         <DashboardLayout
@@ -1714,10 +1699,9 @@ export default function AdminThesisGroupDetailsPage() {
 
                                         <Alert>
                                             <AlertDescription>
-                                                If the entered Student/User ID matches an existing account (for example{" "}
-                                                <span className="font-mono text-xs">{FORCE_STUDENT_ROLE_USER_ID}</span>), the
-                                                system automatically sets that account role to{" "}
-                                                <span className="font-medium">student</span> before saving.
+                                                If the entered Student ID is an existing user UUID and that account is not
+                                                <span className="font-medium"> student</span>, the role is automatically updated to
+                                                <span className="font-medium"> student</span> before saving.
                                             </AlertDescription>
                                         </Alert>
 
@@ -1790,7 +1774,7 @@ export default function AdminThesisGroupDetailsPage() {
                                         </div>
 
                                         <p className="text-xs text-muted-foreground">
-                                            For manual entry, provide at least Student ID or Student Name. UUID mapping is handled automatically.
+                                            For manual entry, provide at least Student ID or Student Name. UUID mapping and student-role correction are handled automatically when applicable.
                                         </p>
                                     </>
                                 )}
