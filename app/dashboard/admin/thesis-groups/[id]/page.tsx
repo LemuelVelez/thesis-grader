@@ -126,41 +126,39 @@ const STAFF_LIST_ENDPOINTS = [
     `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
     "/api/users?role=staff",
     "/api/users",
-    "/api/admin/users",
 ] as const
 
 const STUDENT_LIST_ENDPOINTS = [
-    "/api/students",
+    "/api/student",
     `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "student" }))}`,
     "/api/users?role=student",
     "/api/users",
-    "/api/admin/users",
 ] as const
 
 function detailEndpoints(id: string): string[] {
     return [
-        `/api/thesis-groups/${id}`,
         `/api/admin/thesis-groups/${id}`,
-        `/api/thesis/groups/${id}`,
         `/api/admin/thesis/groups/${id}`,
+        `/api/thesis-groups/${id}`,
+        `/api/thesis/groups/${id}`,
     ]
 }
 
 function memberEndpoints(id: string): string[] {
     return [
-        `/api/thesis-groups/${id}/members`,
         `/api/admin/thesis-groups/${id}/members`,
-        `/api/thesis/groups/${id}/members`,
         `/api/admin/thesis/groups/${id}/members`,
+        `/api/thesis-groups/${id}/members`,
+        `/api/thesis/groups/${id}/members`,
     ]
 }
 
 function scheduleEndpoints(id: string): string[] {
     return [
-        `/api/thesis-groups/${id}/schedules`,
         `/api/admin/thesis-groups/${id}/schedules`,
-        `/api/thesis/groups/${id}/schedules`,
         `/api/admin/thesis/groups/${id}/schedules`,
+        `/api/thesis-groups/${id}/schedules`,
+        `/api/thesis/groups/${id}/schedules`,
     ]
 }
 
@@ -417,12 +415,40 @@ function parseResponseBodySafe(res: Response): Promise<unknown | null> {
     })
 }
 
-function extractErrorMessage(payload: unknown, fallback: string): string {
+function isGenericFailureMessage(value: string): boolean {
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return false
+    if (normalized === "internal server error.") return true
+    return /^failed to [a-z0-9\s-]+\.$/.test(normalized)
+}
+
+function extractErrorMessage(
+    payload: unknown,
+    fallback: string,
+    status?: number
+): string {
     const rec = asRecord(payload)
     if (!rec) return fallback
+
     const error = toStringOrNull(rec.error)
-    if (error) return error
     const message = toStringOrNull(rec.message)
+
+    // If backend returns a generic `error` plus a richer `message`, prefer the richer one.
+    if (
+        message &&
+        (
+            status === 500 ||
+            status === 502 ||
+            status === 503 ||
+            status === 504 ||
+            !error ||
+            isGenericFailureMessage(error)
+        )
+    ) {
+        return message
+    }
+
+    if (error) return error
     if (message) return message
     return fallback
 }
@@ -452,7 +478,11 @@ async function fetchFirstAvailableJson(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                const message = extractErrorMessage(payload, `${endpoint} returned ${res.status}`)
+                const message = extractErrorMessage(
+                    payload,
+                    `${endpoint} returned ${res.status}`,
+                    res.status
+                )
                 lastError = new Error(message)
                 continue
             }
@@ -494,7 +524,9 @@ async function fetchAllSuccessfulJson(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`))
+                lastError = new Error(
+                    extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
+                )
                 continue
             }
 
@@ -513,6 +545,12 @@ async function fetchAllSuccessfulJson(
     return results
 }
 
+/**
+ * IMPORTANT for UX:
+ * - We only fallback on route-shape incompatibility (404/405).
+ * - For validation/auth/server errors on a compatible route, stop immediately
+ *   so we don't spam multiple POST/PATCH/DELETE attempts.
+ */
 async function requestFirstAvailable(
     endpoints: readonly string[],
     init: RequestInit
@@ -536,8 +574,9 @@ async function requestFirstAvailable(
             const payload = await parseResponseBodySafe(res)
 
             if (!res.ok) {
-                lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`))
-                continue
+                throw new Error(
+                    extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
+                )
             }
 
             return {
@@ -547,6 +586,7 @@ async function requestFirstAvailable(
             }
         } catch (error) {
             lastError = error instanceof Error ? error : new Error("Request failed")
+            break
         }
     }
 
