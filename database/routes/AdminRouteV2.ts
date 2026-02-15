@@ -61,6 +61,16 @@ interface SchedulePanelistsServiceLike {
     removeMember?: (scheduleId: UUID, staffId: UUID) => Promise<number>;
 }
 
+interface GroupMembersServiceLike {
+    listByGroup: (groupId: UUID) => Promise<GroupMemberRow[]>;
+    create: (input: { group_id: UUID; student_id: UUID }) => Promise<GroupMemberRow>;
+    removeMember: (groupId: UUID, studentId: UUID) => Promise<number>;
+    updateOne?: (
+        where: Partial<GroupMemberRow>,
+        patch: Partial<GroupMemberRow>,
+    ) => Promise<GroupMemberRow | null>;
+}
+
 interface SchedulePanelistUserView {
     id: UUID;
     user_id: UUID;
@@ -789,7 +799,6 @@ export async function dispatchThesisGroupsRequest(
     services: DatabaseServices,
     options: DispatchThesisGroupsOptions = {},
 ): Promise<Response> {
-    // (unchanged behavior, moved from AdminRoute.ts)
     const controller = services.thesis_groups;
     const method = req.method.toUpperCase();
 
@@ -848,11 +857,11 @@ export async function dispatchThesisGroupsRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
-    // keep full member/schedule logic as original
     if (isThesisGroupMembersSegment(tail[1])) {
         const group = await controller.findById(id as UUID);
         if (!group) return json404Entity('Thesis group');
-        const membersController = services.group_members;
+
+        const membersController = services.group_members as unknown as GroupMembersServiceLike;
 
         if (tail.length === 2) {
             if (method === 'GET') {
@@ -908,7 +917,7 @@ export async function dispatchThesisGroupsRequest(
                 }
 
                 const existingRows = await membersController.listByGroup(id as UUID);
-                const existing = existingRows.find((row) => row.student_id === canonicalStudentId);
+                const existing = existingRows.find((row) => row.student_id.toLowerCase() === canonicalStudentId.toLowerCase());
                 if (existing) return json200({ item: await buildGroupMemberResponse(existing, services) });
 
                 let created: GroupMemberRow;
@@ -920,7 +929,7 @@ export async function dispatchThesisGroupsRequest(
                 } catch (error) {
                     if (isUniqueViolation(error)) {
                         const rows = await membersController.listByGroup(id as UUID);
-                        const duplicate = rows.find((row) => row.student_id === canonicalStudentId);
+                        const duplicate = rows.find((row) => row.student_id.toLowerCase() === canonicalStudentId.toLowerCase());
                         if (duplicate) return json200({ item: await buildGroupMemberResponse(duplicate, services) });
                         return json400('Selected student is already a member of this thesis group.');
                     }
@@ -964,12 +973,154 @@ export async function dispatchThesisGroupsRequest(
             if (method === 'PATCH' || method === 'PUT') {
                 const body = await readJsonRecord(req);
                 if (!body) return json400('Invalid JSON body.');
+
                 const incomingNextStudentId = parseGroupMemberStudentIdFromBody(body);
                 if (!incomingNextStudentId) return json400('studentId/userId is required.');
                 if (!isUuidLike(incomingNextStudentId)) return json400('studentId/userId must be a valid UUID.');
-                // unchanged deep logic omitted for brevity in this split file request
-                // Use existing implementation from your original file.
-                return json400('Member update logic should remain identical to original implementation.');
+
+                const requiresLinkedStudentUser = hasExplicitLinkedStudentUserReference(body);
+                const resolvedStudent = await resolveCanonicalUserForMember(services, incomingNextStudentId);
+                const canonicalNextStudentId = resolvedStudent.canonicalId;
+                const nextStudentUser = resolvedStudent.user;
+
+                if (nextStudentUser && nextStudentUser.role !== 'student') {
+                    return json400('Resolved user must have role "student".');
+                }
+
+                if (requiresLinkedStudentUser && !nextStudentUser) {
+                    return json400('Linked student user was not found. Use a valid student user id or switch to manual entry.');
+                }
+
+                let nextStudentProfile = nextStudentUser
+                    ? await services.students.findByUserId(canonicalNextStudentId as UUID).catch(() => null)
+                    : null;
+
+                if (nextStudentUser && !nextStudentProfile && options.autoCreateMissingStudentProfile) {
+                    try {
+                        const adminController = new AdminController(services);
+                        const autoCreated = await adminController.upsertStudentProfileForUser(
+                            canonicalNextStudentId as UUID,
+                            parseStudentProfileInput(body),
+                        );
+                        if (!autoCreated) return json404Entity('Student user');
+                        nextStudentProfile = autoCreated.item;
+                    } catch (error) {
+                        return NextResponse.json(
+                            {
+                                error: 'Failed to create missing student profile before updating the member.',
+                                message: toErrorMessage(error),
+                            },
+                            { status: 500 },
+                        );
+                    }
+                }
+
+                if (nextStudentUser && !nextStudentProfile) {
+                    return json400('Selected student user does not have a student profile record. Create the student profile first, then update the member.');
+                }
+
+                if (canonicalNextStudentId.toLowerCase() === existingMember.student_id.toLowerCase()) {
+                    return json200({ item: await buildGroupMemberResponse(existingMember, services) });
+                }
+
+                const duplicate = groupMembers.find(
+                    (row) =>
+                        row.student_id.toLowerCase() === canonicalNextStudentId.toLowerCase() &&
+                        row.student_id.toLowerCase() !== existingMember.student_id.toLowerCase(),
+                );
+                if (duplicate) return json400('Selected student is already a member of this thesis group.');
+
+                const where: Partial<GroupMemberRow> = {
+                    group_id: id as UUID,
+                    student_id: existingMember.student_id as UUID,
+                };
+                const patch: Partial<GroupMemberRow> = {
+                    student_id: canonicalNextStudentId as UUID,
+                };
+
+                if (typeof membersController.updateOne === 'function') {
+                    try {
+                        const updated = await membersController.updateOne(where, patch);
+                        if (!updated) return json404Entity('Thesis group member');
+                        return json200({ item: await buildGroupMemberResponse(updated, services) });
+                    } catch (error) {
+                        if (isUniqueViolation(error)) {
+                            return json400('Selected student is already a member of this thesis group.');
+                        }
+
+                        if (isForeignKeyViolation(error)) {
+                            if (!nextStudentUser) {
+                                return json400(
+                                    'Manual entries are not supported by the current database schema. Please create/select a Student user first, then assign that user as a member.',
+                                );
+                            }
+                            if (!nextStudentProfile) {
+                                return json400(
+                                    'Selected student user does not have a student profile record. Create the student profile first, then update the member.',
+                                );
+                            }
+                            return json400(
+                                'Unable to update thesis group member because required student profile records are missing.',
+                            );
+                        }
+
+                        return NextResponse.json(
+                            { error: 'Failed to update thesis group member.', message: toErrorMessage(error) },
+                            { status: 500 },
+                        );
+                    }
+                }
+
+                try {
+                    const created = await membersController.create({
+                        group_id: id as UUID,
+                        student_id: canonicalNextStudentId as UUID,
+                    });
+
+                    const removed = await membersController.removeMember(id as UUID, existingMember.student_id as UUID);
+                    if (removed === 0) {
+                        try {
+                            await membersController.removeMember(id as UUID, canonicalNextStudentId as UUID);
+                        } catch {
+                            // no-op best effort rollback
+                        }
+                        return NextResponse.json(
+                            {
+                                error: 'Failed to update thesis group member.',
+                                message:
+                                    'Could not remove the previous member after creating the replacement entry.',
+                            },
+                            { status: 500 },
+                        );
+                    }
+
+                    return json200({ item: await buildGroupMemberResponse(created, services) });
+                } catch (error) {
+                    if (isUniqueViolation(error)) {
+                        return json400('Selected student is already a member of this thesis group.');
+                    }
+
+                    if (isForeignKeyViolation(error)) {
+                        if (!nextStudentUser) {
+                            return json400(
+                                'Manual entries are not supported by the current database schema. Please create/select a Student user first, then assign that user as a member.',
+                            );
+                        }
+                        if (!nextStudentProfile) {
+                            return json400(
+                                'Selected student user does not have a student profile record. Create the student profile first, then update the member.',
+                            );
+                        }
+                        return json400(
+                            'Unable to update thesis group member because required student profile records are missing.',
+                        );
+                    }
+
+                    return NextResponse.json(
+                        { error: 'Failed to update thesis group member.', message: toErrorMessage(error) },
+                        { status: 500 },
+                    );
+                }
             }
 
             if (method === 'DELETE') {
@@ -1059,6 +1210,35 @@ export async function dispatchDefenseSchedulesRequest(
         const existing = await controller.findById(id as UUID);
         if (!existing) return json404Entity('Defense schedule');
         return dispatchSchedulePanelistsRequest(req, tail.slice(2), services, { forcedScheduleId: id as UUID });
+    }
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            const item = await adminController.getDefenseScheduleDetailed(id as UUID);
+            if (!item) return json404Entity('Defense schedule');
+            const enriched = await enrichOne(item);
+            return json200({ item: enriched ?? item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne({ id: id as UUID }, body as DefenseSchedulePatch);
+            if (!item) return json404Entity('Defense schedule');
+
+            const detailed = await adminController.getDefenseScheduleDetailed(id as UUID);
+            const enriched = await enrichOne(detailed ?? (item as DefenseScheduleWithOptionalMeta));
+            return json200({ item: enriched ?? item });
+        }
+
+        if (method === 'DELETE') {
+            const deleted = await controller.delete({ id: id as UUID });
+            if (deleted === 0) return json404Entity('Defense schedule');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
     return json404Api();

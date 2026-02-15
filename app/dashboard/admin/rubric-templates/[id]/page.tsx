@@ -66,6 +66,8 @@ type SelectOption = {
     payload: string
 }
 
+const NO_DESCRIPTION_SELECT_VALUE = "__none__"
+
 const TEMPLATE_NAME_OPTIONS: SelectOption[] = [
     {
         value: "ccs-thesis-form-3c-draft-2021",
@@ -130,6 +132,7 @@ const CRITERION_OPTIONS: SelectOption[] = [
         label: "Project Presentation",
         payload: "Project Presentation",
     },
+    // NOTE: kept in source list, but table/add flow below intentionally uses select-only options (without "other")
     {
         value: "other",
         label: "Others (please specify)",
@@ -137,19 +140,57 @@ const CRITERION_OPTIONS: SelectOption[] = [
     },
 ]
 
+const CRITERION_SELECT_OPTIONS: SelectOption[] = CRITERION_OPTIONS.filter(
+    (option) => option.value !== "other",
+)
+
 const WEIGHT_OPTIONS: SelectOption[] = [
     { value: "25", label: "25%", payload: "25" },
     { value: "20", label: "20%", payload: "20" },
     { value: "15", label: "15%", payload: "15" },
     { value: "10", label: "10%", payload: "10" },
+    { value: "5", label: "5%", payload: "5" },
+    // NOTE: kept in source list, but table/add flow below intentionally uses select-only options (without "other")
     { value: "other", label: "Others (please specify)", payload: "" },
 ]
+
+const WEIGHT_SELECT_OPTIONS: SelectOption[] = WEIGHT_OPTIONS.filter(
+    (option) => option.value !== "other",
+)
 
 const SCORE_OPTIONS: SelectOption[] = [
     { value: "0", label: "0 - Absent", payload: "0" },
     { value: "1", label: "1 - Developing", payload: "1" },
     { value: "2", label: "2 - Competent", payload: "2" },
     { value: "3", label: "3 - Professional/Accomplished", payload: "3" },
+]
+
+const CRITERION_DESCRIPTION_OPTIONS: SelectOption[] = [
+    {
+        value: "none",
+        label: "No description",
+        payload: "",
+    },
+    {
+        value: "measurable-and-clear",
+        label: "Measurable and clearly stated.",
+        payload: "Measurable and clearly stated.",
+    },
+    {
+        value: "aligned-with-objectives",
+        label: "Aligned with stated objectives.",
+        payload: "Aligned with stated objectives.",
+    },
+    {
+        value: "shows-strong-evidence",
+        label: "Shows strong supporting evidence.",
+        payload: "Shows strong supporting evidence.",
+    },
+    {
+        value: "partially-meets-expectations",
+        label: "Partially meets expectations.",
+        payload: "Partially meets expectations.",
+    },
 ]
 
 function getOptionPayload(options: SelectOption[], value: string) {
@@ -231,6 +272,82 @@ function normalizeCriterion(value: unknown): RubricCriterion | null {
     }
 }
 
+function slugifyForValue(input: string) {
+    return input
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60)
+}
+
+function ensureOptionByPayload(
+    options: SelectOption[],
+    payload: string,
+    currentLabelPrefix: string,
+): SelectOption[] {
+    const normalized = payload.trim()
+    if (!normalized) return options
+
+    const exists = options.some((option) => option.payload === normalized)
+    if (exists) return options
+
+    return [
+        {
+            value: `current-${slugifyForValue(normalized)}-${normalized.length}`,
+            label: `${currentLabelPrefix}: ${normalized}`,
+            payload: normalized,
+        },
+        ...options,
+    ]
+}
+
+function ensureNumericPayloadOption(
+    options: SelectOption[],
+    value: number,
+    labelFormatter: (payload: string) => string,
+): SelectOption[] {
+    const payload = String(value)
+    const exists = options.some((option) => option.payload === payload)
+    if (exists) return options
+
+    return [
+        {
+            value: `current-${payload.replace(/[^0-9.-]/g, "")}`,
+            label: `Current: ${labelFormatter(payload)}`,
+            payload,
+        },
+        ...options,
+    ]
+}
+
+function toDescriptionSelectValue(value: string | null | undefined): string {
+    const normalized = (value ?? "").trim()
+    return normalized.length > 0 ? normalized : NO_DESCRIPTION_SELECT_VALUE
+}
+
+function fromDescriptionSelectValue(value: string): string | null {
+    return value === NO_DESCRIPTION_SELECT_VALUE ? null : value
+}
+
+function buildDescriptionOptionsForCurrent(current: string | null | undefined): SelectOption[] {
+    const normalized = (current ?? "").trim()
+    const base = [...CRITERION_DESCRIPTION_OPTIONS]
+
+    if (!normalized) return base
+    const exists = base.some((option) => option.payload === normalized)
+    if (exists) return base
+
+    return [
+        {
+            value: `current-${slugifyForValue(normalized)}-${normalized.length}`,
+            label: `Current: ${normalized}`,
+            payload: normalized,
+        },
+        ...base,
+    ]
+}
+
 export default function AdminRubricTemplateDetailsPage() {
     const params = useParams() as { id?: string | string[] }
     const templateId = React.useMemo(() => {
@@ -261,16 +378,18 @@ export default function AdminRubricTemplateDetailsPage() {
     const [addingCriterion, setAddingCriterion] = React.useState(false)
 
     const [newCriterionSelection, setNewCriterionSelection] = React.useState<string>(
-        CRITERION_OPTIONS[0]?.value ?? "other",
+        CRITERION_SELECT_OPTIONS[0]?.value ?? "",
     )
     const [newCriterionWeightSelection, setNewCriterionWeightSelection] = React.useState<string>(
-        WEIGHT_OPTIONS[0]?.value ?? "other",
+        WEIGHT_SELECT_OPTIONS[0]?.value ?? "",
     )
+    const [newCriterionDescriptionSelection, setNewCriterionDescriptionSelection] =
+        React.useState<string>(NO_DESCRIPTION_SELECT_VALUE)
 
     const [newCriterion, setNewCriterion] = React.useState<CriterionForm>({
-        criterion: getOptionPayload(CRITERION_OPTIONS, CRITERION_OPTIONS[0]?.value ?? "other"),
+        criterion: getOptionPayload(CRITERION_SELECT_OPTIONS, CRITERION_SELECT_OPTIONS[0]?.value ?? ""),
         description: "",
-        weight: toNumber(getOptionPayload(WEIGHT_OPTIONS, WEIGHT_OPTIONS[0]?.value ?? "other"), 25),
+        weight: toNumber(getOptionPayload(WEIGHT_SELECT_OPTIONS, WEIGHT_SELECT_OPTIONS[0]?.value ?? ""), 25),
         min_score: 0,
         max_score: 3,
     })
@@ -474,17 +593,9 @@ export default function AdminRubricTemplateDetailsPage() {
     const addCriterion = React.useCallback(async () => {
         if (!templateId) return
 
-        const criterion =
-            newCriterionSelection === "other"
-                ? newCriterion.criterion.trim()
-                : getOptionPayload(CRITERION_OPTIONS, newCriterionSelection).trim()
-
-        const description = newCriterion.description.trim()
-        const weight =
-            newCriterionWeightSelection === "other"
-                ? toNumber(newCriterion.weight, 0)
-                : toNumber(getOptionPayload(WEIGHT_OPTIONS, newCriterionWeightSelection), 0)
-
+        const criterion = getOptionPayload(CRITERION_SELECT_OPTIONS, newCriterionSelection).trim()
+        const description = (fromDescriptionSelectValue(newCriterionDescriptionSelection) ?? "").trim()
+        const weight = toNumber(getOptionPayload(WEIGHT_SELECT_OPTIONS, newCriterionWeightSelection), 0)
         const minScore = Math.floor(toNumber(newCriterion.min_score, 0))
         const maxScore = Math.floor(toNumber(newCriterion.max_score, 3))
 
@@ -510,7 +621,6 @@ export default function AdminRubricTemplateDetailsPage() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    template_id: templateId,
                     criterion,
                     description: description.length > 0 ? description : null,
                     weight,
@@ -532,13 +642,14 @@ export default function AdminRubricTemplateDetailsPage() {
                 await loadTemplateAndCriteria()
             }
 
-            setNewCriterionSelection(CRITERION_OPTIONS[0]?.value ?? "other")
-            setNewCriterionWeightSelection(WEIGHT_OPTIONS[0]?.value ?? "other")
+            setNewCriterionSelection(CRITERION_SELECT_OPTIONS[0]?.value ?? "")
+            setNewCriterionWeightSelection(WEIGHT_SELECT_OPTIONS[0]?.value ?? "")
+            setNewCriterionDescriptionSelection(NO_DESCRIPTION_SELECT_VALUE)
             setNewCriterion({
-                criterion: getOptionPayload(CRITERION_OPTIONS, CRITERION_OPTIONS[0]?.value ?? "other"),
+                criterion: getOptionPayload(CRITERION_SELECT_OPTIONS, CRITERION_SELECT_OPTIONS[0]?.value ?? ""),
                 description: "",
                 weight: toNumber(
-                    getOptionPayload(WEIGHT_OPTIONS, WEIGHT_OPTIONS[0]?.value ?? "other"),
+                    getOptionPayload(WEIGHT_SELECT_OPTIONS, WEIGHT_SELECT_OPTIONS[0]?.value ?? ""),
                     25,
                 ),
                 min_score: 0,
@@ -553,7 +664,15 @@ export default function AdminRubricTemplateDetailsPage() {
         } finally {
             setAddingCriterion(false)
         }
-    }, [loadTemplateAndCriteria, newCriterion, newCriterionSelection, newCriterionWeightSelection, templateId])
+    }, [
+        loadTemplateAndCriteria,
+        newCriterion.max_score,
+        newCriterion.min_score,
+        newCriterionDescriptionSelection,
+        newCriterionSelection,
+        newCriterionWeightSelection,
+        templateId,
+    ])
 
     const saveCriterion = React.useCallback(
         async (criterion: RubricCriterion) => {
@@ -889,12 +1008,7 @@ export default function AdminRubricTemplateDetailsPage() {
                                             value={newCriterionSelection}
                                             onValueChange={(value) => {
                                                 setNewCriterionSelection(value)
-                                                if (value === "other") {
-                                                    setNewCriterion((prev) => ({ ...prev, criterion: "" }))
-                                                    return
-                                                }
-
-                                                const payload = getOptionPayload(CRITERION_OPTIONS, value)
+                                                const payload = getOptionPayload(CRITERION_SELECT_OPTIONS, value)
                                                 setNewCriterion((prev) => ({ ...prev, criterion: payload }))
                                             }}
                                             disabled={addingCriterion}
@@ -903,44 +1017,46 @@ export default function AdminRubricTemplateDetailsPage() {
                                                 <SelectValue placeholder="Select criterion" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {CRITERION_OPTIONS.map((option) => (
+                                                {CRITERION_SELECT_OPTIONS.map((option) => (
                                                     <SelectItem key={option.value} value={option.value}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
-
-                                        {newCriterionSelection === "other" ? (
-                                            <Input
-                                                placeholder="Please specify criterion title"
-                                                value={newCriterion.criterion}
-                                                onChange={(e) =>
-                                                    setNewCriterion((prev) => ({
-                                                        ...prev,
-                                                        criterion: e.target.value,
-                                                    }))
-                                                }
-                                                disabled={addingCriterion}
-                                            />
-                                        ) : null}
                                     </div>
 
                                     <div className="space-y-2">
-                                        <p className="text-xs font-medium text-muted-foreground">
-                                            Description (optional)
-                                        </p>
-                                        <Input
-                                            placeholder="Add criterion description"
-                                            value={newCriterion.description}
-                                            onChange={(e) =>
+                                        <p className="text-xs font-medium text-muted-foreground">Description</p>
+                                        <Select
+                                            value={newCriterionDescriptionSelection}
+                                            onValueChange={(value) => {
+                                                setNewCriterionDescriptionSelection(value)
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
-                                                    description: e.target.value,
+                                                    description: fromDescriptionSelectValue(value) ?? "",
                                                 }))
-                                            }
+                                            }}
                                             disabled={addingCriterion}
-                                        />
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select description" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {CRITERION_DESCRIPTION_OPTIONS.map((option) => {
+                                                    const selectValue =
+                                                        option.payload.length > 0
+                                                            ? option.payload
+                                                            : NO_DESCRIPTION_SELECT_VALUE
+
+                                                    return (
+                                                        <SelectItem key={option.value} value={selectValue}>
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    )
+                                                })}
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                 </div>
 
@@ -951,12 +1067,10 @@ export default function AdminRubricTemplateDetailsPage() {
                                             value={newCriterionWeightSelection}
                                             onValueChange={(value) => {
                                                 setNewCriterionWeightSelection(value)
-                                                if (value === "other") return
-
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
                                                     weight: toNumber(
-                                                        getOptionPayload(WEIGHT_OPTIONS, value),
+                                                        getOptionPayload(WEIGHT_SELECT_OPTIONS, value),
                                                         prev.weight,
                                                     ),
                                                 }))
@@ -967,30 +1081,13 @@ export default function AdminRubricTemplateDetailsPage() {
                                                 <SelectValue placeholder="Select weight" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {WEIGHT_OPTIONS.map((option) => (
+                                                {WEIGHT_SELECT_OPTIONS.map((option) => (
                                                     <SelectItem key={option.value} value={option.value}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
-
-                                        {newCriterionWeightSelection === "other" ? (
-                                            <Input
-                                                type="number"
-                                                step="0.01"
-                                                min={0}
-                                                placeholder="Please specify weight"
-                                                value={newCriterion.weight}
-                                                onChange={(e) =>
-                                                    setNewCriterion((prev) => ({
-                                                        ...prev,
-                                                        weight: toNumber(e.target.value, prev.weight),
-                                                    }))
-                                                }
-                                                disabled={addingCriterion}
-                                            />
-                                        ) : null}
                                     </div>
 
                                     <div className="space-y-2">
@@ -1010,7 +1107,7 @@ export default function AdminRubricTemplateDetailsPage() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 {SCORE_OPTIONS.map((option) => (
-                                                    <SelectItem key={option.value} value={option.value}>
+                                                    <SelectItem key={option.value} value={option.payload}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
@@ -1035,7 +1132,7 @@ export default function AdminRubricTemplateDetailsPage() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 {SCORE_OPTIONS.map((option) => (
-                                                    <SelectItem key={option.value} value={option.value}>
+                                                    <SelectItem key={option.value} value={option.payload}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
@@ -1077,85 +1174,177 @@ export default function AdminRubricTemplateDetailsPage() {
                                         criteria.map((item) => {
                                             const busy = busyCriterionId === item.id
 
+                                            const rowCriterionOptions = ensureOptionByPayload(
+                                                CRITERION_SELECT_OPTIONS,
+                                                item.criterion,
+                                                "Current",
+                                            )
+
+                                            const rowWeightOptions = ensureNumericPayloadOption(
+                                                WEIGHT_SELECT_OPTIONS,
+                                                item.weight,
+                                                (payload) => `${payload}%`,
+                                            )
+
+                                            const rowMinOptions = ensureNumericPayloadOption(
+                                                SCORE_OPTIONS,
+                                                item.min_score,
+                                                (payload) => payload,
+                                            )
+
+                                            const rowMaxOptions = ensureNumericPayloadOption(
+                                                SCORE_OPTIONS,
+                                                item.max_score,
+                                                (payload) => payload,
+                                            )
+
+                                            const rowDescriptionOptions = buildDescriptionOptionsForCurrent(
+                                                item.description,
+                                            )
+
                                             return (
                                                 <TableRow key={item.id}>
                                                     <TableCell>
-                                                        <Input
+                                                        <Select
                                                             value={item.criterion}
-                                                            onChange={(e) =>
-                                                                updateCriterionField(
-                                                                    item.id,
-                                                                    "criterion",
-                                                                    e.target.value,
-                                                                )
+                                                            onValueChange={(value) =>
+                                                                updateCriterionField(item.id, "criterion", value)
                                                             }
                                                             disabled={busy}
-                                                        />
+                                                        >
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder="Select criterion" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {rowCriterionOptions.map((option) => (
+                                                                    <SelectItem
+                                                                        key={`${item.id}-criterion-${option.value}`}
+                                                                        value={option.payload}
+                                                                    >
+                                                                        {option.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
                                                     </TableCell>
 
                                                     <TableCell>
-                                                        <Input
-                                                            type="number"
-                                                            step="0.01"
-                                                            min={0}
-                                                            value={item.weight}
-                                                            onChange={(e) =>
+                                                        <Select
+                                                            value={String(item.weight)}
+                                                            onValueChange={(value) =>
                                                                 updateCriterionField(
                                                                     item.id,
                                                                     "weight",
-                                                                    toNumber(e.target.value, item.weight),
+                                                                    toNumber(value, item.weight),
                                                                 )
                                                             }
                                                             disabled={busy}
-                                                        />
+                                                        >
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder="Select weight" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {rowWeightOptions.map((option) => (
+                                                                    <SelectItem
+                                                                        key={`${item.id}-weight-${option.value}`}
+                                                                        value={option.payload}
+                                                                    >
+                                                                        {option.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
                                                     </TableCell>
 
                                                     <TableCell>
-                                                        <Input
-                                                            type="number"
-                                                            step={1}
-                                                            min={0}
-                                                            value={item.min_score}
-                                                            onChange={(e) =>
+                                                        <Select
+                                                            value={String(item.min_score)}
+                                                            onValueChange={(value) =>
                                                                 updateCriterionField(
                                                                     item.id,
                                                                     "min_score",
-                                                                    toNumber(e.target.value, item.min_score),
+                                                                    toNumber(value, item.min_score),
                                                                 )
                                                             }
                                                             disabled={busy}
-                                                        />
+                                                        >
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder="Select min score" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {rowMinOptions.map((option) => (
+                                                                    <SelectItem
+                                                                        key={`${item.id}-min-${option.value}`}
+                                                                        value={option.payload}
+                                                                    >
+                                                                        {option.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
                                                     </TableCell>
 
                                                     <TableCell>
-                                                        <Input
-                                                            type="number"
-                                                            step={1}
-                                                            min={0}
-                                                            value={item.max_score}
-                                                            onChange={(e) =>
+                                                        <Select
+                                                            value={String(item.max_score)}
+                                                            onValueChange={(value) =>
                                                                 updateCriterionField(
                                                                     item.id,
                                                                     "max_score",
-                                                                    toNumber(e.target.value, item.max_score),
+                                                                    toNumber(value, item.max_score),
                                                                 )
                                                             }
                                                             disabled={busy}
-                                                        />
+                                                        >
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder="Select max score" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {rowMaxOptions.map((option) => (
+                                                                    <SelectItem
+                                                                        key={`${item.id}-max-${option.value}`}
+                                                                        value={option.payload}
+                                                                    >
+                                                                        {option.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
                                                     </TableCell>
 
                                                     <TableCell>
-                                                        <Input
-                                                            value={item.description ?? ""}
-                                                            onChange={(e) =>
+                                                        <Select
+                                                            value={toDescriptionSelectValue(item.description)}
+                                                            onValueChange={(value) =>
                                                                 updateCriterionField(
                                                                     item.id,
                                                                     "description",
-                                                                    e.target.value,
+                                                                    fromDescriptionSelectValue(value),
                                                                 )
                                                             }
                                                             disabled={busy}
-                                                        />
+                                                        >
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder="Select description" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {rowDescriptionOptions.map((option) => {
+                                                                    const optionValue =
+                                                                        option.payload.length > 0
+                                                                            ? option.payload
+                                                                            : NO_DESCRIPTION_SELECT_VALUE
+
+                                                                    return (
+                                                                        <SelectItem
+                                                                            key={`${item.id}-desc-${option.value}`}
+                                                                            value={optionValue}
+                                                                        >
+                                                                            {option.label}
+                                                                        </SelectItem>
+                                                                    )
+                                                                })}
+                                                            </SelectContent>
+                                                        </Select>
                                                     </TableCell>
 
                                                     <TableCell>
