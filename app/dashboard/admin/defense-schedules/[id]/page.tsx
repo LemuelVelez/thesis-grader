@@ -996,6 +996,7 @@ export default function AdminDefenseScheduleDetailsPage() {
     const [createPanelistStatus, setCreatePanelistStatus] = React.useState<UserStatus>("active")
     const [createPanelistAssignMode, setCreatePanelistAssignMode] =
         React.useState<"assign" | "directory">("assign")
+    const [createPanelistForceAssign, setCreatePanelistForceAssign] = React.useState(false)
 
     const groupTitleById = React.useMemo(
         () => new Map(groups.map((group) => [group.id, group.title])),
@@ -1240,12 +1241,24 @@ export default function AdminDefenseScheduleDetailsPage() {
     }, [schedule])
 
     const openCreatePanelistUserDialog = React.useCallback(
-        (mode: "assign" | "directory" = "assign") => {
+        (
+            mode: "assign" | "directory" = "assign",
+            options?: { forceAssign?: boolean },
+        ) => {
+            const forceAssign = Boolean(options?.forceAssign) && !!schedule
+
             setCreatePanelistName("")
             setCreatePanelistEmail("")
             setCreatePanelistStatus("active")
-            setCreatePanelistAssignMode(schedule ? mode : "directory")
+            setCreatePanelistAssignMode(
+                schedule ? (forceAssign ? "assign" : mode) : "directory",
+            )
+            setCreatePanelistForceAssign(forceAssign)
             setCreatePanelistUserOpen(true)
+
+            if (forceAssign) {
+                toast.info("No available panelist user. Create one now and it will be assigned automatically.")
+            }
         },
         [schedule],
     )
@@ -1254,18 +1267,13 @@ export default function AdminDefenseScheduleDetailsPage() {
         if (!schedule) return
 
         if (unassignedPanelistOptions.length === 0) {
-            if (!hasPanelistUsers) {
-                openCreatePanelistUserDialog("assign")
-                return
-            }
-
-            toast.error("All panelist users are already assigned to this schedule.")
+            openCreatePanelistUserDialog("assign", { forceAssign: true })
             return
         }
 
         setAddPanelistUserId(unassignedPanelistOptions[0]!.id)
         setAddPanelistOpen(true)
-    }, [hasPanelistUsers, openCreatePanelistUserDialog, schedule, unassignedPanelistOptions])
+    }, [openCreatePanelistUserDialog, schedule, unassignedPanelistOptions])
 
     const openEditPanelistDialog = React.useCallback(
         (panelist: PanelistLite) => {
@@ -1474,6 +1482,15 @@ export default function AdminDefenseScheduleDetailsPage() {
             return
         }
 
+        const duplicateEmailUser = users.find(
+            (user) => (user.email ?? "").toLowerCase() === email,
+        )
+
+        if (duplicateEmailUser) {
+            toast.error("A user with this email already exists.")
+            return
+        }
+
         setCreatePanelistBusy(true)
         setError(null)
 
@@ -1487,7 +1504,8 @@ export default function AdminDefenseScheduleDetailsPage() {
             setUsers((prev) => uniqueById([result.user, ...prev]))
 
             const shouldAssign =
-                createPanelistAssignMode === "assign" && !!schedule
+                !!schedule &&
+                (createPanelistForceAssign || createPanelistAssignMode === "assign")
 
             if (shouldAssign && schedule) {
                 await addPanelistToDefenseSchedule(schedule.id, result.user.id)
@@ -1501,6 +1519,7 @@ export default function AdminDefenseScheduleDetailsPage() {
             setCreatePanelistEmail("")
             setCreatePanelistStatus("active")
             setCreatePanelistAssignMode(schedule ? "assign" : "directory")
+            setCreatePanelistForceAssign(false)
 
             if (shouldAssign) {
                 toast.success(
@@ -1530,11 +1549,13 @@ export default function AdminDefenseScheduleDetailsPage() {
         createPanelistAssignMode,
         createPanelistBusy,
         createPanelistEmail,
+        createPanelistForceAssign,
         createPanelistName,
         createPanelistStatus,
         loadReferenceData,
         refreshScheduleSilently,
         schedule,
+        users,
     ])
 
     const handleSaveEdit = React.useCallback(async () => {
@@ -1790,7 +1811,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                             {!hasPanelistUsers ? (
                                 <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
                                     No users with the <span className="font-medium">panelist</span> role were found.
-                                    Create a panelist user to start assigning panelists to this schedule.
+                                    Click <span className="font-medium">Add Panelist</span> to instantly create and assign one.
                                 </div>
                             ) : null}
 
@@ -1911,11 +1932,11 @@ export default function AdminDefenseScheduleDetailsPage() {
                                     variant="secondary"
                                     onClick={() => {
                                         setAddPanelistOpen(false)
-                                        openCreatePanelistUserDialog("assign")
+                                        openCreatePanelistUserDialog("assign", { forceAssign: true })
                                     }}
                                 >
                                     <UserPlus className="mr-2 h-4 w-4" />
-                                    Create Panelist User
+                                    Create & Assign Panelist User
                                 </Button>
                             </div>
                         )}
@@ -2012,7 +2033,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                                     variant="secondary"
                                     onClick={() => {
                                         setEditPanelistOpen(false)
-                                        openCreatePanelistUserDialog("assign")
+                                        openCreatePanelistUserDialog("assign", { forceAssign: true })
                                     }}
                                 >
                                     <UserPlus className="mr-2 h-4 w-4" />
@@ -2060,6 +2081,11 @@ export default function AdminDefenseScheduleDetailsPage() {
                 onOpenChange={(open) => {
                     if (!open && createPanelistBusy) return
                     setCreatePanelistUserOpen(open)
+
+                    if (!open) {
+                        setCreatePanelistForceAssign(false)
+                        setCreatePanelistAssignMode(schedule ? "assign" : "directory")
+                    }
                 }}
             >
                 <DialogContent className="sm:max-w-lg">
@@ -2113,7 +2139,7 @@ export default function AdminDefenseScheduleDetailsPage() {
                                 </Select>
                             </div>
 
-                            {schedule ? (
+                            {schedule && !createPanelistForceAssign ? (
                                 <div className="grid gap-2">
                                     <Label>After Create</Label>
                                     <Select
@@ -2135,6 +2161,12 @@ export default function AdminDefenseScheduleDetailsPage() {
                                 </div>
                             ) : null}
                         </div>
+
+                        {schedule && createPanelistForceAssign ? (
+                            <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                                This user will be created and automatically assigned to the current defense schedule.
+                            </div>
+                        ) : null}
 
                         <p className="text-xs text-muted-foreground">
                             The new account role will be set to{" "}
@@ -2159,6 +2191,8 @@ export default function AdminDefenseScheduleDetailsPage() {
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     Creating...
                                 </>
+                            ) : createPanelistForceAssign ? (
+                                "Create & Add Panelist"
                             ) : (
                                 "Create Panelist User"
                             )}
