@@ -3,10 +3,18 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -50,6 +58,107 @@ type CriterionForm = {
     weight: number
     min_score: number
     max_score: number
+}
+
+type SelectOption = {
+    value: string
+    label: string
+    payload: string
+}
+
+const TEMPLATE_NAME_OPTIONS: SelectOption[] = [
+    {
+        value: "ccs-thesis-form-3c-draft-2021",
+        label: "CCS Thesis Form 3-C (Draft November 2, 2021)",
+        payload: "CCS Thesis Form 3-C (Draft November 2, 2021)",
+    },
+    {
+        value: "ccs-thesis-form-3c-rubrics-for-proposal",
+        label: "CCS Thesis Form 3-C - Rubrics for Proposal",
+        payload: "CCS Thesis Form 3-C - Rubrics for Proposal",
+    },
+    {
+        value: "other",
+        label: "Others (please specify)",
+        payload: "",
+    },
+]
+
+const TEMPLATE_DESCRIPTION_OPTIONS: SelectOption[] = [
+    {
+        value: "proposal-rubric-college-of-computing-studies",
+        label: "College of Computing Studies proposal rubric",
+        payload: "College of Computing Studies proposal rubric",
+    },
+    {
+        value: "score-scale-0-to-3-adjectival",
+        label: "Score scale 0–3 (Absent to Professional/Accomplished)",
+        payload: "Score scale 0–3 (Absent to Professional/Accomplished)",
+    },
+    {
+        value: "none",
+        label: "No description",
+        payload: "",
+    },
+    {
+        value: "other",
+        label: "Others (please specify)",
+        payload: "",
+    },
+]
+
+const TEMPLATE_VERSION_OPTIONS = ["1", "2", "3", "4", "5", "other"] as const
+
+const CRITERION_OPTIONS: SelectOption[] = [
+    {
+        value: "introduction-context-background",
+        label: "Introduction (Context/Background)",
+        payload: "Introduction (Context/Background)",
+    },
+    {
+        value: "research-concept-question-problem-thesis-hypothesis-purpose-objectives",
+        label: "Research Concept (Question/Problem/Thesis/Hypothesis/Purpose/Objectives)",
+        payload: "Research Concept (Question/Problem/Thesis/Hypothesis/Purpose/Objectives)",
+    },
+    {
+        value: "methodology-experimental-plan-creative-scholarly-process",
+        label: "Methodology/Experimental Plan/Creative–Scholarly Process",
+        payload: "Methodology/Experimental Plan/Creative–Scholarly Process",
+    },
+    {
+        value: "project-presentation",
+        label: "Project Presentation",
+        payload: "Project Presentation",
+    },
+    {
+        value: "other",
+        label: "Others (please specify)",
+        payload: "",
+    },
+]
+
+const WEIGHT_OPTIONS: SelectOption[] = [
+    { value: "25", label: "25%", payload: "25" },
+    { value: "20", label: "20%", payload: "20" },
+    { value: "15", label: "15%", payload: "15" },
+    { value: "10", label: "10%", payload: "10" },
+    { value: "other", label: "Others (please specify)", payload: "" },
+]
+
+const SCORE_OPTIONS: SelectOption[] = [
+    { value: "0", label: "0 - Absent", payload: "0" },
+    { value: "1", label: "1 - Developing", payload: "1" },
+    { value: "2", label: "2 - Competent", payload: "2" },
+    { value: "3", label: "3 - Professional/Accomplished", payload: "3" },
+]
+
+function getOptionPayload(options: SelectOption[], value: string) {
+    return options.find((option) => option.value === value)?.payload ?? ""
+}
+
+function findSelectionByPayload(options: SelectOption[], payload: string) {
+    const matched = options.find((option) => option.value !== "other" && option.payload === payload)
+    return matched?.value ?? "other"
 }
 
 function toNumber(value: unknown, fallback = 0) {
@@ -116,8 +225,8 @@ function normalizeCriterion(value: unknown): RubricCriterion | null {
         criterion,
         description: typeof value.description === "string" ? value.description : null,
         weight: toNumber(value.weight, 0),
-        min_score: toNumber(value.min_score, 1),
-        max_score: toNumber(value.max_score, 5),
+        min_score: toNumber(value.min_score, 0),
+        max_score: toNumber(value.max_score, 3),
         created_at: typeof value.created_at === "string" ? value.created_at : "",
     }
 }
@@ -141,23 +250,37 @@ export default function AdminRubricTemplateDetailsPage() {
         active: false,
     })
 
+    const [templateNameSelection, setTemplateNameSelection] = React.useState<string>("other")
+    const [templateDescriptionSelection, setTemplateDescriptionSelection] =
+        React.useState<string>("none")
+    const [templateVersionSelection, setTemplateVersionSelection] = React.useState<string>("1")
+
     const [criteria, setCriteria] = React.useState<RubricCriterion[]>([])
     const [savingTemplate, setSavingTemplate] = React.useState(false)
     const [busyCriterionId, setBusyCriterionId] = React.useState<string | null>(null)
     const [addingCriterion, setAddingCriterion] = React.useState(false)
 
+    const [newCriterionSelection, setNewCriterionSelection] = React.useState<string>(
+        CRITERION_OPTIONS[0]?.value ?? "other",
+    )
+    const [newCriterionWeightSelection, setNewCriterionWeightSelection] = React.useState<string>(
+        WEIGHT_OPTIONS[0]?.value ?? "other",
+    )
+
     const [newCriterion, setNewCriterion] = React.useState<CriterionForm>({
-        criterion: "",
+        criterion: getOptionPayload(CRITERION_OPTIONS, CRITERION_OPTIONS[0]?.value ?? "other"),
         description: "",
-        weight: 0,
-        min_score: 1,
-        max_score: 5,
+        weight: toNumber(getOptionPayload(WEIGHT_OPTIONS, WEIGHT_OPTIONS[0]?.value ?? "other"), 25),
+        min_score: 0,
+        max_score: 3,
     })
 
     const loadTemplateAndCriteria = React.useCallback(async () => {
         if (!templateId) {
-            setError("Invalid template ID.")
+            const message = "Invalid template ID."
+            setError(message)
             setLoading(false)
+            toast.error(message)
             return
         }
 
@@ -188,6 +311,18 @@ export default function AdminRubricTemplateDetailsPage() {
                 active: loadedTemplate.active,
             })
 
+            setTemplateNameSelection(findSelectionByPayload(TEMPLATE_NAME_OPTIONS, loadedTemplate.name))
+            setTemplateDescriptionSelection(
+                findSelectionByPayload(TEMPLATE_DESCRIPTION_OPTIONS, loadedTemplate.description ?? ""),
+            )
+
+            const loadedVersion = String(Math.max(1, Math.floor(loadedTemplate.version)))
+            if (TEMPLATE_VERSION_OPTIONS.includes(loadedVersion as (typeof TEMPLATE_VERSION_OPTIONS)[number])) {
+                setTemplateVersionSelection(loadedVersion)
+            } else {
+                setTemplateVersionSelection("other")
+            }
+
             const criteriaRes = await fetch(`/api/rubric-templates/${templateId}/criteria`, {
                 cache: "no-store",
             })
@@ -201,15 +336,16 @@ export default function AdminRubricTemplateDetailsPage() {
 
                 setCriteria(normalized)
             } else if (criteriaRes.status === 404) {
-                // Optional endpoint fallback: allow detail page to still render.
                 setCriteria([])
             } else {
                 throw new Error(await readErrorMessage(criteriaRes))
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to load rubric template.")
+            const message = err instanceof Error ? err.message : "Failed to load rubric template."
+            setError(message)
             setTemplate(null)
             setCriteria([])
+            toast.error(message)
         } finally {
             setLoading(false)
         }
@@ -222,12 +358,27 @@ export default function AdminRubricTemplateDetailsPage() {
     const saveTemplate = React.useCallback(async () => {
         if (!templateId) return
 
-        const name = form.name.trim()
-        const description = form.description.trim()
-        const version = Math.max(1, Math.floor(toNumber(form.version, 1)))
+        const name =
+            templateNameSelection === "other"
+                ? form.name.trim()
+                : getOptionPayload(TEMPLATE_NAME_OPTIONS, templateNameSelection).trim()
+
+        const descriptionRaw =
+            templateDescriptionSelection === "none"
+                ? ""
+                : templateDescriptionSelection === "other"
+                    ? form.description.trim()
+                    : getOptionPayload(TEMPLATE_DESCRIPTION_OPTIONS, templateDescriptionSelection).trim()
+
+        const version =
+            templateVersionSelection === "other"
+                ? Math.max(1, Math.floor(toNumber(form.version, 1)))
+                : Math.max(1, Math.floor(toNumber(templateVersionSelection, 1)))
 
         if (!name) {
-            setError("Template name is required.")
+            const message = "Template name is required."
+            setError(message)
+            toast.error(message)
             return
         }
 
@@ -240,7 +391,7 @@ export default function AdminRubricTemplateDetailsPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name,
-                    description: description.length > 0 ? description : null,
+                    description: descriptionRaw.length > 0 ? descriptionRaw : null,
                     version,
                     active: form.active,
                 }),
@@ -261,13 +412,29 @@ export default function AdminRubricTemplateDetailsPage() {
                     version: updated.version,
                     active: updated.active,
                 })
+
+                setTemplateNameSelection(findSelectionByPayload(TEMPLATE_NAME_OPTIONS, updated.name))
+                setTemplateDescriptionSelection(
+                    findSelectionByPayload(TEMPLATE_DESCRIPTION_OPTIONS, updated.description ?? ""),
+                )
+
+                const updatedVersion = String(Math.max(1, Math.floor(updated.version)))
+                if (
+                    TEMPLATE_VERSION_OPTIONS.includes(
+                        updatedVersion as (typeof TEMPLATE_VERSION_OPTIONS)[number],
+                    )
+                ) {
+                    setTemplateVersionSelection(updatedVersion)
+                } else {
+                    setTemplateVersionSelection("other")
+                }
             } else {
                 setTemplate((prev) =>
                     prev
                         ? {
                             ...prev,
                             name,
-                            description: description.length > 0 ? description : null,
+                            description: descriptionRaw.length > 0 ? descriptionRaw : null,
                             version,
                             active: form.active,
                             updated_at: new Date().toISOString(),
@@ -275,12 +442,25 @@ export default function AdminRubricTemplateDetailsPage() {
                         : prev,
                 )
             }
+
+            toast.success("Template saved successfully.")
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to save template.")
+            const message = err instanceof Error ? err.message : "Failed to save template."
+            setError(message)
+            toast.error(message)
         } finally {
             setSavingTemplate(false)
         }
-    }, [form, templateId])
+    }, [
+        form.active,
+        form.description,
+        form.name,
+        form.version,
+        templateDescriptionSelection,
+        templateId,
+        templateNameSelection,
+        templateVersionSelection,
+    ])
 
     const updateCriterionField = React.useCallback(
         <K extends keyof RubricCriterion>(id: string, key: K, value: RubricCriterion[K]) => {
@@ -294,19 +474,31 @@ export default function AdminRubricTemplateDetailsPage() {
     const addCriterion = React.useCallback(async () => {
         if (!templateId) return
 
-        const criterion = newCriterion.criterion.trim()
+        const criterion =
+            newCriterionSelection === "other"
+                ? newCriterion.criterion.trim()
+                : getOptionPayload(CRITERION_OPTIONS, newCriterionSelection).trim()
+
         const description = newCriterion.description.trim()
-        const weight = toNumber(newCriterion.weight, 0)
-        const minScore = Math.floor(toNumber(newCriterion.min_score, 1))
-        const maxScore = Math.floor(toNumber(newCriterion.max_score, 5))
+        const weight =
+            newCriterionWeightSelection === "other"
+                ? toNumber(newCriterion.weight, 0)
+                : toNumber(getOptionPayload(WEIGHT_OPTIONS, newCriterionWeightSelection), 0)
+
+        const minScore = Math.floor(toNumber(newCriterion.min_score, 0))
+        const maxScore = Math.floor(toNumber(newCriterion.max_score, 3))
 
         if (!criterion) {
-            setError("Criterion title is required.")
+            const message = "Criterion title is required."
+            setError(message)
+            toast.error(message)
             return
         }
 
         if (maxScore < minScore) {
-            setError("Max score must be greater than or equal to min score.")
+            const message = "Max score must be greater than or equal to min score."
+            setError(message)
+            toast.error(message)
             return
         }
 
@@ -340,23 +532,50 @@ export default function AdminRubricTemplateDetailsPage() {
                 await loadTemplateAndCriteria()
             }
 
+            setNewCriterionSelection(CRITERION_OPTIONS[0]?.value ?? "other")
+            setNewCriterionWeightSelection(WEIGHT_OPTIONS[0]?.value ?? "other")
             setNewCriterion({
-                criterion: "",
+                criterion: getOptionPayload(CRITERION_OPTIONS, CRITERION_OPTIONS[0]?.value ?? "other"),
                 description: "",
-                weight: 0,
-                min_score: 1,
-                max_score: 5,
+                weight: toNumber(
+                    getOptionPayload(WEIGHT_OPTIONS, WEIGHT_OPTIONS[0]?.value ?? "other"),
+                    25,
+                ),
+                min_score: 0,
+                max_score: 3,
             })
+
+            toast.success("Criterion added successfully.")
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to add criterion.")
+            const message = err instanceof Error ? err.message : "Failed to add criterion."
+            setError(message)
+            toast.error(message)
         } finally {
             setAddingCriterion(false)
         }
-    }, [loadTemplateAndCriteria, newCriterion, templateId])
+    }, [loadTemplateAndCriteria, newCriterion, newCriterionSelection, newCriterionWeightSelection, templateId])
 
     const saveCriterion = React.useCallback(
         async (criterion: RubricCriterion) => {
             if (!templateId || busyCriterionId) return
+
+            const cleanedCriterion = criterion.criterion.trim()
+            const minScore = Math.floor(toNumber(criterion.min_score, 0))
+            const maxScore = Math.floor(toNumber(criterion.max_score, 3))
+
+            if (!cleanedCriterion) {
+                const message = "Criterion title cannot be empty."
+                setError(message)
+                toast.error(message)
+                return
+            }
+
+            if (maxScore < minScore) {
+                const message = "Max score must be greater than or equal to min score."
+                setError(message)
+                toast.error(message)
+                return
+            }
 
             setBusyCriterionId(criterion.id)
             setError(null)
@@ -368,14 +587,14 @@ export default function AdminRubricTemplateDetailsPage() {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
-                            criterion: criterion.criterion.trim(),
+                            criterion: cleanedCriterion,
                             description:
                                 criterion.description && criterion.description.trim().length > 0
                                     ? criterion.description.trim()
                                     : null,
                             weight: toNumber(criterion.weight, 0),
-                            min_score: Math.floor(toNumber(criterion.min_score, 1)),
-                            max_score: Math.floor(toNumber(criterion.max_score, 5)),
+                            min_score: minScore,
+                            max_score: maxScore,
                         }),
                     },
                 )
@@ -392,8 +611,12 @@ export default function AdminRubricTemplateDetailsPage() {
                         prev.map((item) => (item.id === criterion.id ? updated : item)),
                     )
                 }
+
+                toast.success("Criterion updated successfully.")
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to update criterion.")
+                const message = err instanceof Error ? err.message : "Failed to update criterion."
+                setError(message)
+                toast.error(message)
             } finally {
                 setBusyCriterionId(null)
             }
@@ -421,8 +644,11 @@ export default function AdminRubricTemplateDetailsPage() {
                 }
 
                 setCriteria((prev) => prev.filter((item) => item.id !== criterionId))
+                toast.success("Criterion deleted successfully.")
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to delete criterion.")
+                const message = err instanceof Error ? err.message : "Failed to delete criterion."
+                setError(message)
+                toast.error(message)
             } finally {
                 setBusyCriterionId(null)
             }
@@ -478,39 +704,160 @@ export default function AdminRubricTemplateDetailsPage() {
                                     </p>
                                 </div>
 
-                                <div className="grid gap-2 md:grid-cols-2">
-                                    <Input
-                                        placeholder="Template name"
-                                        value={form.name}
-                                        onChange={(e) =>
-                                            setForm((prev) => ({ ...prev, name: e.target.value }))
-                                        }
-                                        disabled={savingTemplate}
-                                    />
-                                    <Input
-                                        type="number"
-                                        min={1}
-                                        step={1}
-                                        placeholder="Version"
-                                        value={form.version}
-                                        onChange={(e) =>
-                                            setForm((prev) => ({
-                                                ...prev,
-                                                version: toNumber(e.target.value, prev.version),
-                                            }))
-                                        }
-                                        disabled={savingTemplate}
-                                    />
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Template name</p>
+                                        <Select
+                                            value={templateNameSelection}
+                                            onValueChange={(value) => {
+                                                setTemplateNameSelection(value)
+                                                if (value === "other") {
+                                                    setForm((prev) => ({ ...prev, name: "" }))
+                                                    return
+                                                }
+
+                                                const payload = getOptionPayload(TEMPLATE_NAME_OPTIONS, value)
+                                                setForm((prev) => ({ ...prev, name: payload }))
+                                            }}
+                                            disabled={savingTemplate}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select template name" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {TEMPLATE_NAME_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        {templateNameSelection === "other" ? (
+                                            <Input
+                                                placeholder="Please specify template name"
+                                                value={form.name}
+                                                onChange={(e) =>
+                                                    setForm((prev) => ({ ...prev, name: e.target.value }))
+                                                }
+                                                disabled={savingTemplate}
+                                            />
+                                        ) : null}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Version</p>
+                                        <Select
+                                            value={templateVersionSelection}
+                                            onValueChange={(value) => {
+                                                setTemplateVersionSelection(value)
+                                                if (value === "other") return
+                                                setForm((prev) => ({
+                                                    ...prev,
+                                                    version: Math.max(1, Math.floor(toNumber(value, prev.version))),
+                                                }))
+                                            }}
+                                            disabled={savingTemplate}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select version" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="1">Version 1</SelectItem>
+                                                <SelectItem value="2">Version 2</SelectItem>
+                                                <SelectItem value="3">Version 3</SelectItem>
+                                                <SelectItem value="4">Version 4</SelectItem>
+                                                <SelectItem value="5">Version 5</SelectItem>
+                                                <SelectItem value="other">Others (please specify)</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+
+                                        {templateVersionSelection === "other" ? (
+                                            <Input
+                                                type="number"
+                                                min={1}
+                                                step={1}
+                                                placeholder="Please specify version"
+                                                value={form.version}
+                                                onChange={(e) =>
+                                                    setForm((prev) => ({
+                                                        ...prev,
+                                                        version: Math.max(1, toNumber(e.target.value, prev.version)),
+                                                    }))
+                                                }
+                                                disabled={savingTemplate}
+                                            />
+                                        ) : null}
+                                    </div>
                                 </div>
 
-                                <Input
-                                    placeholder="Description (optional)"
-                                    value={form.description}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({ ...prev, description: e.target.value }))
-                                    }
-                                    disabled={savingTemplate}
-                                />
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Description</p>
+                                        <Select
+                                            value={templateDescriptionSelection}
+                                            onValueChange={(value) => {
+                                                setTemplateDescriptionSelection(value)
+                                                if (value === "none") {
+                                                    setForm((prev) => ({ ...prev, description: "" }))
+                                                    return
+                                                }
+                                                if (value === "other") {
+                                                    setForm((prev) => ({ ...prev, description: "" }))
+                                                    return
+                                                }
+
+                                                const payload = getOptionPayload(TEMPLATE_DESCRIPTION_OPTIONS, value)
+                                                setForm((prev) => ({ ...prev, description: payload }))
+                                            }}
+                                            disabled={savingTemplate}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select description" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {TEMPLATE_DESCRIPTION_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        {templateDescriptionSelection === "other" ? (
+                                            <Input
+                                                placeholder="Please specify description"
+                                                value={form.description}
+                                                onChange={(e) =>
+                                                    setForm((prev) => ({
+                                                        ...prev,
+                                                        description: e.target.value,
+                                                    }))
+                                                }
+                                                disabled={savingTemplate}
+                                            />
+                                        ) : null}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Status</p>
+                                        <Select
+                                            value={form.active ? "active" : "inactive"}
+                                            onValueChange={(value) =>
+                                                setForm((prev) => ({ ...prev, active: value === "active" }))
+                                            }
+                                            disabled={savingTemplate}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select status" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="active">Active</SelectItem>
+                                                <SelectItem value="inactive">Inactive</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
 
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span
@@ -524,16 +871,6 @@ export default function AdminRubricTemplateDetailsPage() {
                                         {form.active ? "Active" : "Inactive"}
                                     </span>
 
-                                    <Button
-                                        variant="outline"
-                                        onClick={() =>
-                                            setForm((prev) => ({ ...prev, active: !prev.active }))
-                                        }
-                                        disabled={savingTemplate}
-                                    >
-                                        {form.active ? "Set Inactive" : "Set Active"}
-                                    </Button>
-
                                     <Button onClick={() => void saveTemplate()} disabled={savingTemplate}>
                                         {savingTemplate ? "Saving..." : "Save Template"}
                                     </Button>
@@ -544,75 +881,172 @@ export default function AdminRubricTemplateDetailsPage() {
                         <div className="rounded-lg border bg-card p-4">
                             <div className="space-y-3">
                                 <p className="text-sm font-medium">Add Criterion</p>
-                                <div className="grid gap-2 md:grid-cols-2">
-                                    <Input
-                                        placeholder="Criterion title"
-                                        value={newCriterion.criterion}
-                                        onChange={(e) =>
-                                            setNewCriterion((prev) => ({
-                                                ...prev,
-                                                criterion: e.target.value,
-                                            }))
-                                        }
-                                        disabled={addingCriterion}
-                                    />
-                                    <Input
-                                        placeholder="Description (optional)"
-                                        value={newCriterion.description}
-                                        onChange={(e) =>
-                                            setNewCriterion((prev) => ({
-                                                ...prev,
-                                                description: e.target.value,
-                                            }))
-                                        }
-                                        disabled={addingCriterion}
-                                    />
+
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Criterion</p>
+                                        <Select
+                                            value={newCriterionSelection}
+                                            onValueChange={(value) => {
+                                                setNewCriterionSelection(value)
+                                                if (value === "other") {
+                                                    setNewCriterion((prev) => ({ ...prev, criterion: "" }))
+                                                    return
+                                                }
+
+                                                const payload = getOptionPayload(CRITERION_OPTIONS, value)
+                                                setNewCriterion((prev) => ({ ...prev, criterion: payload }))
+                                            }}
+                                            disabled={addingCriterion}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select criterion" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {CRITERION_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        {newCriterionSelection === "other" ? (
+                                            <Input
+                                                placeholder="Please specify criterion title"
+                                                value={newCriterion.criterion}
+                                                onChange={(e) =>
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        criterion: e.target.value,
+                                                    }))
+                                                }
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">
+                                            Description (optional)
+                                        </p>
+                                        <Input
+                                            placeholder="Add criterion description"
+                                            value={newCriterion.description}
+                                            onChange={(e) =>
+                                                setNewCriterion((prev) => ({
+                                                    ...prev,
+                                                    description: e.target.value,
+                                                }))
+                                            }
+                                            disabled={addingCriterion}
+                                        />
+                                    </div>
                                 </div>
 
-                                <div className="grid gap-2 md:grid-cols-3">
-                                    <Input
-                                        type="number"
-                                        step="0.01"
-                                        min={0}
-                                        placeholder="Weight"
-                                        value={newCriterion.weight}
-                                        onChange={(e) =>
-                                            setNewCriterion((prev) => ({
-                                                ...prev,
-                                                weight: toNumber(e.target.value, prev.weight),
-                                            }))
-                                        }
-                                        disabled={addingCriterion}
-                                    />
-                                    <Input
-                                        type="number"
-                                        step={1}
-                                        min={0}
-                                        placeholder="Min score"
-                                        value={newCriterion.min_score}
-                                        onChange={(e) =>
-                                            setNewCriterion((prev) => ({
-                                                ...prev,
-                                                min_score: toNumber(e.target.value, prev.min_score),
-                                            }))
-                                        }
-                                        disabled={addingCriterion}
-                                    />
-                                    <Input
-                                        type="number"
-                                        step={1}
-                                        min={0}
-                                        placeholder="Max score"
-                                        value={newCriterion.max_score}
-                                        onChange={(e) =>
-                                            setNewCriterion((prev) => ({
-                                                ...prev,
-                                                max_score: toNumber(e.target.value, prev.max_score),
-                                            }))
-                                        }
-                                        disabled={addingCriterion}
-                                    />
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Weight</p>
+                                        <Select
+                                            value={newCriterionWeightSelection}
+                                            onValueChange={(value) => {
+                                                setNewCriterionWeightSelection(value)
+                                                if (value === "other") return
+
+                                                setNewCriterion((prev) => ({
+                                                    ...prev,
+                                                    weight: toNumber(
+                                                        getOptionPayload(WEIGHT_OPTIONS, value),
+                                                        prev.weight,
+                                                    ),
+                                                }))
+                                            }}
+                                            disabled={addingCriterion}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select weight" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {WEIGHT_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        {newCriterionWeightSelection === "other" ? (
+                                            <Input
+                                                type="number"
+                                                step="0.01"
+                                                min={0}
+                                                placeholder="Please specify weight"
+                                                value={newCriterion.weight}
+                                                onChange={(e) =>
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        weight: toNumber(e.target.value, prev.weight),
+                                                    }))
+                                                }
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Min score</p>
+                                        <Select
+                                            value={String(newCriterion.min_score)}
+                                            onValueChange={(value) =>
+                                                setNewCriterion((prev) => ({
+                                                    ...prev,
+                                                    min_score: toNumber(value, prev.min_score),
+                                                }))
+                                            }
+                                            disabled={addingCriterion}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select min score" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {SCORE_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Max score</p>
+                                        <Select
+                                            value={String(newCriterion.max_score)}
+                                            onValueChange={(value) =>
+                                                setNewCriterion((prev) => ({
+                                                    ...prev,
+                                                    max_score: toNumber(value, prev.max_score),
+                                                }))
+                                            }
+                                            disabled={addingCriterion}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select max score" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {SCORE_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                 </div>
+
+                                <p className="text-xs text-muted-foreground">
+                                    Score guide: 0 - Absent, 1 - Developing, 2 - Competent, 3 - Professional/Accomplished.
+                                </p>
 
                                 <Button onClick={() => void addCriterion()} disabled={addingCriterion}>
                                     {addingCriterion ? "Adding..." : "Add Criterion"}

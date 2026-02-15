@@ -3,10 +3,18 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -28,9 +36,52 @@ type RubricTemplate = {
 
 type ActiveFilter = "all" | "active" | "inactive"
 
-function toTitleCase(value: string) {
-    return value.charAt(0).toUpperCase() + value.slice(1)
+type SelectOption = {
+    value: string
+    label: string
+    payload: string
 }
+
+const TEMPLATE_NAME_OPTIONS: SelectOption[] = [
+    {
+        value: "ccs-thesis-form-3c-draft-2021",
+        label: "CCS Thesis Form 3-C (Draft November 2, 2021)",
+        payload: "CCS Thesis Form 3-C (Draft November 2, 2021)",
+    },
+    {
+        value: "ccs-thesis-form-3c-rubrics-for-proposal",
+        label: "CCS Thesis Form 3-C - Rubrics for Proposal",
+        payload: "CCS Thesis Form 3-C - Rubrics for Proposal",
+    },
+    {
+        value: "other",
+        label: "Others (please specify)",
+        payload: "",
+    },
+]
+
+const TEMPLATE_DESCRIPTION_OPTIONS: SelectOption[] = [
+    {
+        value: "proposal-rubric-college-of-computing-studies",
+        label: "College of Computing Studies proposal rubric",
+        payload: "College of Computing Studies proposal rubric",
+    },
+    {
+        value: "score-scale-0-to-3-adjectival",
+        label: "Score scale 0–3 (Absent to Professional/Accomplished)",
+        payload: "Score scale 0–3 (Absent to Professional/Accomplished)",
+    },
+    {
+        value: "none",
+        label: "No description",
+        payload: "",
+    },
+    {
+        value: "other",
+        label: "Others (please specify)",
+        payload: "",
+    },
+]
 
 function toNumber(value: unknown, fallback = 0) {
     const n = typeof value === "number" ? value : Number(value)
@@ -45,6 +96,10 @@ function formatDate(value: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function getOptionPayload(options: SelectOption[], value: string) {
+    return options.find((option) => option.value === value)?.payload ?? ""
 }
 
 async function readJsonRecord(res: Response): Promise<Record<string, unknown>> {
@@ -102,7 +157,6 @@ async function patchTemplateActive(templateId: string, active: boolean): Promise
             return normalizeTemplate(data.item ?? data)
         }
 
-        // Allow fallback to next known endpoint for common route mismatches.
         if (res.status === 404 || res.status === 405) {
             lastError = await readErrorMessage(res)
             continue
@@ -124,8 +178,16 @@ export default function AdminRubricTemplatesPage() {
     const [search, setSearch] = React.useState("")
     const [activeFilter, setActiveFilter] = React.useState<ActiveFilter>("all")
 
-    const [createName, setCreateName] = React.useState("")
-    const [createDescription, setCreateDescription] = React.useState("")
+    const [createNameOption, setCreateNameOption] = React.useState<string>(
+        TEMPLATE_NAME_OPTIONS[0]?.value ?? "other",
+    )
+    const [createNameOther, setCreateNameOther] = React.useState("")
+
+    const [createDescriptionOption, setCreateDescriptionOption] = React.useState<string>(
+        TEMPLATE_DESCRIPTION_OPTIONS[0]?.value ?? "none",
+    )
+    const [createDescriptionOther, setCreateDescriptionOther] = React.useState("")
+
     const [creating, setCreating] = React.useState(false)
     const [busyTemplateId, setBusyTemplateId] = React.useState<string | null>(null)
 
@@ -148,8 +210,10 @@ export default function AdminRubricTemplatesPage() {
 
             setTemplates(normalized)
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to fetch rubric templates.")
+            const message = err instanceof Error ? err.message : "Failed to fetch rubric templates."
+            setError(message)
             setTemplates([])
+            toast.error(message)
         } finally {
             setLoading(false)
         }
@@ -177,11 +241,20 @@ export default function AdminRubricTemplatesPage() {
     }, [templates, search, activeFilter])
 
     const createTemplate = React.useCallback(async () => {
-        const name = createName.trim()
-        const description = createDescription.trim()
+        const name =
+            createNameOption === "other"
+                ? createNameOther.trim()
+                : getOptionPayload(TEMPLATE_NAME_OPTIONS, createNameOption).trim()
+
+        const descriptionRaw =
+            createDescriptionOption === "other"
+                ? createDescriptionOther.trim()
+                : getOptionPayload(TEMPLATE_DESCRIPTION_OPTIONS, createDescriptionOption).trim()
 
         if (!name) {
-            setError("Template name is required.")
+            const message = "Template name is required."
+            setError(message)
+            toast.error(message)
             return
         }
 
@@ -194,7 +267,7 @@ export default function AdminRubricTemplatesPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name,
-                    description: description.length > 0 ? description : null,
+                    description: descriptionRaw.length > 0 ? descriptionRaw : null,
                 }),
             })
 
@@ -207,22 +280,36 @@ export default function AdminRubricTemplatesPage() {
 
             if (created) {
                 setTemplates((prev) => [created, ...prev.filter((t) => t.id !== created.id)])
-                setCreateName("")
-                setCreateDescription("")
+                setCreateNameOption(TEMPLATE_NAME_OPTIONS[0]?.value ?? "other")
+                setCreateNameOther("")
+                setCreateDescriptionOption(TEMPLATE_DESCRIPTION_OPTIONS[0]?.value ?? "none")
+                setCreateDescriptionOther("")
+                toast.success(`Template "${created.name}" created successfully.`)
                 router.push(`/dashboard/admin/rubric-templates/${created.id}`)
                 return
             }
 
-            // Fallback when API doesn't return item payload.
             await loadTemplates()
-            setCreateName("")
-            setCreateDescription("")
+            setCreateNameOption(TEMPLATE_NAME_OPTIONS[0]?.value ?? "other")
+            setCreateNameOther("")
+            setCreateDescriptionOption(TEMPLATE_DESCRIPTION_OPTIONS[0]?.value ?? "none")
+            setCreateDescriptionOther("")
+            toast.success("Template created successfully.")
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to create rubric template.")
+            const message = err instanceof Error ? err.message : "Failed to create rubric template."
+            setError(message)
+            toast.error(message)
         } finally {
             setCreating(false)
         }
-    }, [createName, createDescription, loadTemplates, router])
+    }, [
+        createDescriptionOption,
+        createDescriptionOther,
+        createNameOption,
+        createNameOther,
+        loadTemplates,
+        router,
+    ])
 
     const toggleTemplateActive = React.useCallback(
         async (template: RubricTemplate) => {
@@ -246,8 +333,15 @@ export default function AdminRubricTemplatesPage() {
                         ),
                     )
                 }
+
+                toast.success(
+                    `Template "${template.name}" is now ${nextActive ? "active" : "inactive"}.`,
+                )
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to update template status.")
+                const message =
+                    err instanceof Error ? err.message : "Failed to update template status."
+                setError(message)
+                toast.error(message)
             } finally {
                 setBusyTemplateId(null)
             }
@@ -264,20 +358,77 @@ export default function AdminRubricTemplatesPage() {
                 <div className="rounded-lg border bg-card p-4">
                     <div className="space-y-3">
                         <p className="text-sm font-medium">Create New Template</p>
-                        <div className="grid gap-2 md:grid-cols-2">
-                            <Input
-                                placeholder="Template name"
-                                value={createName}
-                                onChange={(e) => setCreateName(e.target.value)}
-                                disabled={creating}
-                            />
-                            <Input
-                                placeholder="Description (optional)"
-                                value={createDescription}
-                                onChange={(e) => setCreateDescription(e.target.value)}
-                                disabled={creating}
-                            />
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <p className="text-xs font-medium text-muted-foreground">Template name</p>
+                                <Select
+                                    value={createNameOption}
+                                    onValueChange={(value) => {
+                                        setCreateNameOption(value)
+                                        if (value !== "other") {
+                                            setCreateNameOther("")
+                                        }
+                                    }}
+                                    disabled={creating}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select template name" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {TEMPLATE_NAME_OPTIONS.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>
+                                                {option.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                {createNameOption === "other" ? (
+                                    <Input
+                                        placeholder="Please specify template name"
+                                        value={createNameOther}
+                                        onChange={(e) => setCreateNameOther(e.target.value)}
+                                        disabled={creating}
+                                    />
+                                ) : null}
+                            </div>
+
+                            <div className="space-y-2">
+                                <p className="text-xs font-medium text-muted-foreground">Template description</p>
+                                <Select
+                                    value={createDescriptionOption}
+                                    onValueChange={(value) => {
+                                        setCreateDescriptionOption(value)
+                                        if (value !== "other") {
+                                            setCreateDescriptionOther("")
+                                        }
+                                    }}
+                                    disabled={creating}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select description" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {TEMPLATE_DESCRIPTION_OPTIONS.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>
+                                                {option.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                {createDescriptionOption === "other" ? (
+                                    <Input
+                                        placeholder="Please specify description"
+                                        value={createDescriptionOther}
+                                        onChange={(e) => setCreateDescriptionOther(e.target.value)}
+                                        disabled={creating}
+                                    />
+                                ) : null}
+                            </div>
                         </div>
+
                         <div className="flex flex-wrap items-center gap-2">
                             <Button onClick={() => void createTemplate()} disabled={creating}>
                                 {creating ? "Creating..." : "Create Template"}
@@ -291,31 +442,31 @@ export default function AdminRubricTemplatesPage() {
 
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                            <Input
-                                placeholder="Search by name, ID, or description"
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full md:max-w-xl"
-                            />
-                        </div>
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                            <div className="w-full md:max-w-xl">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">Search</p>
+                                <Input
+                                    placeholder="Search by name, ID, or description"
+                                    value={search}
+                                    onChange={(e) => setSearch(e.target.value)}
+                                />
+                            </div>
 
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {(["all", "active", "inactive"] as ActiveFilter[]).map((status) => {
-                                    const active = activeFilter === status
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setActiveFilter(status)}
-                                        >
-                                            {toTitleCase(status)}
-                                        </Button>
-                                    )
-                                })}
+                            <div className="w-full md:w-60">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">Filter by status</p>
+                                <Select
+                                    value={activeFilter}
+                                    onValueChange={(value) => setActiveFilter(value as ActiveFilter)}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="All status" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">All</SelectItem>
+                                        <SelectItem value="active">Active</SelectItem>
+                                        <SelectItem value="inactive">Inactive</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
                         </div>
 
