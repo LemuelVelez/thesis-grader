@@ -48,6 +48,31 @@ interface SchedulePanelistsServiceLike {
     removeMember?: (scheduleId: UUID, staffId: UUID) => Promise<number>;
 }
 
+interface SchedulePanelistUserView {
+    id: UUID;
+    user_id: UUID;
+    staff_id: UUID;
+    name: string | null;
+    email: string | null;
+    role: UserRow['role'] | null;
+    status: UserRow['status'] | null;
+}
+
+type SchedulePanelistResponseItem = SchedulePanelistRow & SchedulePanelistUserView;
+
+type DefenseScheduleWithOptionalMeta = DefenseScheduleRow & Partial<{
+    group_title: string | null;
+    rubric_template_name: string | null;
+    created_by_name: string | null;
+    created_by_email: string | null;
+}>;
+
+type DefenseScheduleResponseItem = DefenseScheduleWithOptionalMeta & {
+    panelists: SchedulePanelistUserView[];
+    schedule_panelists: SchedulePanelistUserView[];
+    panelist_count: number;
+};
+
 async function dispatchAdminStudentProfileRequest(
     req: NextRequest,
     services: DatabaseServices,
@@ -240,6 +265,136 @@ async function deleteSchedulePanelist(
     throw new Error('Schedule panelists service does not support delete/remove.');
 }
 
+async function resolveUserByIdCached(
+    services: DatabaseServices,
+    userId: UUID,
+    cache: Map<string, UserRow | null>,
+): Promise<UserRow | null> {
+    const key = userId.toLowerCase();
+    if (cache.has(key)) {
+        return cache.get(key) ?? null;
+    }
+
+    try {
+        const user = await services.users.findById(userId);
+        cache.set(key, user ?? null);
+        return user ?? null;
+    } catch {
+        cache.set(key, null);
+        return null;
+    }
+}
+
+function toPanelistUserView(
+    row: SchedulePanelistRow,
+    user: UserRow | null,
+): SchedulePanelistUserView {
+    return {
+        id: row.staff_id,
+        user_id: row.staff_id,
+        staff_id: row.staff_id,
+        name: user?.name ?? null,
+        email: user?.email ?? null,
+        role: user?.role ?? null,
+        status: user?.status ?? null,
+    };
+}
+
+async function enrichSchedulePanelistRows(
+    rows: SchedulePanelistRow[],
+    services: DatabaseServices,
+    cache: Map<string, UserRow | null> = new Map<string, UserRow | null>(),
+): Promise<SchedulePanelistResponseItem[]> {
+    const uniqueIds = Array.from(
+        new Set(rows.map((row) => row.staff_id.toLowerCase())),
+    );
+
+    await Promise.all(
+        uniqueIds.map(async (lowerId) => {
+            const rawId =
+                rows.find((row) => row.staff_id.toLowerCase() === lowerId)?.staff_id;
+            if (!rawId) return;
+            await resolveUserByIdCached(services, rawId as UUID, cache);
+        }),
+    );
+
+    return rows.map((row) => {
+        const user = cache.get(row.staff_id.toLowerCase()) ?? null;
+        const extra = toPanelistUserView(row, user);
+
+        return {
+            ...row,
+            ...extra,
+        };
+    });
+}
+
+async function withSchedulePanelistsMany<T extends DefenseScheduleWithOptionalMeta>(
+    schedules: T[],
+    services: DatabaseServices,
+): Promise<Array<T & Pick<DefenseScheduleResponseItem, 'panelists' | 'schedule_panelists' | 'panelist_count'>>> {
+    if (schedules.length === 0) return [];
+
+    const schedulePanelistsService =
+        services.schedule_panelists as unknown as SchedulePanelistsServiceLike;
+    const scheduleRowsById = new Map<string, SchedulePanelistRow[]>();
+
+    await Promise.all(
+        schedules.map(async (schedule) => {
+            try {
+                const rows = await listSchedulePanelistsBySchedule(
+                    schedulePanelistsService,
+                    schedule.id,
+                );
+                scheduleRowsById.set(schedule.id.toLowerCase(), rows);
+            } catch {
+                scheduleRowsById.set(schedule.id.toLowerCase(), []);
+            }
+        }),
+    );
+
+    const userCache = new Map<string, UserRow | null>();
+    const uniqueStaffIds = new Set<string>();
+
+    for (const rows of scheduleRowsById.values()) {
+        for (const row of rows) {
+            uniqueStaffIds.add(row.staff_id.toLowerCase());
+        }
+    }
+
+    await Promise.all(
+        Array.from(uniqueStaffIds).map(async (lowerId) => {
+            const anyRow = Array.from(scheduleRowsById.values())
+                .flat()
+                .find((row) => row.staff_id.toLowerCase() === lowerId);
+            if (!anyRow) return;
+            await resolveUserByIdCached(services, anyRow.staff_id as UUID, userCache);
+        }),
+    );
+
+    return schedules.map((schedule) => {
+        const rows = scheduleRowsById.get(schedule.id.toLowerCase()) ?? [];
+        const panelists = rows.map((row) =>
+            toPanelistUserView(row, userCache.get(row.staff_id.toLowerCase()) ?? null),
+        );
+
+        return {
+            ...schedule,
+            panelists,
+            schedule_panelists: panelists,
+            panelist_count: panelists.length,
+        };
+    });
+}
+
+async function withSchedulePanelists<T extends DefenseScheduleWithOptionalMeta>(
+    schedule: T,
+    services: DatabaseServices,
+): Promise<T & Pick<DefenseScheduleResponseItem, 'panelists' | 'schedule_panelists' | 'panelist_count'>> {
+    const [item] = await withSchedulePanelistsMany([schedule], services);
+    return item ?? { ...schedule, panelists: [], schedule_panelists: [], panelist_count: 0 };
+}
+
 export async function dispatchSchedulePanelistsRequest(
     req: NextRequest,
     tail: string[],
@@ -249,6 +404,20 @@ export async function dispatchSchedulePanelistsRequest(
     const method = req.method.toUpperCase();
     const service = services.schedule_panelists as unknown as SchedulePanelistsServiceLike;
     const forcedScheduleId = options.forcedScheduleId ?? null;
+    const userCache = new Map<string, UserRow | null>();
+
+    const enrichMany = async (
+        rows: SchedulePanelistRow[],
+    ): Promise<SchedulePanelistResponseItem[]> =>
+        enrichSchedulePanelistRows(rows, services, userCache);
+
+    const enrichOne = async (
+        row: SchedulePanelistRow | null,
+    ): Promise<SchedulePanelistResponseItem | null> => {
+        if (!row) return null;
+        const [item] = await enrichMany([row]);
+        return item ?? null;
+    };
 
     const ensureScheduleExists = async (scheduleId: UUID): Promise<boolean> => {
         try {
@@ -399,6 +568,8 @@ export async function dispatchSchedulePanelistsRequest(
                     staffIds as UUID[],
                 );
 
+            const enrichedItems = await enrichMany(items);
+
             const payload: Record<string, unknown> = {
                 message:
                     createdCount > 0
@@ -406,10 +577,10 @@ export async function dispatchSchedulePanelistsRequest(
                         : 'All provided panelists are already assigned to this defense schedule.',
             };
 
-            if (items.length === 1) {
-                payload.item = items[0];
+            if (enrichedItems.length === 1) {
+                payload.item = enrichedItems[0];
             } else {
-                payload.items = items;
+                payload.items = enrichedItems;
             }
 
             payload.createdCount = createdCount;
@@ -438,7 +609,8 @@ export async function dispatchSchedulePanelistsRequest(
                         service,
                         forcedScheduleId,
                     );
-                    return json200({ items });
+                    const enriched = await enrichMany(items);
+                    return json200({ items: enriched });
                 } catch (error) {
                     return NextResponse.json(
                         {
@@ -472,7 +644,9 @@ export async function dispatchSchedulePanelistsRequest(
                         staffId as UUID,
                     );
                     if (!item) return json404Entity('Defense schedule panelist');
-                    return json200({ item });
+
+                    const enriched = await enrichOne(item);
+                    return json200({ item: enriched ?? item });
                 } catch (error) {
                     return NextResponse.json(
                         {
@@ -531,7 +705,8 @@ export async function dispatchSchedulePanelistsRequest(
                         service,
                         scheduleIdQuery as UUID,
                     );
-                    return json200({ items });
+                    const enriched = await enrichMany(items);
+                    return json200({ items: enriched });
                 } catch (error) {
                     return NextResponse.json(
                         {
@@ -552,7 +727,8 @@ export async function dispatchSchedulePanelistsRequest(
                         service,
                         staffIdQuery as UUID,
                     );
-                    return json200({ items });
+                    const enriched = await enrichMany(items);
+                    return json200({ items: enriched });
                 } catch (error) {
                     return NextResponse.json(
                         {
@@ -567,7 +743,9 @@ export async function dispatchSchedulePanelistsRequest(
             if (typeof service.findMany === 'function') {
                 try {
                     const items = await service.findMany(parseListQuery<SchedulePanelistRow>(req));
-                    return json200({ items });
+                    const rows = Array.isArray(items) ? items : [];
+                    const enriched = await enrichMany(rows);
+                    return json200({ items: enriched });
                 } catch (error) {
                     return NextResponse.json(
                         {
@@ -613,7 +791,8 @@ export async function dispatchSchedulePanelistsRequest(
         if (method === 'GET') {
             try {
                 const items = await listSchedulePanelistsBySchedule(service, scheduleId);
-                return json200({ items });
+                const enriched = await enrichMany(items);
+                return json200({ items: enriched });
             } catch (error) {
                 return NextResponse.json(
                     {
@@ -657,7 +836,8 @@ export async function dispatchSchedulePanelistsRequest(
                 service,
                 scheduleId as UUID,
             );
-            return json200({ items });
+            const enriched = await enrichMany(items);
+            return json200({ items: enriched });
         } catch (error) {
             return NextResponse.json(
                 {
@@ -687,7 +867,8 @@ export async function dispatchSchedulePanelistsRequest(
                 service,
                 staffId as UUID,
             );
-            return json200({ items });
+            const enriched = await enrichMany(items);
+            return json200({ items: enriched });
         } catch (error) {
             return NextResponse.json(
                 {
@@ -708,7 +889,9 @@ export async function dispatchSchedulePanelistsRequest(
             try {
                 const item = await getExistingByComposite(scheduleId, staffId);
                 if (!item) return json404Entity('Defense schedule panelist');
-                return json200({ item });
+
+                const enriched = await enrichOne(item);
+                return json200({ item: enriched ?? item });
             } catch (error) {
                 return NextResponse.json(
                     {
@@ -754,7 +937,9 @@ export async function dispatchSchedulePanelistsRequest(
             try {
                 const item = await getExistingByComposite(scheduleId, staffId);
                 if (!item) return json404Entity('Defense schedule panelist');
-                return json200({ item });
+
+                const enriched = await enrichOne(item);
+                return json200({ item: enriched ?? item });
             } catch (error) {
                 return NextResponse.json(
                     {
@@ -1294,7 +1479,21 @@ export async function dispatchDefenseSchedulesRequest(
     services: DatabaseServices,
 ): Promise<Response> {
     const controller = services.defense_schedules;
+    const adminController = new AdminController(services);
     const method = req.method.toUpperCase();
+
+    const enrichOne = async (
+        item: DefenseScheduleWithOptionalMeta | null,
+    ): Promise<DefenseScheduleResponseItem | null> => {
+        if (!item) return null;
+        return withSchedulePanelists(item, services);
+    };
+
+    const enrichMany = async (
+        items: DefenseScheduleWithOptionalMeta[],
+    ): Promise<DefenseScheduleResponseItem[]> => {
+        return withSchedulePanelistsMany(items, services);
+    };
 
     if (tail.length === 0) {
         if (method === 'GET') {
@@ -1311,29 +1510,33 @@ export async function dispatchDefenseSchedulesRequest(
                 if (!isUuidLike(groupId)) {
                     return json400('groupId must be a valid UUID.');
                 }
-                const items = await controller.listByGroup(groupId as UUID);
-                return json200({ items });
+                const items = await adminController.getDefenseSchedulesByGroupDetailed(groupId as UUID);
+                const enriched = await enrichMany(items);
+                return json200({ items: enriched });
             }
 
             if (panelistId) {
                 if (!isUuidLike(panelistId)) {
                     return json400('panelistId/staffId must be a valid UUID.');
                 }
-                const items = await controller.listByPanelist(panelistId as UUID);
-                return json200({ items });
+                const items = await adminController.getDefenseSchedulesByPanelistDetailed(panelistId as UUID);
+                const enriched = await enrichMany(items);
+                return json200({ items: enriched });
             }
 
             const query = parseListQuery<DefenseScheduleRow>(req);
-            const items = await controller.findMany(query);
-            return json200({ items });
+            const items = await adminController.getDefenseSchedulesDetailed(query);
+            const enriched = await enrichMany(items);
+            return json200({ items: enriched });
         }
 
         if (method === 'POST') {
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.create(body as DefenseScheduleInsert);
-            return json201({ item });
+            const item = await adminController.createDefenseScheduleDetailed(body as DefenseScheduleInsert);
+            const enriched = await enrichOne(item);
+            return json201({ item: enriched ?? item });
         }
 
         return json405(['GET', 'POST', 'OPTIONS']);
@@ -1347,8 +1550,9 @@ export async function dispatchDefenseSchedulesRequest(
             return json400('groupId must be a valid UUID.');
         }
 
-        const items = await controller.listByGroup(groupId as UUID);
-        return json200({ items });
+        const items = await adminController.getDefenseSchedulesByGroupDetailed(groupId as UUID);
+        const enriched = await enrichMany(items);
+        return json200({ items: enriched });
     }
 
     if (tail.length === 2 && (tail[0] === 'panelist' || tail[0] === 'staff')) {
@@ -1359,8 +1563,9 @@ export async function dispatchDefenseSchedulesRequest(
             return json400('panelistId/staffId must be a valid UUID.');
         }
 
-        const items = await controller.listByPanelist(panelistId as UUID);
-        return json200({ items });
+        const items = await adminController.getDefenseSchedulesByPanelistDetailed(panelistId as UUID);
+        const enriched = await enrichMany(items);
+        return json200({ items: enriched });
     }
 
     const id = tail[0];
@@ -1368,18 +1573,25 @@ export async function dispatchDefenseSchedulesRequest(
 
     if (tail.length === 1) {
         if (method === 'GET') {
-            const item = await controller.findById(id as UUID);
+            const item = await adminController.getDefenseScheduleByIdDetailed(id as UUID);
             if (!item) return json404Entity('Defense schedule');
-            return json200({ item });
+
+            const enriched = await enrichOne(item);
+            return json200({ item: enriched ?? item });
         }
 
         if (method === 'PATCH' || method === 'PUT') {
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.updateOne({ id: id as UUID }, body as DefenseSchedulePatch);
+            const item = await adminController.updateDefenseScheduleDetailed(
+                id as UUID,
+                body as DefenseSchedulePatch,
+            );
             if (!item) return json404Entity('Defense schedule');
-            return json200({ item });
+
+            const enriched = await enrichOne(item);
+            return json200({ item: enriched ?? item });
         }
 
         if (method === 'DELETE') {
@@ -1413,12 +1625,14 @@ export async function dispatchDefenseSchedulesRequest(
             return json400('status must be a non-empty string.');
         }
 
-        const item = await controller.setStatus(
+        const item = await adminController.setDefenseScheduleStatusDetailed(
             id as UUID,
             status.trim() as DefenseScheduleRow['status'],
         );
         if (!item) return json404Entity('Defense schedule');
-        return json200({ item });
+
+        const enriched = await enrichOne(item);
+        return json200({ item: enriched ?? item });
     }
 
     return json404Api();
