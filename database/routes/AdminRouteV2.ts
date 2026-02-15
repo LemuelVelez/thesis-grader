@@ -106,6 +106,16 @@ interface RubricTemplateCriteriaServiceLike {
     createMany?: (input: Record<string, unknown>[]) => Promise<Record<string, unknown>[]>;
 }
 
+function canWriteRubricTemplateCriteria(
+    service: RubricTemplateCriteriaServiceLike | null,
+): service is RubricTemplateCriteriaServiceLike {
+    if (!service) return false;
+    return (
+        typeof service.createMany === 'function' ||
+        typeof service.create === 'function'
+    );
+}
+
 function isDefenseSchedulePanelistsSegment(value: string | undefined): boolean {
     if (!value) return false;
     return (
@@ -1175,13 +1185,21 @@ async function createRubricTemplateCriteriaForTemplate(
     if (criteriaInputs.length === 0) return [];
 
     if (typeof service.createMany === 'function') {
-        try {
-            const rows = await service.createMany(
-                criteriaInputs.map((item) => ({ ...item, template_id: templateId })),
-            );
-            if (Array.isArray(rows)) return rows;
-        } catch {
-            // fallback to create(...)
+        let lastCreateManyError: unknown = null;
+
+        for (const key of RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS) {
+            try {
+                const rows = await service.createMany(
+                    criteriaInputs.map((item) => ({ ...item, [key]: templateId })),
+                );
+                if (Array.isArray(rows) && rows.length > 0) return rows;
+            } catch (error) {
+                lastCreateManyError = error;
+            }
+        }
+
+        if (typeof service.create !== 'function' && lastCreateManyError) {
+            throw lastCreateManyError;
         }
     }
 
@@ -1351,7 +1369,9 @@ export async function dispatchRubricTemplatesRequest(
                 return json400('criteria is required. Provide criteria[] or a single criterion payload.');
             }
 
-            if (criteriaController) {
+            let criteriaServiceError: unknown = null;
+
+            if (canWriteRubricTemplateCriteria(criteriaController)) {
                 try {
                     const created = await createRubricTemplateCriteriaForTemplate(
                         criteriaController,
@@ -1362,10 +1382,7 @@ export async function dispatchRubricTemplatesRequest(
                     if (created.length === 1) return json201({ item: created[0] });
                     return json201({ items: created });
                 } catch (error) {
-                    return NextResponse.json(
-                        { error: 'Failed to create rubric template criteria.', message: toErrorMessage(error) },
-                        { status: 500 },
-                    );
+                    criteriaServiceError = error;
                 }
             }
 
@@ -1377,6 +1394,16 @@ export async function dispatchRubricTemplatesRequest(
                 );
 
                 if (!updatedTemplate) {
+                    if (criteriaServiceError) {
+                        return NextResponse.json(
+                            {
+                                error: 'Failed to create rubric template criteria.',
+                                message: toErrorMessage(criteriaServiceError),
+                            },
+                            { status: 500 },
+                        );
+                    }
+
                     return NextResponse.json(
                         {
                             error: 'Rubric criteria endpoint is not configured.',
@@ -1393,12 +1420,32 @@ export async function dispatchRubricTemplatesRequest(
                         : { items: criteriaInputs };
 
                 return NextResponse.json(
-                    { ...createdPayload, template: updatedTemplate },
+                    {
+                        ...createdPayload,
+                        template: updatedTemplate,
+                        ...(criteriaServiceError
+                            ? {
+                                warning:
+                                    'Criteria service insert failed; criteria were appended through rubric template patch fallback.',
+                            }
+                            : {}),
+                    },
                     { status: 201 },
                 );
             } catch (error) {
+                const primaryMessage =
+                    criteriaServiceError != null
+                        ? toErrorMessage(criteriaServiceError)
+                        : null;
+                const fallbackMessage = toErrorMessage(error);
+
                 return NextResponse.json(
-                    { error: 'Failed to create rubric template criteria.', message: toErrorMessage(error) },
+                    {
+                        error: 'Failed to create rubric template criteria.',
+                        message: primaryMessage
+                            ? `Criteria service error: ${primaryMessage} | Fallback patch error: ${fallbackMessage}`
+                            : fallbackMessage,
+                    },
                     { status: 500 },
                 );
             }
