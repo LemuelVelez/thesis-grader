@@ -38,14 +38,14 @@ import {
 } from '../models/Model';
 import type { DatabaseServices, ListQuery } from '../services/Services';
 
+import { dispatchAdminRequest } from './AdminRoute';
 import {
-    dispatchAdminRequest,
     dispatchAuditLogsRequest,
     dispatchDefenseSchedulesRequest,
     dispatchRubricTemplatesRequest,
     dispatchSchedulePanelistsRequest,
     dispatchThesisGroupsRequest,
-} from './AdminRoute';
+} from './AdminRouteV2';
 import { dispatchPanelistRequest } from './PanelistRoute';
 import { dispatchStaffRequest } from './StaffRoute';
 import { dispatchStudentRequest } from './StudenRoute';
