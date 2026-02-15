@@ -97,6 +97,7 @@ interface RubricTemplatesServiceLike {
         where: Partial<RubricTemplateRow>,
         patch: RubricTemplatePatch,
     ) => Promise<RubricTemplateRow | null>;
+    delete?: (where: Partial<RubricTemplateRow>) => Promise<number>;
 }
 
 interface RubricTemplateCriteriaServiceLike {
@@ -1298,12 +1299,29 @@ export async function dispatchRubricTemplatesRequest(
     const method = req.method.toUpperCase();
 
     const findTemplateById = async (templateId: UUID): Promise<RubricTemplateRow | null> => {
-        if (typeof controller.findById !== 'function') return null;
-        try {
-            return await controller.findById(templateId);
-        } catch {
-            return null;
+        if (typeof controller.findById === 'function') {
+            try {
+                const row = await controller.findById(templateId);
+                if (row) return row;
+            } catch {
+                // fallback to findMany below
+            }
         }
+
+        try {
+            const rows = await controller.findMany({
+                where: { id: templateId },
+                limit: 1,
+            });
+
+            if (Array.isArray(rows) && rows.length > 0) {
+                return rows[0] ?? null;
+            }
+        } catch {
+            // no-op
+        }
+
+        return null;
     };
 
     if (tail.length === 0) {
@@ -1330,15 +1348,57 @@ export async function dispatchRubricTemplatesRequest(
     const id = tail[0];
     if (!id || !isUuidLike(id)) return json404Api();
 
+    if (tail.length === 1) {
+        const templateId = id as UUID;
+
+        const allow: string[] = ['GET'];
+        if (typeof controller.updateOne === 'function') {
+            allow.push('PATCH', 'PUT');
+        }
+        if (typeof controller.delete === 'function') {
+            allow.push('DELETE');
+        }
+        allow.push('OPTIONS');
+
+        if (method === 'GET') {
+            const item = await findTemplateById(templateId);
+            if (!item) return json404Entity('Rubric template');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            if (typeof controller.updateOne !== 'function') return json405(allow);
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const item = await controller.updateOne(
+                { id: templateId } as Partial<RubricTemplateRow>,
+                body as RubricTemplatePatch,
+            );
+
+            if (!item) return json404Entity('Rubric template');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json405(allow);
+
+            const deleted = await controller.delete({ id: templateId } as Partial<RubricTemplateRow>);
+            if (deleted === 0) return json404Entity('Rubric template');
+            return json200({ deleted });
+        }
+
+        return json405(allow);
+    }
+
     if (tail.length === 2 && isRubricTemplateCriteriaSegment(tail[1])) {
         const templateId = id as UUID;
 
         if (method === 'GET') {
             try {
                 const template = await findTemplateById(templateId);
-                if (typeof controller.findById === 'function' && !template) {
-                    return json404Entity('Rubric template');
-                }
+                if (!template) return json404Entity('Rubric template');
 
                 if (criteriaController) {
                     const items = await listRubricTemplateCriteriaByTemplate(criteriaController, templateId);
@@ -1360,9 +1420,7 @@ export async function dispatchRubricTemplatesRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const template = await findTemplateById(templateId);
-            if (typeof controller.findById === 'function' && !template) {
-                return json404Entity('Rubric template');
-            }
+            if (!template) return json404Entity('Rubric template');
 
             const criteriaInputs = parseRubricCriteriaInputsFromBody(body);
             if (criteriaInputs.length === 0) {
