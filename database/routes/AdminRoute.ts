@@ -20,12 +20,14 @@ import {
     toUserStatus,
 } from './Route';
 import {
-    dispatchAuditLogsRequest,
     dispatchDefenseSchedulesRequest,
-    dispatchRubricTemplatesRequest,
     dispatchSchedulePanelistsRequest,
+} from './AdminRouteV3';
+import {
+    dispatchAuditLogsRequest,
+    dispatchRubricTemplatesRequest,
     dispatchThesisGroupsRequest,
-} from './AdminRouteV2';
+} from './AdminRouteV4';
 
 async function dispatchAdminStudentProfileRequest(
     req: NextRequest,

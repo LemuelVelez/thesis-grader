@@ -40,12 +40,14 @@ import type { DatabaseServices, ListQuery } from '../services/Services';
 
 import { dispatchAdminRequest } from './AdminRoute';
 import {
-    dispatchAuditLogsRequest,
     dispatchDefenseSchedulesRequest,
-    dispatchRubricTemplatesRequest,
     dispatchSchedulePanelistsRequest,
+} from './AdminRouteV3';
+import {
+    dispatchAuditLogsRequest,
+    dispatchRubricTemplatesRequest,
     dispatchThesisGroupsRequest,
-} from './AdminRouteV2';
+} from './AdminRouteV4';
 import { dispatchPanelistRequest } from './PanelistRoute';
 import { dispatchStaffRequest } from './StaffRoute';
 import { dispatchStudentRequest } from './StudenRoute';
