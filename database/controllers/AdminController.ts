@@ -104,6 +104,13 @@ export class AdminController {
         return this.enrichDefenseSchedule(row);
     }
 
+    // Backward-compatible alias used by routes expecting this method name.
+    async getDefenseScheduleDetailed(
+        id: UUID,
+    ): Promise<AdminDefenseScheduleView | null> {
+        return this.getDefenseScheduleByIdDetailed(id);
+    }
+
     async getDefenseSchedules(query: ListQuery<DefenseScheduleRow> = {}): Promise<DefenseScheduleRow[]> {
         return this.services.defense_schedules.findMany(query);
     }
