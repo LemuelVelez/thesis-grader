@@ -31,6 +31,26 @@ function normalizeNullableString(value: unknown): string | null | undefined {
     return trimmed.length > 0 ? trimmed : null;
 }
 
+function extractErrorCode(error: unknown): string | null {
+    if (!error || typeof error !== 'object') return null;
+    const maybeCode = (error as { code?: unknown }).code;
+    return typeof maybeCode === 'string' && maybeCode.trim().length > 0
+        ? maybeCode.trim()
+        : null;
+}
+
+function isUniqueViolationLike(error: unknown): boolean {
+    const code = extractErrorCode(error);
+    if (code === '23505') return true;
+
+    if (error instanceof Error) {
+        const msg = error.message.toLowerCase();
+        return msg.includes('duplicate key') || msg.includes('unique constraint');
+    }
+
+    return false;
+}
+
 export type CreateAdminInput = Omit<UserInsert, 'role'>;
 export type UpdateAdminInput = Omit<UserPatch, 'role'>;
 
@@ -207,61 +227,77 @@ export class AdminController {
         userId: UUID,
         input: UpsertStudentProfileInput = {},
     ): Promise<UpsertStudentProfileResult | null> {
-        const user = await this.services.users.findById(userId);
-        if (!user) return null;
+        return this.services.transaction(async (txServices) => {
+            const user = await txServices.users.findById(userId);
+            if (!user) return null;
 
-        let roleUpdated = false;
-        if (user.role !== 'student') {
-            const updatedUser = await this.services.users.updateOne(
-                { id: userId },
-                { role: 'student' },
-            );
-            if (!updatedUser) return null;
-            roleUpdated = updatedUser.role === 'student';
-        }
+            let roleUpdated = false;
+            if (user.role !== 'student') {
+                const updatedUser = await txServices.users.updateOne(
+                    { id: userId },
+                    { role: 'student' },
+                );
+                if (!updatedUser) return null;
+                roleUpdated = updatedUser.role === 'student';
+            }
 
-        const normalizedProgram = normalizeNullableString(input.program);
-        const normalizedSection = normalizeNullableString(input.section);
+            const normalizedProgram = normalizeNullableString(input.program);
+            const normalizedSection = normalizeNullableString(input.section);
 
-        const existing = await this.services.students.findByUserId(userId);
+            const existing = await txServices.students.findByUserId(userId);
 
-        const patch = stripUndefined<StudentPatch>({
-            program: normalizedProgram,
-            section: normalizedSection,
-        }) as StudentPatch;
+            const patch = stripUndefined<StudentPatch>({
+                program: normalizedProgram,
+                section: normalizedSection,
+            }) as StudentPatch;
 
-        if (existing) {
-            if (Object.keys(patch).length === 0) {
+            if (existing) {
+                if (Object.keys(patch).length === 0) {
+                    return {
+                        item: existing,
+                        created: false,
+                        roleUpdated,
+                    };
+                }
+
+                const updated = await txServices.students.updateOne(
+                    { user_id: userId },
+                    patch,
+                );
+
                 return {
-                    item: existing,
+                    item: updated ?? existing,
                     created: false,
                     roleUpdated,
                 };
             }
 
-            const updated = await this.services.students.updateOne(
-                { user_id: userId },
-                patch,
-            );
+            try {
+                const created = await txServices.students.create({
+                    user_id: userId,
+                    program: normalizedProgram ?? null,
+                    section: normalizedSection ?? null,
+                } as StudentInsert);
 
-            return {
-                item: updated ?? existing,
-                created: false,
-                roleUpdated,
-            };
-        }
-
-        const created = await this.services.students.create({
-            user_id: userId,
-            program: normalizedProgram ?? null,
-            section: normalizedSection ?? null,
-        } as StudentInsert);
-
-        return {
-            item: created,
-            created: true,
-            roleUpdated,
-        };
+                return {
+                    item: created,
+                    created: true,
+                    roleUpdated,
+                };
+            } catch (error) {
+                if (isUniqueViolationLike(error)) {
+                    const racedExisting = await txServices.students.findByUserId(userId);
+                    if (racedExisting) {
+                        return {
+                            item: racedExisting,
+                            created: false,
+                            roleUpdated,
+                        };
+                    }
+                }
+                throw error;
+            }
+        });
     }
 
     /* --------------------------------- DELETE -------------------------------- */

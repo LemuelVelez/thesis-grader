@@ -50,7 +50,7 @@ import {
 } from './AdminRouteV4';
 import { dispatchPanelistRequest } from './PanelistRoute';
 import { dispatchStaffRequest } from './StaffRoute';
-import { dispatchStudentRequest } from './StudenRoute';
+import { dispatchStudentRequest } from './StudentRoute';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -1375,7 +1375,9 @@ export async function dispatchApiRequest(
             return dispatchRubricTemplatesRequest(req, tail, services);
 
         case 'thesis-groups':
-            return dispatchThesisGroupsRequest(req, tail, services);
+            return dispatchThesisGroupsRequest(req, tail, services, {
+                autoCreateMissingStudentProfile: true,
+            });
 
         case 'audit-logs':
             return dispatchAuditLogsRequest(req, tail, services);

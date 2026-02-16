@@ -113,8 +113,14 @@ interface RubricTemplatesServiceLike {
 interface RubricTemplateCriteriaServiceLike {
     listByTemplate?: (templateId: UUID) => Promise<Record<string, unknown>[]>;
     findMany?: (query?: unknown) => Promise<Record<string, unknown>[]>;
+    findById?: (id: UUID) => Promise<Record<string, unknown> | null>;
     create?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
     createMany?: (input: Record<string, unknown>[]) => Promise<Record<string, unknown>[]>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: Record<string, unknown>,
+    ) => Promise<Record<string, unknown> | null>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
 }
 
 function canWriteRubricTemplateCriteria(
@@ -1252,6 +1258,14 @@ const RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS = [
     'rubricId',
 ] as const;
 
+const RUBRIC_CRITERION_ID_CANDIDATE_KEYS = [
+    'id',
+    'criterion_id',
+    'criteria_id',
+    'rubric_criterion_id',
+    'rubricCriterionId',
+] as const;
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1264,6 +1278,39 @@ function isRubricTemplateCriteriaSegment(value: string | undefined): boolean {
         value === 'rubric-criteria' ||
         value === 'rubric-criterion'
     );
+}
+
+function hasOwnKey(obj: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function readFirstDefined(
+    obj: Record<string, unknown>,
+    keys: readonly string[],
+): unknown {
+    for (const key of keys) {
+        if (hasOwnKey(obj, key)) return obj[key];
+    }
+    return undefined;
+}
+
+function toNullableTrimmedString(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) return null;
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
 }
 
 function parseRubricCriteriaInputsFromBody(body: Record<string, unknown>): Record<string, unknown>[] {
@@ -1307,6 +1354,180 @@ function parseRubricCriteriaInputsFromBody(body: Record<string, unknown>): Recor
     delete clone.row;
 
     return Object.keys(clone).length > 0 ? [clone] : [];
+}
+
+function normalizeRubricCriterionCreateInput(
+    input: Record<string, unknown>,
+): { item: Record<string, unknown> | null; error: string | null } {
+    const criterionRaw = readFirstDefined(input, [
+        'criterion',
+        'title',
+        'name',
+        'label',
+    ]);
+    const criterion = toNonEmptyTrimmedString(criterionRaw);
+    if (!criterion) {
+        return {
+            item: null,
+            error: 'criterion/title/name is required and must be a non-empty string.',
+        };
+    }
+
+    const descriptionRaw = readFirstDefined(input, [
+        'description',
+        'details',
+        'note',
+        'notes',
+    ]);
+    const description = toNullableTrimmedString(descriptionRaw);
+
+    const weightRaw = readFirstDefined(input, [
+        'weight',
+        'percentage',
+        'percent',
+        'points',
+    ]);
+    const weight = toFiniteNumber(weightRaw);
+    if (weight === null) {
+        return {
+            item: null,
+            error: 'weight/percentage is required and must be numeric.',
+        };
+    }
+
+    const minRaw = readFirstDefined(input, ['min_score', 'minScore', 'min']);
+    const maxRaw = readFirstDefined(input, ['max_score', 'maxScore', 'max']);
+
+    const minScore = minRaw === undefined ? 1 : toFiniteNumber(minRaw);
+    const maxScore = maxRaw === undefined ? 5 : toFiniteNumber(maxRaw);
+
+    if (minScore === null || maxScore === null) {
+        return {
+            item: null,
+            error: 'min_score/max_score must be numeric when provided.',
+        };
+    }
+
+    if (minScore > maxScore) {
+        return {
+            item: null,
+            error: 'min_score cannot be greater than max_score.',
+        };
+    }
+
+    return {
+        item: {
+            criterion,
+            description: description ?? null,
+            weight,
+            min_score: minScore,
+            max_score: maxScore,
+        },
+        error: null,
+    };
+}
+
+function normalizeRubricCriterionPatchInput(
+    input: Record<string, unknown>,
+): { patch: Record<string, unknown> | null; error: string | null } {
+    const patch: Record<string, unknown> = {};
+
+    const hasCriterion = ['criterion', 'title', 'name', 'label'].some((key) =>
+        hasOwnKey(input, key),
+    );
+    if (hasCriterion) {
+        const criterion = toNonEmptyTrimmedString(
+            readFirstDefined(input, ['criterion', 'title', 'name', 'label']),
+        );
+        if (!criterion) {
+            return {
+                patch: null,
+                error: 'criterion/title/name must be a non-empty string.',
+            };
+        }
+        patch.criterion = criterion;
+    }
+
+    const hasDescription = ['description', 'details', 'note', 'notes'].some((key) =>
+        hasOwnKey(input, key),
+    );
+    if (hasDescription) {
+        const description = toNullableTrimmedString(
+            readFirstDefined(input, ['description', 'details', 'note', 'notes']),
+        );
+        if (description === undefined) {
+            return {
+                patch: null,
+                error: 'description/details must be a string or null.',
+            };
+        }
+        patch.description = description;
+    }
+
+    const hasWeight = ['weight', 'percentage', 'percent', 'points'].some((key) =>
+        hasOwnKey(input, key),
+    );
+    if (hasWeight) {
+        const weight = toFiniteNumber(
+            readFirstDefined(input, ['weight', 'percentage', 'percent', 'points']),
+        );
+        if (weight === null) {
+            return {
+                patch: null,
+                error: 'weight/percentage must be numeric.',
+            };
+        }
+        patch.weight = weight;
+    }
+
+    const hasMin = ['min_score', 'minScore', 'min'].some((key) => hasOwnKey(input, key));
+    if (hasMin) {
+        const minScore = toFiniteNumber(
+            readFirstDefined(input, ['min_score', 'minScore', 'min']),
+        );
+        if (minScore === null) {
+            return {
+                patch: null,
+                error: 'min_score must be numeric.',
+            };
+        }
+        patch.min_score = minScore;
+    }
+
+    const hasMax = ['max_score', 'maxScore', 'max'].some((key) => hasOwnKey(input, key));
+    if (hasMax) {
+        const maxScore = toFiniteNumber(
+            readFirstDefined(input, ['max_score', 'maxScore', 'max']),
+        );
+        if (maxScore === null) {
+            return {
+                patch: null,
+                error: 'max_score must be numeric.',
+            };
+        }
+        patch.max_score = maxScore;
+    }
+
+    if (
+        typeof patch.min_score === 'number' &&
+        typeof patch.max_score === 'number' &&
+        patch.min_score > patch.max_score
+    ) {
+        return {
+            patch: null,
+            error: 'min_score cannot be greater than max_score.',
+        };
+    }
+
+    if (Object.keys(patch).length === 0) {
+        return {
+            patch: null,
+            error:
+                'No valid criterion fields were provided. Allowed fields: criterion, description, weight, min_score, max_score.',
+        };
+    }
+
+    return { patch, error: null };
 }
 
 function resolveRubricTemplateCriteriaService(
@@ -1356,6 +1577,188 @@ async function listRubricTemplateCriteriaByTemplate(
     }
 
     return [];
+}
+
+function extractRubricCriterionId(
+    row: Record<string, unknown>,
+): string | null {
+    for (const key of RUBRIC_CRITERION_ID_CANDIDATE_KEYS) {
+        const parsed = toNonEmptyTrimmedString(row[key]);
+        if (parsed) return parsed;
+    }
+    return null;
+}
+
+function isRubricCriterionOwnedByTemplate(
+    row: Record<string, unknown>,
+    templateId: UUID,
+): boolean {
+    let foundTemplateKey = false;
+
+    for (const key of RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS) {
+        if (!hasOwnKey(row, key)) continue;
+        foundTemplateKey = true;
+
+        const value = toNonEmptyTrimmedString(row[key]);
+        if (!value) continue;
+
+        if (value.toLowerCase() === templateId.toLowerCase()) {
+            return true;
+        }
+    }
+
+    // If row shape does not expose template key, don't reject it solely on that.
+    return !foundTemplateKey;
+}
+
+async function findRubricTemplateCriterionByTemplateAndId(
+    service: RubricTemplateCriteriaServiceLike,
+    templateId: UUID,
+    criterionId: UUID,
+): Promise<Record<string, unknown> | null> {
+    const rows = await listRubricTemplateCriteriaByTemplate(service, templateId);
+    const fromList =
+        rows.find((row) => {
+            const id = extractRubricCriterionId(row);
+            if (!id) return false;
+            return id.toLowerCase() === criterionId.toLowerCase();
+        }) ?? null;
+
+    if (fromList) return fromList;
+
+    if (typeof service.findById === 'function') {
+        try {
+            const row = await service.findById(criterionId);
+            if (row && isRubricCriterionOwnedByTemplate(row, templateId)) {
+                return row;
+            }
+        } catch {
+            // no-op fallback
+        }
+    }
+
+    if (typeof service.findMany === 'function') {
+        for (const idKey of RUBRIC_CRITERION_ID_CANDIDATE_KEYS) {
+            for (const templateKey of RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS) {
+                try {
+                    const rowsByWhere = await service.findMany({
+                        where: { [idKey]: criterionId, [templateKey]: templateId },
+                        limit: 1,
+                    });
+
+                    if (Array.isArray(rowsByWhere) && rowsByWhere.length > 0) {
+                        const row = rowsByWhere[0];
+                        if (row && isRubricCriterionOwnedByTemplate(row, templateId)) return row;
+                    }
+                } catch {
+                    // try next where shape
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+async function updateRubricTemplateCriterion(
+    service: RubricTemplateCriteriaServiceLike,
+    templateId: UUID,
+    criterionId: UUID,
+    patch: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+    if (typeof service.updateOne !== 'function') {
+        throw new Error('Rubric template criteria service does not support update.');
+    }
+
+    let lastError: unknown = null;
+
+    const whereCandidates: Array<Record<string, unknown>> = [];
+
+    for (const idKey of RUBRIC_CRITERION_ID_CANDIDATE_KEYS) {
+        whereCandidates.push({ [idKey]: criterionId });
+
+        for (const templateKey of RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS) {
+            whereCandidates.push({
+                [idKey]: criterionId,
+                [templateKey]: templateId,
+            });
+        }
+    }
+
+    const seen = new Set<string>();
+
+    for (const where of whereCandidates) {
+        const signature = Object.entries(where)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => `${k}:${String(v)}`)
+            .join('|');
+
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+
+        try {
+            const updated = await service.updateOne(where, patch);
+            if (!updated) continue;
+
+            if (!isRubricCriterionOwnedByTemplate(updated, templateId)) {
+                continue;
+            }
+
+            return updated;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    if (lastError) throw lastError;
+    return null;
+}
+
+async function deleteRubricTemplateCriterion(
+    service: RubricTemplateCriteriaServiceLike,
+    templateId: UUID,
+    criterionId: UUID,
+): Promise<number> {
+    if (typeof service.delete !== 'function') {
+        throw new Error('Rubric template criteria service does not support delete.');
+    }
+
+    let lastError: unknown = null;
+
+    const whereCandidates: Array<Record<string, unknown>> = [];
+
+    for (const idKey of RUBRIC_CRITERION_ID_CANDIDATE_KEYS) {
+        whereCandidates.push({ [idKey]: criterionId });
+
+        for (const templateKey of RUBRIC_TEMPLATE_ID_CANDIDATE_KEYS) {
+            whereCandidates.push({
+                [idKey]: criterionId,
+                [templateKey]: templateId,
+            });
+        }
+    }
+
+    const seen = new Set<string>();
+
+    for (const where of whereCandidates) {
+        const signature = Object.entries(where)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => `${k}:${String(v)}`)
+            .join('|');
+
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+
+        try {
+            const deleted = await service.delete(where);
+            if (deleted > 0) return deleted;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    if (lastError) throw lastError;
+    return 0;
 }
 
 async function createRubricTemplateCriteriaForTemplate(
@@ -1602,9 +2005,18 @@ export async function dispatchRubricTemplatesRequest(
             const template = await findTemplateById(templateId);
             if (!template) return json404Entity('Rubric template');
 
-            const criteriaInputs = parseRubricCriteriaInputsFromBody(body);
-            if (criteriaInputs.length === 0) {
+            const rawCriteriaInputs = parseRubricCriteriaInputsFromBody(body);
+            if (rawCriteriaInputs.length === 0) {
                 return json400('criteria is required. Provide criteria[] or a single criterion payload.');
+            }
+
+            const criteriaInputs: Record<string, unknown>[] = [];
+            for (let i = 0; i < rawCriteriaInputs.length; i += 1) {
+                const normalized = normalizeRubricCriterionCreateInput(rawCriteriaInputs[i]);
+                if (!normalized.item) {
+                    return json400(`Invalid criterion at index ${i}: ${normalized.error ?? 'Invalid payload.'}`);
+                }
+                criteriaInputs.push(normalized.item);
             }
 
             let criteriaServiceError: unknown = null;
@@ -1690,6 +2102,120 @@ export async function dispatchRubricTemplatesRequest(
         }
 
         return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    if (tail.length === 3 && isRubricTemplateCriteriaSegment(tail[1])) {
+        const templateId = id as UUID;
+        const criterionIdRaw = tail[2];
+
+        if (!criterionIdRaw || !isUuidLike(criterionIdRaw)) {
+            return json400('criterionId must be a valid UUID.');
+        }
+
+        const criterionId = criterionIdRaw as UUID;
+
+        const allow: string[] = ['GET', 'OPTIONS'];
+        if (criteriaController?.updateOne) allow.push('PATCH', 'PUT');
+        if (criteriaController?.delete) allow.push('DELETE');
+
+        const template = await findTemplateById(templateId);
+        if (!template) return json404Entity('Rubric template');
+
+        if (!criteriaController) {
+            return NextResponse.json(
+                {
+                    error: 'Rubric criteria endpoint is not configured.',
+                    message: 'No rubric criteria service was found in DatabaseServices.',
+                },
+                { status: 500 },
+            );
+        }
+
+        if (method === 'GET') {
+            try {
+                const item = await findRubricTemplateCriterionByTemplateAndId(
+                    criteriaController,
+                    templateId,
+                    criterionId,
+                );
+                if (!item) return json404Entity('Rubric criterion');
+                return json200({ item });
+            } catch (error) {
+                return NextResponse.json(
+                    { error: 'Failed to fetch rubric criterion.', message: toErrorMessage(error) },
+                    { status: 500 },
+                );
+            }
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            if (typeof criteriaController.updateOne !== 'function') {
+                return json405(allow);
+            }
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            try {
+                const existing = await findRubricTemplateCriterionByTemplateAndId(
+                    criteriaController,
+                    templateId,
+                    criterionId,
+                );
+                if (!existing) return json404Entity('Rubric criterion');
+
+                const normalized = normalizeRubricCriterionPatchInput(body);
+                if (!normalized.patch) {
+                    return json400(normalized.error ?? 'Invalid rubric criterion patch payload.');
+                }
+
+                const updated = await updateRubricTemplateCriterion(
+                    criteriaController,
+                    templateId,
+                    criterionId,
+                    normalized.patch,
+                );
+
+                if (!updated) return json404Entity('Rubric criterion');
+                return json200({ item: updated });
+            } catch (error) {
+                return NextResponse.json(
+                    { error: 'Failed to update rubric criterion.', message: toErrorMessage(error) },
+                    { status: 500 },
+                );
+            }
+        }
+
+        if (method === 'DELETE') {
+            if (typeof criteriaController.delete !== 'function') {
+                return json405(allow);
+            }
+
+            try {
+                const existing = await findRubricTemplateCriterionByTemplateAndId(
+                    criteriaController,
+                    templateId,
+                    criterionId,
+                );
+                if (!existing) return json404Entity('Rubric criterion');
+
+                const deleted = await deleteRubricTemplateCriterion(
+                    criteriaController,
+                    templateId,
+                    criterionId,
+                );
+                if (deleted === 0) return json404Entity('Rubric criterion');
+
+                return json200({ deleted });
+            } catch (error) {
+                return NextResponse.json(
+                    { error: 'Failed to delete rubric criterion.', message: toErrorMessage(error) },
+                    { status: 500 },
+                );
+            }
+        }
+
+        return json405(allow);
     }
 
     return json404Api();
