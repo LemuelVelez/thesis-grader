@@ -30,8 +30,8 @@ import {
     type EvaluationStatus,
     type GroupMemberRow,
     type NotificationType,
-    type ThesisRole,
     type StudentRow,
+    type ThesisRole,
     type UserRow,
     type UserStatus,
     type UUID,
@@ -937,6 +937,8 @@ async function dispatchNotificationsRequest(
                 routes: {
                     create: 'POST /api/notifications',
                     broadcast: 'POST /api/notifications/broadcast',
+                    autoOptions: 'GET /api/notifications/auto/options?limit=30',
+                    autoDispatch: 'POST /api/notifications/auto/send',
                     getById: 'GET /api/notifications/:id',
                     update: 'PATCH|PUT /api/notifications/:id',
                     remove: 'DELETE /api/notifications/:id',
@@ -960,6 +962,35 @@ async function dispatchNotificationsRequest(
         }
 
         return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    if (tail[0] === 'auto') {
+        const isOptionsPath = tail.length === 1 || (tail.length === 2 && tail[1] === 'options');
+        const isSendPath = tail.length === 1 || (tail.length === 2 && tail[1] === 'send');
+
+        if (isOptionsPath && method === 'GET') {
+            const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit')) ?? 30;
+            const item = await controller.getAutomationOptions(limit);
+            return json200({ item });
+        }
+
+        if (isSendPath && method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            try {
+                const result = await controller.dispatchAutomaticFromSelection(body);
+                return NextResponse.json(result, { status: 201 });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        if (isOptionsPath || isSendPath) {
+            return json405(['GET', 'POST', 'OPTIONS']);
+        }
+
+        return json404Api();
     }
 
     if (tail.length === 1 && tail[0] === 'broadcast') {
