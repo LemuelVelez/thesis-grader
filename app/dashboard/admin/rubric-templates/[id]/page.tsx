@@ -78,6 +78,8 @@ type SelectOption = {
 }
 
 const NO_DESCRIPTION_SELECT_VALUE = "__none__"
+const OTHER_DESCRIPTION_SELECT_VALUE = "__other_description__"
+const OTHER_SCORE_SELECT_VALUE = "__other_score__"
 
 const TEMPLATE_NAME_OPTIONS: SelectOption[] = [
     {
@@ -143,7 +145,6 @@ const CRITERION_OPTIONS: SelectOption[] = [
         label: "Project Presentation",
         payload: "Project Presentation",
     },
-    // NOTE: kept in source list, but table/add flow below intentionally uses select-only options (without "other")
     {
         value: "other",
         label: "Others (please specify)",
@@ -161,7 +162,6 @@ const WEIGHT_OPTIONS: SelectOption[] = [
     { value: "15", label: "15%", payload: "15" },
     { value: "10", label: "10%", payload: "10" },
     { value: "5", label: "5%", payload: "5" },
-    // NOTE: kept in source list, but table/add flow below intentionally uses select-only options (without "other")
     { value: "other", label: "Others (please specify)", payload: "" },
 ]
 
@@ -391,11 +391,18 @@ export default function AdminRubricTemplateDetailsPage() {
     const [newCriterionSelection, setNewCriterionSelection] = React.useState<string>(
         CRITERION_SELECT_OPTIONS[0]?.value ?? "",
     )
+    const [newCriterionOther, setNewCriterionOther] = React.useState("")
     const [newCriterionWeightSelection, setNewCriterionWeightSelection] = React.useState<string>(
         WEIGHT_SELECT_OPTIONS[0]?.value ?? "",
     )
+    const [newCriterionWeightOther, setNewCriterionWeightOther] = React.useState("")
     const [newCriterionDescriptionSelection, setNewCriterionDescriptionSelection] =
         React.useState<string>(NO_DESCRIPTION_SELECT_VALUE)
+    const [newCriterionDescriptionOther, setNewCriterionDescriptionOther] = React.useState("")
+    const [newCriterionMinScoreSelection, setNewCriterionMinScoreSelection] = React.useState<string>("0")
+    const [newCriterionMaxScoreSelection, setNewCriterionMaxScoreSelection] = React.useState<string>("3")
+    const [newCriterionMinScoreOther, setNewCriterionMinScoreOther] = React.useState("")
+    const [newCriterionMaxScoreOther, setNewCriterionMaxScoreOther] = React.useState("")
 
     const [newCriterion, setNewCriterion] = React.useState<CriterionForm>({
         criterion: getOptionPayload(CRITERION_SELECT_OPTIONS, CRITERION_SELECT_OPTIONS[0]?.value ?? ""),
@@ -604,14 +611,61 @@ export default function AdminRubricTemplateDetailsPage() {
     const addCriterion = React.useCallback(async () => {
         if (!templateId) return
 
-        const criterion = getOptionPayload(CRITERION_SELECT_OPTIONS, newCriterionSelection).trim()
-        const description = (fromDescriptionSelectValue(newCriterionDescriptionSelection) ?? "").trim()
-        const weight = toNumber(getOptionPayload(WEIGHT_SELECT_OPTIONS, newCriterionWeightSelection), 0)
-        const minScore = Math.floor(toNumber(newCriterion.min_score, 0))
-        const maxScore = Math.floor(toNumber(newCriterion.max_score, 3))
+        const criterion =
+            newCriterionSelection === "other"
+                ? newCriterionOther.trim()
+                : getOptionPayload(CRITERION_OPTIONS, newCriterionSelection).trim()
+
+        const description =
+            newCriterionDescriptionSelection === OTHER_DESCRIPTION_SELECT_VALUE
+                ? newCriterionDescriptionOther.trim()
+                : (fromDescriptionSelectValue(newCriterionDescriptionSelection) ?? "").trim()
+
+        const weightRaw =
+            newCriterionWeightSelection === "other"
+                ? newCriterionWeightOther.trim()
+                : getOptionPayload(WEIGHT_OPTIONS, newCriterionWeightSelection).trim()
+
+        const parsedWeight = toNumber(weightRaw, Number.NaN)
+
+        const minScoreRaw =
+            newCriterionMinScoreSelection === OTHER_SCORE_SELECT_VALUE
+                ? newCriterionMinScoreOther.trim()
+                : newCriterionMinScoreSelection
+        const maxScoreRaw =
+            newCriterionMaxScoreSelection === OTHER_SCORE_SELECT_VALUE
+                ? newCriterionMaxScoreOther.trim()
+                : newCriterionMaxScoreSelection
+
+        const minScoreParsed = toNumber(minScoreRaw, Number.NaN)
+        const maxScoreParsed = toNumber(maxScoreRaw, Number.NaN)
 
         if (!criterion) {
             const message = "Criterion title is required."
+            setError(message)
+            toast.error(message)
+            return
+        }
+
+        if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) {
+            const message = "Weight is required and must be a valid number greater than 0."
+            setError(message)
+            toast.error(message)
+            return
+        }
+
+        if (!Number.isFinite(minScoreParsed) || !Number.isFinite(maxScoreParsed)) {
+            const message = "Min score and max score must be valid numeric values."
+            setError(message)
+            toast.error(message)
+            return
+        }
+
+        const minScore = Math.floor(minScoreParsed)
+        const maxScore = Math.floor(maxScoreParsed)
+
+        if (minScore < 0 || maxScore < 0) {
+            const message = "Min score and max score cannot be negative."
             setError(message)
             toast.error(message)
             return
@@ -634,7 +688,7 @@ export default function AdminRubricTemplateDetailsPage() {
                 body: JSON.stringify({
                     criterion,
                     description: description.length > 0 ? description : null,
-                    weight,
+                    weight: parsedWeight,
                     min_score: minScore,
                     max_score: maxScore,
                 }),
@@ -654,8 +708,15 @@ export default function AdminRubricTemplateDetailsPage() {
             }
 
             setNewCriterionSelection(CRITERION_SELECT_OPTIONS[0]?.value ?? "")
+            setNewCriterionOther("")
             setNewCriterionWeightSelection(WEIGHT_SELECT_OPTIONS[0]?.value ?? "")
+            setNewCriterionWeightOther("")
             setNewCriterionDescriptionSelection(NO_DESCRIPTION_SELECT_VALUE)
+            setNewCriterionDescriptionOther("")
+            setNewCriterionMinScoreSelection("0")
+            setNewCriterionMaxScoreSelection("3")
+            setNewCriterionMinScoreOther("")
+            setNewCriterionMaxScoreOther("")
             setNewCriterion({
                 criterion: getOptionPayload(CRITERION_SELECT_OPTIONS, CRITERION_SELECT_OPTIONS[0]?.value ?? ""),
                 description: "",
@@ -677,10 +738,15 @@ export default function AdminRubricTemplateDetailsPage() {
         }
     }, [
         loadTemplateAndCriteria,
-        newCriterion.max_score,
-        newCriterion.min_score,
+        newCriterionDescriptionOther,
         newCriterionDescriptionSelection,
+        newCriterionMaxScoreOther,
+        newCriterionMaxScoreSelection,
+        newCriterionMinScoreOther,
+        newCriterionMinScoreSelection,
+        newCriterionOther,
         newCriterionSelection,
+        newCriterionWeightOther,
         newCriterionWeightSelection,
         templateId,
     ])
@@ -1019,7 +1085,16 @@ export default function AdminRubricTemplateDetailsPage() {
                                             value={newCriterionSelection}
                                             onValueChange={(value) => {
                                                 setNewCriterionSelection(value)
-                                                const payload = getOptionPayload(CRITERION_SELECT_OPTIONS, value)
+
+                                                if (value === "other") {
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        criterion: newCriterionOther.trim(),
+                                                    }))
+                                                    return
+                                                }
+
+                                                const payload = getOptionPayload(CRITERION_OPTIONS, value)
                                                 setNewCriterion((prev) => ({ ...prev, criterion: payload }))
                                             }}
                                             disabled={addingCriterion}
@@ -1028,13 +1103,29 @@ export default function AdminRubricTemplateDetailsPage() {
                                                 <SelectValue placeholder="Select criterion" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {CRITERION_SELECT_OPTIONS.map((option) => (
+                                                {CRITERION_OPTIONS.map((option) => (
                                                     <SelectItem key={option.value} value={option.value}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
+
+                                        {newCriterionSelection === "other" ? (
+                                            <Input
+                                                placeholder="Please specify criterion title"
+                                                value={newCriterionOther}
+                                                onChange={(e) => {
+                                                    const value = e.target.value
+                                                    setNewCriterionOther(value)
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        criterion: value,
+                                                    }))
+                                                }}
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
                                     </div>
 
                                     <div className="space-y-2">
@@ -1043,6 +1134,15 @@ export default function AdminRubricTemplateDetailsPage() {
                                             value={newCriterionDescriptionSelection}
                                             onValueChange={(value) => {
                                                 setNewCriterionDescriptionSelection(value)
+
+                                                if (value === OTHER_DESCRIPTION_SELECT_VALUE) {
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        description: newCriterionDescriptionOther,
+                                                    }))
+                                                    return
+                                                }
+
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
                                                     description: fromDescriptionSelectValue(value) ?? "",
@@ -1066,8 +1166,27 @@ export default function AdminRubricTemplateDetailsPage() {
                                                         </SelectItem>
                                                     )
                                                 })}
+                                                <SelectItem value={OTHER_DESCRIPTION_SELECT_VALUE}>
+                                                    Others (please specify)
+                                                </SelectItem>
                                             </SelectContent>
                                         </Select>
+
+                                        {newCriterionDescriptionSelection === OTHER_DESCRIPTION_SELECT_VALUE ? (
+                                            <Input
+                                                placeholder="Please specify criterion description"
+                                                value={newCriterionDescriptionOther}
+                                                onChange={(e) => {
+                                                    const value = e.target.value
+                                                    setNewCriterionDescriptionOther(value)
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        description: value,
+                                                    }))
+                                                }}
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
                                     </div>
                                 </div>
 
@@ -1078,10 +1197,19 @@ export default function AdminRubricTemplateDetailsPage() {
                                             value={newCriterionWeightSelection}
                                             onValueChange={(value) => {
                                                 setNewCriterionWeightSelection(value)
+
+                                                if (value === "other") {
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        weight: toNumber(newCriterionWeightOther, prev.weight),
+                                                    }))
+                                                    return
+                                                }
+
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
                                                     weight: toNumber(
-                                                        getOptionPayload(WEIGHT_SELECT_OPTIONS, value),
+                                                        getOptionPayload(WEIGHT_OPTIONS, value),
                                                         prev.weight,
                                                     ),
                                                 }))
@@ -1092,25 +1220,48 @@ export default function AdminRubricTemplateDetailsPage() {
                                                 <SelectValue placeholder="Select weight" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {WEIGHT_SELECT_OPTIONS.map((option) => (
+                                                {WEIGHT_OPTIONS.map((option) => (
                                                     <SelectItem key={option.value} value={option.value}>
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
+
+                                        {newCriterionWeightSelection === "other" ? (
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                step="0.01"
+                                                placeholder="Please specify weight (e.g., 12.5)"
+                                                value={newCriterionWeightOther}
+                                                onChange={(e) => {
+                                                    const value = e.target.value
+                                                    setNewCriterionWeightOther(value)
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        weight: toNumber(value, prev.weight),
+                                                    }))
+                                                }}
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
                                     </div>
 
                                     <div className="space-y-2">
                                         <p className="text-xs font-medium text-muted-foreground">Min score</p>
                                         <Select
-                                            value={String(newCriterion.min_score)}
-                                            onValueChange={(value) =>
+                                            value={newCriterionMinScoreSelection}
+                                            onValueChange={(value) => {
+                                                setNewCriterionMinScoreSelection(value)
+
+                                                if (value === OTHER_SCORE_SELECT_VALUE) return
+
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
                                                     min_score: toNumber(value, prev.min_score),
                                                 }))
-                                            }
+                                            }}
                                             disabled={addingCriterion}
                                         >
                                             <SelectTrigger>
@@ -1122,20 +1273,45 @@ export default function AdminRubricTemplateDetailsPage() {
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
+                                                <SelectItem value={OTHER_SCORE_SELECT_VALUE}>
+                                                    Others (please specify)
+                                                </SelectItem>
                                             </SelectContent>
                                         </Select>
+
+                                        {newCriterionMinScoreSelection === OTHER_SCORE_SELECT_VALUE ? (
+                                            <Input
+                                                type="number"
+                                                step={1}
+                                                placeholder="Please specify min score"
+                                                value={newCriterionMinScoreOther}
+                                                onChange={(e) => {
+                                                    const value = e.target.value
+                                                    setNewCriterionMinScoreOther(value)
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        min_score: toNumber(value, prev.min_score),
+                                                    }))
+                                                }}
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
                                     </div>
 
                                     <div className="space-y-2">
                                         <p className="text-xs font-medium text-muted-foreground">Max score</p>
                                         <Select
-                                            value={String(newCriterion.max_score)}
-                                            onValueChange={(value) =>
+                                            value={newCriterionMaxScoreSelection}
+                                            onValueChange={(value) => {
+                                                setNewCriterionMaxScoreSelection(value)
+
+                                                if (value === OTHER_SCORE_SELECT_VALUE) return
+
                                                 setNewCriterion((prev) => ({
                                                     ...prev,
                                                     max_score: toNumber(value, prev.max_score),
                                                 }))
-                                            }
+                                            }}
                                             disabled={addingCriterion}
                                         >
                                             <SelectTrigger>
@@ -1147,8 +1323,29 @@ export default function AdminRubricTemplateDetailsPage() {
                                                         {option.label}
                                                     </SelectItem>
                                                 ))}
+                                                <SelectItem value={OTHER_SCORE_SELECT_VALUE}>
+                                                    Others (please specify)
+                                                </SelectItem>
                                             </SelectContent>
                                         </Select>
+
+                                        {newCriterionMaxScoreSelection === OTHER_SCORE_SELECT_VALUE ? (
+                                            <Input
+                                                type="number"
+                                                step={1}
+                                                placeholder="Please specify max score"
+                                                value={newCriterionMaxScoreOther}
+                                                onChange={(e) => {
+                                                    const value = e.target.value
+                                                    setNewCriterionMaxScoreOther(value)
+                                                    setNewCriterion((prev) => ({
+                                                        ...prev,
+                                                        max_score: toNumber(value, prev.max_score),
+                                                    }))
+                                                }}
+                                                disabled={addingCriterion}
+                                            />
+                                        ) : null}
                                     </div>
                                 </div>
 

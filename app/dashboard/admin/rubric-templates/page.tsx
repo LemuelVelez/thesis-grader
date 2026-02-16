@@ -7,6 +7,14 @@ import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
     Select,
@@ -32,6 +40,17 @@ type RubricTemplate = {
     description: string | null
     created_at: string
     updated_at: string
+}
+
+type RubricCriterion = {
+    id: string
+    template_id: string
+    criterion: string
+    description: string | null
+    weight: number
+    min_score: number
+    max_score: number
+    created_at: string
 }
 
 type ActiveFilter = "all" | "active" | "inactive"
@@ -137,6 +156,27 @@ function normalizeTemplate(value: unknown): RubricTemplate | null {
     }
 }
 
+function normalizeCriterion(value: unknown): RubricCriterion | null {
+    if (!isRecord(value)) return null
+
+    const id = typeof value.id === "string" ? value.id : ""
+    const templateId = typeof value.template_id === "string" ? value.template_id : ""
+    const criterion = typeof value.criterion === "string" ? value.criterion : ""
+
+    if (!id || !templateId || !criterion) return null
+
+    return {
+        id,
+        template_id: templateId,
+        criterion,
+        description: typeof value.description === "string" ? value.description : null,
+        weight: toNumber(value.weight, 0),
+        min_score: toNumber(value.min_score, 0),
+        max_score: toNumber(value.max_score, 3),
+        created_at: typeof value.created_at === "string" ? value.created_at : "",
+    }
+}
+
 async function patchTemplateActive(templateId: string, active: boolean): Promise<RubricTemplate | null> {
     const candidateEndpoints = [
         `/api/rubric-templates/${templateId}`,
@@ -190,6 +230,18 @@ export default function AdminRubricTemplatesPage() {
 
     const [creating, setCreating] = React.useState(false)
     const [busyTemplateId, setBusyTemplateId] = React.useState<string | null>(null)
+
+    const [previewOpen, setPreviewOpen] = React.useState(false)
+    const [previewTemplate, setPreviewTemplate] = React.useState<RubricTemplate | null>(null)
+    const [previewCriteria, setPreviewCriteria] = React.useState<RubricCriterion[]>([])
+    const [previewLoading, setPreviewLoading] = React.useState(false)
+    const [previewError, setPreviewError] = React.useState<string | null>(null)
+    const [previewBusyTemplateId, setPreviewBusyTemplateId] = React.useState<string | null>(null)
+
+    const previewWeightTotal = React.useMemo(
+        () => previewCriteria.reduce((sum, item) => sum + toNumber(item.weight, 0), 0),
+        [previewCriteria],
+    )
 
     const loadTemplates = React.useCallback(async () => {
         setLoading(true)
@@ -348,6 +400,46 @@ export default function AdminRubricTemplatesPage() {
         },
         [busyTemplateId],
     )
+
+    const openTemplatePreview = React.useCallback(async (template: RubricTemplate) => {
+        setPreviewOpen(true)
+        setPreviewTemplate(template)
+        setPreviewCriteria([])
+        setPreviewError(null)
+        setPreviewLoading(true)
+        setPreviewBusyTemplateId(template.id)
+
+        try {
+            const res = await fetch(`/api/rubric-templates/${template.id}/criteria`, {
+                cache: "no-store",
+            })
+
+            if (res.ok) {
+                const data = await readJsonRecord(res)
+                const rawItems = Array.isArray(data.items) ? data.items : []
+                const normalized = rawItems
+                    .map((item) => normalizeCriterion(item))
+                    .filter((item): item is RubricCriterion => item !== null)
+
+                setPreviewCriteria(normalized)
+                return
+            }
+
+            if (res.status === 404) {
+                setPreviewCriteria([])
+                return
+            }
+
+            throw new Error(await readErrorMessage(res))
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to load template criteria."
+            setPreviewError(message)
+            toast.error(message)
+        } finally {
+            setPreviewLoading(false)
+            setPreviewBusyTemplateId(null)
+        }
+    }, [])
 
     return (
         <DashboardLayout
@@ -514,6 +606,7 @@ export default function AdminRubricTemplatesPage() {
                             ) : (
                                 filteredTemplates.map((template) => {
                                     const busy = busyTemplateId === template.id
+                                    const previewBusy = previewBusyTemplateId === template.id
 
                                     return (
                                         <TableRow key={template.id}>
@@ -559,6 +652,15 @@ export default function AdminRubricTemplatesPage() {
                                                     <Button
                                                         size="sm"
                                                         variant="outline"
+                                                        disabled={previewBusy}
+                                                        onClick={() => void openTemplatePreview(template)}
+                                                    >
+                                                        {previewBusy ? "Loading..." : "Preview"}
+                                                    </Button>
+
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
                                                         disabled={busy}
                                                         onClick={() => void toggleTemplateActive(template)}
                                                     >
@@ -578,6 +680,163 @@ export default function AdminRubricTemplatesPage() {
                     </Table>
                 </div>
             </div>
+
+            <Dialog
+                open={previewOpen}
+                onOpenChange={(open) => {
+                    setPreviewOpen(open)
+                    if (!open) {
+                        setPreviewError(null)
+                    }
+                }}
+            >
+                <DialogContent className="w-full max-w-5xl overflow-hidden p-0">
+                    <div className="max-h-[85vh] overflow-y-auto p-6">
+                        <DialogHeader className="pr-8">
+                            <DialogTitle>Final Template Preview</DialogTitle>
+                            <DialogDescription>
+                                Review the selected rubric template and its criteria list before opening full details.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {previewTemplate ? (
+                            <div className="mt-4 space-y-3 min-w-0">
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Template</p>
+                                        <p className="mt-1 text-sm font-medium wrap-break-word">
+                                            {previewTemplate.name}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Version</p>
+                                        <p className="mt-1 text-sm font-medium">v{previewTemplate.version}</p>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Status</p>
+                                        <p className="mt-1 text-sm font-medium">
+                                            {previewTemplate.active ? "Active" : "Inactive"}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {previewTemplate.description ? (
+                                    <div className="rounded-lg border bg-card p-3">
+                                        <p className="text-xs text-muted-foreground">Description</p>
+                                        <p className="mt-1 text-sm wrap-break-word">{previewTemplate.description}</p>
+                                    </div>
+                                ) : null}
+
+                                {previewLoading ? (
+                                    <div className="space-y-2 rounded-lg border bg-card p-3">
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                    </div>
+                                ) : previewError ? (
+                                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                                        {previewError}
+                                    </div>
+                                ) : previewCriteria.length === 0 ? (
+                                    <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+                                        No criteria found for this template yet.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3 min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs font-medium text-foreground">
+                                                {previewCriteria.length} criterion
+                                                {previewCriteria.length === 1 ? "" : "a"}
+                                            </span>
+                                            <span
+                                                className={[
+                                                    "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                    Math.abs(previewWeightTotal - 100) < 0.0001
+                                                        ? "border-primary/40 bg-primary/10 text-foreground"
+                                                        : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                                                ].join(" ")}
+                                            >
+                                                Total weight: {previewWeightTotal}%
+                                            </span>
+                                        </div>
+
+                                        <div className="min-w-0 overflow-x-auto rounded-lg border">
+                                            <Table className="w-full">
+                                                <TableHeader>
+                                                    <TableRow>
+                                                        <TableHead className="w-10 whitespace-nowrap">#</TableHead>
+                                                        <TableHead className="whitespace-nowrap">Criterion</TableHead>
+                                                        <TableHead className="w-24 whitespace-nowrap">Weight</TableHead>
+                                                        <TableHead className="w-20 whitespace-nowrap">Min</TableHead>
+                                                        <TableHead className="w-20 whitespace-nowrap">Max</TableHead>
+                                                        <TableHead className="whitespace-nowrap">Description</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {previewCriteria.map((criterion, index) => (
+                                                        <TableRow key={criterion.id}>
+                                                            <TableCell className="whitespace-nowrap">
+                                                                {index + 1}
+                                                            </TableCell>
+                                                            <TableCell className="font-medium whitespace-normal wrap-break-word">
+                                                                {criterion.criterion}
+                                                            </TableCell>
+                                                            <TableCell className="whitespace-nowrap">
+                                                                {criterion.weight}%
+                                                            </TableCell>
+                                                            <TableCell className="whitespace-nowrap">
+                                                                {criterion.min_score}
+                                                            </TableCell>
+                                                            <TableCell className="whitespace-nowrap">
+                                                                {criterion.max_score}
+                                                            </TableCell>
+                                                            <TableCell className="text-muted-foreground whitespace-normal wrap-break-word">
+                                                                {criterion.description || "—"}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="mt-4 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+                                Select a template to preview.
+                            </div>
+                        )}
+
+                        <DialogFooter className="mt-4 gap-2 sm:justify-between">
+                            <p className="text-xs text-muted-foreground">
+                                Tip: Use preview to quickly validate the final rubric list and scores.
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                    variant="outline"
+                                    onClick={() => {
+                                        if (!previewTemplate) return
+                                        void openTemplatePreview(previewTemplate)
+                                    }}
+                                    disabled={previewLoading || !previewTemplate}
+                                >
+                                    {previewLoading ? "Reloading..." : "Reload"}
+                                </Button>
+
+                                {previewTemplate ? (
+                                    <Button asChild onClick={() => setPreviewOpen(false)}>
+                                        <Link href={`/dashboard/admin/rubric-templates/${previewTemplate.id}`}>
+                                            Open full details
+                                        </Link>
+                                    </Button>
+                                ) : (
+                                    <Button disabled>Open full details</Button>
+                                )}
+                            </div>
+                        </DialogFooter>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </DashboardLayout>
     )
 }
