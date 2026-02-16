@@ -1,54 +1,13 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
-import { CalendarIcon } from "lucide-react"
-
 import DashboardLayout from "@/components/dashboard-layout"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-    Popover,
-    PopoverContent,
-    PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
+
+import { DefenseScheduleDeleteDialog } from "@/components/defense-schedules/defense-schedule-delete-dialog"
+import { DefenseScheduleFormDialog } from "@/components/defense-schedules/defense-schedule-form-dialog"
+import { DefenseSchedulesFiltersBar } from "@/components/defense-schedules/defense-schedules-filters-bar"
+import { DefenseSchedulesTable } from "@/components/defense-schedules/defense-schedules-table"
 
 type DefenseScheduleStatus =
     | "scheduled"
@@ -828,6 +787,17 @@ export default function AdminDefenseSchedulesPage() {
         setFormValues(makeInitialFormValues())
     }, [submitting])
 
+    const handleDialogOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open) {
+                closeEditor()
+                return
+            }
+            setDialogOpen(true)
+        },
+        [closeEditor],
+    )
+
     const handleSubmitSchedule = React.useCallback(async () => {
         if (submitting) return
 
@@ -914,50 +884,18 @@ export default function AdminDefenseSchedulesPage() {
             description="Create, edit, and manage all thesis defense schedules."
         >
             <div className="space-y-4">
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="flex flex-col gap-4">
-                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                            <Input
-                                placeholder="Search by schedule ID, group, rubric, room, status, creator, or panelist"
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full lg:max-w-xl"
-                            />
-
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Button variant="outline" onClick={() => void handleRefresh()} disabled={loading}>
-                                    Refresh
-                                </Button>
-                                <Button onClick={openCreateDialog}>Create Schedule</Button>
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {STATUS_FILTERS.map((status) => {
-                                    const active = statusFilter === status
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setStatusFilter(status)}
-                                        >
-                                            {toTitleCase(status)}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
-                        </div>
-
-                        <p className="text-sm text-muted-foreground">
-                            Showing{" "}
-                            <span className="font-semibold text-foreground">{filteredSchedules.length}</span> of{" "}
-                            <span className="font-semibold text-foreground">{schedules.length}</span> schedule(s).
-                        </p>
-                    </div>
-                </div>
+                <DefenseSchedulesFiltersBar
+                    search={search}
+                    onSearchChange={setSearch}
+                    statusFilter={statusFilter}
+                    onStatusFilterChange={setStatusFilter}
+                    statusFilters={STATUS_FILTERS}
+                    filteredCount={filteredSchedules.length}
+                    totalCount={schedules.length}
+                    loading={loading}
+                    onRefresh={() => void handleRefresh()}
+                    onCreate={openCreateDialog}
+                />
 
                 {error ? (
                     <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -965,403 +903,50 @@ export default function AdminDefenseSchedulesPage() {
                     </div>
                 ) : null}
 
-                <div className="overflow-x-auto rounded-lg border bg-card">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead className="min-w-48">Schedule ID</TableHead>
-                                <TableHead className="min-w-56">Group</TableHead>
-                                <TableHead className="min-w-44">Date &amp; Time</TableHead>
-                                <TableHead className="min-w-28">Room</TableHead>
-                                <TableHead className="min-w-28">Status</TableHead>
-                                <TableHead className="min-w-40">Updated</TableHead>
-                                <TableHead className="min-w-44 text-right">Actions</TableHead>
-                            </TableRow>
-                        </TableHeader>
-
-                        <TableBody>
-                            {loading ? (
-                                Array.from({ length: 6 }).map((_, i) => (
-                                    <TableRow key={`skeleton-${i}`}>
-                                        <TableCell colSpan={7}>
-                                            <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                        </TableCell>
-                                    </TableRow>
-                                ))
-                            ) : filteredSchedules.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                                        No defense schedules found.
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                filteredSchedules.map((row) => {
-                                    const resolvedGroupTitle =
-                                        row.group_title ||
-                                        groupTitleById.get(row.group_id) ||
-                                        row.group_id ||
-                                        "Unassigned Group"
-
-                                    const resolvedRubricName =
-                                        row.rubric_template_name ||
-                                        (row.rubric_template_id
-                                            ? rubricNameById.get(row.rubric_template_id) ?? null
-                                            : null)
-
-                                    const resolvedCreator = resolveCreatorLabel(row)
-
-                                    return (
-                                        <TableRow key={row.id}>
-                                            <TableCell>
-                                                <div className="flex flex-col">
-                                                    <span className="font-medium">{row.id}</span>
-                                                    {resolvedRubricName ? (
-                                                        <span className="text-xs text-muted-foreground">
-                                                            Rubric: {resolvedRubricName}
-                                                        </span>
-                                                    ) : (
-                                                        <span className="text-xs text-muted-foreground">Rubric: Not set</span>
-                                                    )}
-                                                    <span className="text-xs text-muted-foreground">
-                                                        Created by: {resolvedCreator}
-                                                    </span>
-                                                </div>
-                                            </TableCell>
-
-                                            <TableCell>
-                                                <div className="flex flex-col">
-                                                    <span className="font-medium">{resolvedGroupTitle}</span>
-                                                    {row.group_id ? (
-                                                        <span className="text-xs text-muted-foreground">{row.group_id}</span>
-                                                    ) : null}
-                                                </div>
-                                            </TableCell>
-
-                                            <TableCell>{formatDateTime(row.scheduled_at)}</TableCell>
-
-                                            <TableCell>{row.room || "TBA"}</TableCell>
-
-                                            <TableCell>
-                                                <Badge
-                                                    variant="outline"
-                                                    className={statusBadgeClass(row.status)}
-                                                >
-                                                    {toTitleCase(row.status)}
-                                                </Badge>
-                                            </TableCell>
-
-                                            <TableCell className="text-muted-foreground">
-                                                {formatDateTime(row.updated_at)}
-                                            </TableCell>
-
-                                            <TableCell>
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <Button asChild variant="outline" size="sm">
-                                                        <Link href={`/dashboard/admin/defense-schedules/${row.id}`}>
-                                                            View
-                                                        </Link>
-                                                    </Button>
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        onClick={() => openEditDialog(row)}
-                                                    >
-                                                        Edit
-                                                    </Button>
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="text-destructive hover:text-destructive"
-                                                        onClick={() => setDeleteTarget(row)}
-                                                    >
-                                                        Delete
-                                                    </Button>
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    )
-                                })
-                            )}
-                        </TableBody>
-                    </Table>
-                </div>
+                <DefenseSchedulesTable
+                    loading={loading}
+                    rows={filteredSchedules}
+                    groupTitleById={groupTitleById}
+                    rubricNameById={rubricNameById}
+                    formatDateTime={formatDateTime}
+                    statusBadgeClass={statusBadgeClass}
+                    toTitleCase={toTitleCase}
+                    resolveCreatorLabel={resolveCreatorLabel}
+                    onEdit={openEditDialog}
+                    onDelete={setDeleteTarget}
+                />
             </div>
 
-            <Dialog
+            <DefenseScheduleFormDialog
                 open={dialogOpen}
-                onOpenChange={(open) => {
-                    if (!open) {
-                        closeEditor()
-                        return
-                    }
-                    setDialogOpen(true)
-                }}
-            >
-                <DialogContent className="sm:max-w-2xl">
-                    <DialogHeader>
-                        <DialogTitle>
-                            {dialogMode === "create" ? "Create Defense Schedule" : "Edit Defense Schedule"}
-                        </DialogTitle>
-                        <DialogDescription>
-                            {dialogMode === "create"
-                                ? "Set up a defense schedule for a thesis group."
-                                : "Update the selected defense schedule details."}
-                        </DialogDescription>
-                    </DialogHeader>
+                mode={dialogMode}
+                submitting={submitting}
+                metaLoading={metaLoading}
+                formValues={formValues}
+                setFormValues={setFormValues}
+                groupSelectOptions={groupSelectOptions}
+                rubricSelectOptions={rubricSelectOptions}
+                statusOptions={STATUS_OPTIONS}
+                hourOptions={HOUR_OPTIONS}
+                minuteOptions={MINUTE_OPTIONS}
+                rubricNoneValue={RUBRIC_NONE_VALUE}
+                formatCalendarDate={formatCalendarDate}
+                onOpenChange={handleDialogOpenChange}
+                onCancel={closeEditor}
+                onSubmit={() => void handleSubmitSchedule()}
+            />
 
-                    <div className="grid gap-4 py-2">
-                        <div className="grid gap-2">
-                            <Label htmlFor="group_id">Thesis Group</Label>
-                            {groupSelectOptions.length > 0 ? (
-                                <Select
-                                    value={formValues.group_id}
-                                    onValueChange={(value) =>
-                                        setFormValues((prev) => ({ ...prev, group_id: value }))
-                                    }
-                                >
-                                    <SelectTrigger id="group_id" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder={metaLoading ? "Loading groups..." : "Select a group"} />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {groupSelectOptions.map((group) => (
-                                            <SelectItem key={group.id} value={group.id} textValue={group.title}>
-                                                <span className="block max-w-130 truncate" title={group.title}>
-                                                    {group.title}
-                                                </span>
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            ) : (
-                                <Input
-                                    id="group_id"
-                                    placeholder="Enter thesis group UUID"
-                                    value={formValues.group_id}
-                                    onChange={(e) =>
-                                        setFormValues((prev) => ({ ...prev, group_id: e.target.value }))
-                                    }
-                                />
-                            )}
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label>Schedule Date</Label>
-                            <Popover>
-                                <PopoverTrigger asChild>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className={[
-                                            "w-full justify-start text-left font-normal",
-                                            !formValues.scheduled_date ? "text-muted-foreground" : "",
-                                        ].join(" ")}
-                                    >
-                                        <CalendarIcon className="mr-2 h-4 w-4" />
-                                        {formValues.scheduled_date
-                                            ? formatCalendarDate(formValues.scheduled_date)
-                                            : "Pick a date"}
-                                    </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-auto p-0" align="start">
-                                    <Calendar
-                                        mode="single"
-                                        selected={formValues.scheduled_date}
-                                        onSelect={(date) =>
-                                            setFormValues((prev) => ({
-                                                ...prev,
-                                                scheduled_date: date ?? undefined,
-                                            }))
-                                        }
-                                        initialFocus
-                                    />
-                                </PopoverContent>
-                            </Popover>
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label>Schedule Time</Label>
-                            <div className="grid grid-cols-3 gap-2">
-                                <Select
-                                    value={formValues.scheduled_hour}
-                                    onValueChange={(value) =>
-                                        setFormValues((prev) => ({ ...prev, scheduled_hour: value }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="Hour" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {HOUR_OPTIONS.map((hour) => (
-                                            <SelectItem key={hour} value={hour}>
-                                                {hour}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-
-                                <Select
-                                    value={formValues.scheduled_minute}
-                                    onValueChange={(value) =>
-                                        setFormValues((prev) => ({ ...prev, scheduled_minute: value }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="Minute" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {MINUTE_OPTIONS.map((minute) => (
-                                            <SelectItem key={minute} value={minute}>
-                                                {minute}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-
-                                <Select
-                                    value={formValues.scheduled_period}
-                                    onValueChange={(value) =>
-                                        setFormValues((prev) => ({
-                                            ...prev,
-                                            scheduled_period: value as Meridiem,
-                                        }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="AM/PM" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="AM">AM</SelectItem>
-                                        <SelectItem value="PM">PM</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label htmlFor="room">Room</Label>
-                            <Input
-                                id="room"
-                                placeholder="e.g. CCS Faculty Office or AVR 1"
-                                value={formValues.room}
-                                onChange={(e) =>
-                                    setFormValues((prev) => ({ ...prev, room: e.target.value }))
-                                }
-                            />
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-2 md:gap-4">
-                            <div className="grid gap-2">
-                                <Label htmlFor="status">Status</Label>
-                                <Select
-                                    value={formValues.status}
-                                    onValueChange={(value) =>
-                                        setFormValues((prev) => ({ ...prev, status: value as DefenseScheduleStatus }))
-                                    }
-                                >
-                                    <SelectTrigger id="status" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder="Select status" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {STATUS_OPTIONS.map((status) => (
-                                            <SelectItem key={status} value={status}>
-                                                {toTitleCase(status)}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
-                            <div className="grid gap-2">
-                                <Label htmlFor="rubric_template_id">Rubric Template</Label>
-                                {rubricSelectOptions.length > 0 ? (
-                                    <Select
-                                        value={formValues.rubric_template_id || RUBRIC_NONE_VALUE}
-                                        onValueChange={(value) =>
-                                            setFormValues((prev) => ({
-                                                ...prev,
-                                                rubric_template_id: value === RUBRIC_NONE_VALUE ? "" : value,
-                                            }))
-                                        }
-                                    >
-                                        <SelectTrigger id="rubric_template_id" className="w-full [&>span]:truncate">
-                                            <SelectValue placeholder={metaLoading ? "Loading rubrics..." : "Select rubric"} />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
-                                            {rubricSelectOptions.map((rubric) => (
-                                                <SelectItem key={rubric.id} value={rubric.id} textValue={rubric.name}>
-                                                    <span className="block max-w-50 truncate" title={rubric.name}>
-                                                        {rubric.name}
-                                                    </span>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                ) : (
-                                    <Input
-                                        id="rubric_template_id"
-                                        placeholder="Optional rubric template UUID"
-                                        value={formValues.rubric_template_id}
-                                        onChange={(e) =>
-                                            setFormValues((prev) => ({
-                                                ...prev,
-                                                rubric_template_id: e.target.value,
-                                            }))
-                                        }
-                                    />
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    <DialogFooter>
-                        <Button variant="outline" onClick={closeEditor} disabled={submitting}>
-                            Cancel
-                        </Button>
-                        <Button onClick={() => void handleSubmitSchedule()} disabled={submitting}>
-                            {submitting
-                                ? dialogMode === "create"
-                                    ? "Creating..."
-                                    : "Saving..."
-                                : dialogMode === "create"
-                                    ? "Create Schedule"
-                                    : "Save Changes"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <AlertDialog
+            <DefenseScheduleDeleteDialog
                 open={!!deleteTarget}
+                deleting={deleting}
+                scheduleId={deleteTarget?.id ?? ""}
                 onOpenChange={(open) => {
                     if (!open && !deleting) {
                         setDeleteTarget(null)
                     }
                 }}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Delete defense schedule?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            This action cannot be undone. This will permanently delete schedule{" "}
-                            <span className="font-medium">{deleteTarget?.id ?? ""}</span>.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                            onClick={(e) => {
-                                e.preventDefault()
-                                void handleDeleteSchedule()
-                            }}
-                            disabled={deleting}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                            {deleting ? "Deleting..." : "Delete Schedule"}
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
+                onConfirm={() => void handleDeleteSchedule()}
+            />
         </DashboardLayout>
     )
 }
