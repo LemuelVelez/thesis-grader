@@ -6,6 +6,17 @@ import { useParams } from "next/navigation"
 import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -1357,14 +1368,45 @@ export default function AdminRubricTemplateDetailsPage() {
                                                             >
                                                                 {busy ? "Saving..." : "Save"}
                                                             </Button>
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                onClick={() => void deleteCriterion(item.id)}
-                                                                disabled={busy}
-                                                            >
-                                                                {busy ? "Deleting..." : "Delete"}
-                                                            </Button>
+
+                                                            <AlertDialog>
+                                                                <AlertDialogTrigger asChild>
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="outline"
+                                                                        disabled={busy}
+                                                                    >
+                                                                        Delete
+                                                                    </Button>
+                                                                </AlertDialogTrigger>
+                                                                <AlertDialogContent>
+                                                                    <AlertDialogHeader>
+                                                                        <AlertDialogTitle>
+                                                                            Delete criterion?
+                                                                        </AlertDialogTitle>
+                                                                        <AlertDialogDescription>
+                                                                            This action cannot be undone. This will permanently
+                                                                            remove{" "}
+                                                                            <span className="font-medium text-foreground">
+                                                                                {item.criterion}
+                                                                            </span>{" "}
+                                                                            from this rubric template.
+                                                                        </AlertDialogDescription>
+                                                                    </AlertDialogHeader>
+                                                                    <AlertDialogFooter>
+                                                                        <AlertDialogCancel disabled={busy}>
+                                                                            Cancel
+                                                                        </AlertDialogCancel>
+                                                                        <AlertDialogAction
+                                                                            onClick={() => void deleteCriterion(item.id)}
+                                                                            disabled={busy}
+                                                                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                                                        >
+                                                                            {busy ? "Deleting..." : "Delete criterion"}
+                                                                        </AlertDialogAction>
+                                                                    </AlertDialogFooter>
+                                                                </AlertDialogContent>
+                                                            </AlertDialog>
                                                         </div>
                                                     </TableCell>
                                                 </TableRow>
