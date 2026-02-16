@@ -7,6 +7,14 @@ import { Bell, Check, ChevronDown, RefreshCw, Send } from "lucide-react"
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
 import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import {
     DropdownMenu,
     DropdownMenuCheckboxItem,
     DropdownMenuContent,
@@ -29,6 +37,12 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 type NotificationRecord = {
     id: string
@@ -167,6 +181,21 @@ type PushSendResponse = {
     message?: string
 }
 
+/* --------------------------- Friendly View Types --------------------------- */
+
+type FriendlyNotificationDetail = {
+    label: string
+    value: string
+}
+
+type FriendlyNotificationContent = {
+    title: string
+    summary: string
+    details: FriendlyNotificationDetail[]
+    formalSubject: string
+    formalMessage: string
+}
+
 const NONE_VALUE = "__none__"
 const PUSH_SW_PATH = "/push-sw.js"
 
@@ -180,6 +209,48 @@ const SELECT_TRIGGER_CLASS =
     "w-full min-w-0 max-w-full [&>span]:block [&>span]:truncate"
 
 const SELECT_CONTENT_CLASS = "max-w-3xl"
+
+const FRIENDLY_TYPE_COPY: Record<string, { title: string; summary: string }> = {
+    evaluation_submitted: {
+        title: "Evaluation submitted",
+        summary: "A thesis evaluation has been submitted and recorded successfully.",
+    },
+    evaluation_locked: {
+        title: "Evaluation finalized",
+        summary: "The evaluation has been finalized and is now locked for edits.",
+    },
+    defense_schedule_updated: {
+        title: "Defense schedule update",
+        summary: "Please review the updated defense schedule details.",
+    },
+    general_update: {
+        title: "General announcement",
+        summary: "You have received a new official update from the system.",
+    },
+    general: {
+        title: "New notification",
+        summary: "You have received a new official update.",
+    },
+}
+
+const FRIENDLY_DETAIL_LABELS: Record<string, string> = {
+    grouptitle: "Thesis group",
+    groupname: "Thesis group",
+    schedule: "Schedule",
+    scheduledatetime: "Schedule",
+    scheduledat: "Schedule",
+    scheduleroom: "Room",
+    evaluatorname: "Evaluator",
+    evaluationstatus: "Evaluation status",
+    studentcount: "Students",
+    program: "Program",
+    term: "Term",
+    topic: "Topic",
+    message: "Message",
+    role: "Role",
+    url: "Open page",
+    link: "Link",
+}
 
 function shortId(value: string, size = 8) {
     if (!value) return ""
@@ -292,6 +363,323 @@ function truncateMiddle(value: string, head = 30, tail = 18) {
     return `${value.slice(0, head)}...${value.slice(-tail)}`
 }
 
+function normalizeReadableText(value: string) {
+    const cleaned = value
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    if (!cleaned) return ""
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
+function ensureSentence(value: string) {
+    const trimmed = value.trim()
+    if (!trimmed) return ""
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+function normalizeKeyLookup(value: string) {
+    return value.replace(/[\s_-]+/g, "").toLowerCase()
+}
+
+function shouldFormatAsDate(key: string, value: string) {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return false
+
+    const lower = key.toLowerCase()
+    if (
+        lower.includes("date") ||
+        lower.includes("time") ||
+        lower.includes("schedule") ||
+        lower.endsWith("_at") ||
+        lower.endsWith("at")
+    ) {
+        return true
+    }
+
+    return /^\d{4}-\d{2}-\d{2}/.test(value)
+}
+
+function isLikelyTechnicalKey(key: string) {
+    const normalized = normalizeKeyLookup(key)
+    return normalized === "id" || normalized.endsWith("id")
+}
+
+function formatFriendlyValue(key: string, rawValue: unknown): string | null {
+    if (rawValue === null || rawValue === undefined) return null
+
+    if (typeof rawValue === "string") {
+        const trimmed = rawValue.trim()
+        if (!trimmed) return null
+
+        if (shouldFormatAsDate(key, trimmed)) {
+            return formatDateCompact(trimmed)
+        }
+
+        return normalizeReadableText(trimmed)
+    }
+
+    if (typeof rawValue === "number" || typeof rawValue === "boolean") {
+        return String(rawValue)
+    }
+
+    if (Array.isArray(rawValue)) {
+        const values = rawValue
+            .map((item) => formatFriendlyValue(key, item))
+            .filter((v): v is string => Boolean(v))
+        if (values.length === 0) return null
+        return values.join(", ")
+    }
+
+    if (typeof rawValue === "object") {
+        const entries = Object.entries(rawValue as Record<string, unknown>)
+            .map(([k, v]) => {
+                if (isLikelyTechnicalKey(k)) return null
+                const fv = formatFriendlyValue(k, v)
+                if (!fv) return null
+                return `${toLabel(k)}: ${fv}`
+            })
+            .filter((v): v is string => Boolean(v))
+
+        if (entries.length === 0) return null
+        return entries.join(" • ")
+    }
+
+    return null
+}
+
+function buildFriendlyDetails(data: Record<string, unknown>) {
+    const details: FriendlyNotificationDetail[] = []
+
+    for (const [key, rawValue] of Object.entries(data ?? {})) {
+        if (!key || isLikelyTechnicalKey(key)) continue
+
+        const value = formatFriendlyValue(key, rawValue)
+        if (!value) continue
+
+        const lookup = normalizeKeyLookup(key)
+        const label = FRIENDLY_DETAIL_LABELS[lookup] ?? toLabel(key)
+
+        details.push({ label, value })
+    }
+
+    return details
+}
+
+function parseBodyIntoDetails(body: string): FriendlyNotificationDetail[] {
+    if (!body) return []
+
+    const segments = body
+        .split("•")
+        .map((part) => part.trim())
+        .filter(Boolean)
+
+    const parsed: FriendlyNotificationDetail[] = []
+
+    for (const segment of segments) {
+        const idx = segment.indexOf(":")
+        if (idx <= 0) continue
+
+        let rawKey = segment.slice(0, idx).trim()
+        const rawValue = segment.slice(idx + 1).trim()
+        if (!rawValue) continue
+
+        // Handles first fragment like:
+        // "Defense schedule details were updated. Group: Test"
+        if (rawKey.includes(".")) {
+            const parts = rawKey.split(".")
+            rawKey = parts[parts.length - 1]?.trim() || rawKey
+        }
+
+        const formatted = formatFriendlyValue(rawKey, rawValue)
+        if (!formatted) continue
+
+        const keyLookup = normalizeKeyLookup(rawKey)
+        const label = FRIENDLY_DETAIL_LABELS[keyLookup] ?? normalizeReadableText(rawKey)
+        parsed.push({ label, value: formatted })
+    }
+
+    return parsed
+}
+
+function mergeFriendlyDetails(
+    primary: FriendlyNotificationDetail[],
+    secondary: FriendlyNotificationDetail[],
+): FriendlyNotificationDetail[] {
+    const seen = new Set(primary.map((d) => normalizeKeyLookup(d.label)))
+    const merged = [...primary]
+
+    for (const detail of secondary) {
+        const key = normalizeKeyLookup(detail.label)
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(detail)
+    }
+
+    return merged
+}
+
+function orderFriendlyDetailsForType(
+    type: string,
+    details: FriendlyNotificationDetail[],
+): FriendlyNotificationDetail[] {
+    if (type !== "defense_schedule_updated") return details
+
+    const order = [
+        "thesisgroup",
+        "schedule",
+        "room",
+        "students",
+        "program",
+        "term",
+        "evaluationstatus",
+        "evaluator",
+    ]
+
+    const rank = (label: string) => {
+        const key = normalizeKeyLookup(label)
+        const idx = order.indexOf(key)
+        return idx === -1 ? 999 : idx
+    }
+
+    return [...details].sort((a, b) => rank(a.label) - rank(b.label))
+}
+
+function getDetailValue(
+    details: FriendlyNotificationDetail[],
+    aliases: string[],
+): string | null {
+    const normalizedAliases = aliases.map((a) => normalizeKeyLookup(a))
+    const found = details.find((d) =>
+        normalizedAliases.includes(normalizeKeyLookup(d.label)),
+    )
+    return found?.value ?? null
+}
+
+function buildFormalMessage(
+    type: string,
+    details: FriendlyNotificationDetail[],
+    fallbackSummary: string,
+): { subject: string; message: string } {
+    if (type === "defense_schedule_updated") {
+        const group = getDetailValue(details, ["Thesis group", "Group"])
+        const schedule = getDetailValue(details, ["Schedule"])
+        const room = getDetailValue(details, ["Room"])
+        const students = getDetailValue(details, ["Students", "Student count"])
+        const program = getDetailValue(details, ["Program"])
+        const term = getDetailValue(details, ["Term"])
+
+        const detailLines = [
+            group ? `• Thesis Group: ${group}` : null,
+            schedule ? `• Schedule: ${schedule}` : null,
+            room ? `• Room: ${room}` : null,
+            students ? `• Number of Students: ${students}` : null,
+            program ? `• Program: ${program}` : null,
+            term ? `• Term: ${term}` : null,
+        ].filter((line): line is string => Boolean(line))
+
+        return {
+            subject: "Official Notice: Updated Thesis Defense Schedule",
+            message: [
+                "Dear Student,",
+                "",
+                "Please be informed that your thesis defense schedule has been updated.",
+                "",
+                detailLines.length > 0 ? "Updated details:" : "Please check your latest defense schedule in the system.",
+                ...(detailLines.length > 0 ? detailLines : []),
+                "",
+                "Kindly review the updated schedule and prepare accordingly.",
+                "If you have questions, please coordinate with your adviser or your department office.",
+                "",
+                "Thank you.",
+                "JRMSU Thesis Management Office",
+            ].join("\n"),
+        }
+    }
+
+    if (type === "evaluation_submitted") {
+        return {
+            subject: "Official Notice: Evaluation Submitted",
+            message: [
+                "Dear User,",
+                "",
+                "This is to inform you that an evaluation has been successfully submitted.",
+                "",
+                fallbackSummary,
+                "",
+                "Please log in to the system for the complete details.",
+                "",
+                "Thank you.",
+                "JRMSU Thesis Management Office",
+            ].join("\n"),
+        }
+    }
+
+    if (type === "evaluation_locked") {
+        return {
+            subject: "Official Notice: Evaluation Finalized",
+            message: [
+                "Dear User,",
+                "",
+                "Please be advised that the evaluation has been finalized and is now locked.",
+                "",
+                "No further edits can be made unless officially reopened by the authorized office.",
+                "",
+                "Thank you.",
+                "JRMSU Thesis Management Office",
+            ].join("\n"),
+        }
+    }
+
+    return {
+        subject: "Official System Notice",
+        message: [
+            "Dear User,",
+            "",
+            ensureSentence(fallbackSummary),
+            "",
+            "Please check your dashboard for more details.",
+            "",
+            "Thank you.",
+            "JRMSU Thesis Management Office",
+        ].join("\n"),
+    }
+}
+
+function toFriendlyNotification(notification: NotificationRecord): FriendlyNotificationContent {
+    const fallback = FRIENDLY_TYPE_COPY[notification.type] ?? {
+        title: `${toLabel(notification.type)} update`,
+        summary: "You have received a new official update.",
+    }
+
+    const normalizedTitle = normalizeReadableText(notification.title || "")
+    const title =
+        normalizedTitle && normalizedTitle.toLowerCase() !== normalizeReadableText(notification.type).toLowerCase()
+            ? normalizedTitle
+            : fallback.title
+
+    // For known automation types, prefer a clean copy (not raw body with technical fragments).
+    const hasKnownCopy = Boolean(FRIENDLY_TYPE_COPY[notification.type])
+    const summary = hasKnownCopy
+        ? ensureSentence(fallback.summary)
+        : ensureSentence(normalizeReadableText(notification.body || "") || fallback.summary)
+
+    const dataDetails = buildFriendlyDetails(notification.data ?? {})
+    const bodyDetails = parseBodyIntoDetails(notification.body || "")
+    const mergedDetails = mergeFriendlyDetails(dataDetails, bodyDetails)
+    const details = orderFriendlyDetailsForType(notification.type, mergedDetails)
+
+    const formal = buildFormalMessage(notification.type, details, summary)
+
+    return {
+        title,
+        summary,
+        details,
+        formalSubject: formal.subject,
+        formalMessage: formal.message,
+    }
+}
+
 export default function AdminNotificationsPage() {
     const [options, setOptions] = React.useState<NotificationAutomationOptions | null>(null)
     const [optionsLoading, setOptionsLoading] = React.useState(false)
@@ -326,6 +714,10 @@ export default function AdminNotificationsPage() {
     const [typeFilter, setTypeFilter] = React.useState<string>("all")
     const [readFilter, setReadFilter] = React.useState<"all" | "unread" | "read">("all")
 
+    // Notification details dialog
+    const [notificationDialogOpen, setNotificationDialogOpen] = React.useState(false)
+    const [selectedNotification, setSelectedNotification] = React.useState<NotificationRecord | null>(null)
+
     /* ------------------------------- Push State ------------------------------- */
 
     const swRegistrationRef = React.useRef<ServiceWorkerRegistration | null>(null)
@@ -351,6 +743,12 @@ export default function AdminNotificationsPage() {
         () => notifications.filter((n) => !n.read_at).length,
         [notifications],
     )
+
+    const selectedNotificationFriendly = React.useMemo(
+        () => (selectedNotification ? toFriendlyNotification(selectedNotification) : null),
+        [selectedNotification],
+    )
+    const selectedNotificationId = selectedNotification?.id ?? null
 
     const needsEvaluationSelector = React.useMemo(() => {
         if (!selectedTemplateDef) return false
@@ -718,6 +1116,19 @@ export default function AdminNotificationsPage() {
         void loadNotifications()
     }, [loadNotifications, options, viewerUserId])
 
+    React.useEffect(() => {
+        if (!selectedNotificationId) return
+
+        const latest = notifications.find((n) => n.id === selectedNotificationId)
+        if (!latest) {
+            setSelectedNotification(null)
+            setNotificationDialogOpen(false)
+            return
+        }
+
+        setSelectedNotification(latest)
+    }, [notifications, selectedNotificationId])
+
     const toggleTargetUser = React.useCallback((userId: string, checked: boolean) => {
         setTargetUserIds((prev) => {
             const next = new Set(prev)
@@ -964,6 +1375,24 @@ export default function AdminNotificationsPage() {
         }
     }, [loadNotifications, viewerUserId])
 
+    const openNotificationDetails = React.useCallback((notification: NotificationRecord) => {
+        setSelectedNotification(notification)
+        setNotificationDialogOpen(true)
+    }, [])
+
+    const markSelectedNotificationAsRead = React.useCallback(async () => {
+        if (!selectedNotification || selectedNotification.read_at) return
+        await markAsRead(selectedNotification.id)
+    }, [markAsRead, selectedNotification])
+
+    const deleteSelectedNotification = React.useCallback(async () => {
+        if (!selectedNotification) return
+        const id = selectedNotification.id
+        await deleteNotification(id)
+        setNotificationDialogOpen(false)
+        setSelectedNotification(null)
+    }, [deleteNotification, selectedNotification])
+
     /* ----------------------------- Push Handlers ----------------------------- */
 
     const enablePushForSelectedUser = React.useCallback(async () => {
@@ -1163,808 +1592,932 @@ export default function AdminNotificationsPage() {
             title="Automatic Notifications"
             description="Select template, audience, and included details. No manual message input."
         >
-            <div className="space-y-4">
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="mb-4 flex items-center justify-between gap-2">
-                        <div>
-                            <h2 className="text-sm font-semibold">Notification Automation</h2>
-                            <p className="text-xs text-muted-foreground">
-                                Choose template, recipients, and relevant fields to send automatically.
-                            </p>
-                        </div>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void loadAutomationOptions()}
-                            disabled={optionsLoading || !!actionKey}
-                        >
-                            <RefreshCw className="mr-2 h-4 w-4" />
-                            Refresh Options
-                        </Button>
-                    </div>
-
-                    {optionsLoading && !options ? (
-                        <div className="space-y-2">
-                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
-                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
-                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
-                        </div>
-                    ) : !options ? (
-                        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                            Failed to load automation options.
-                        </div>
-                    ) : (
-                        <div className="grid gap-4">
-                            <div className="grid gap-3 md:grid-cols-3">
-                                <div className="space-y-2 min-w-0">
-                                    <p className="text-xs font-medium text-muted-foreground">Template</p>
-                                    <Select
-                                        value={template || options.templates[0]?.value}
-                                        onValueChange={(value) =>
-                                            setTemplate(value as AutoNotificationTemplate)
-                                        }
-                                    >
-                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                            <SelectValue placeholder="Select template" />
-                                        </SelectTrigger>
-                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                            {options.templates.map((t) => (
-                                                <SelectItem key={t.value} value={t.value} textValue={t.label}>
-                                                    <span className="block truncate" title={t.label}>
-                                                        {t.label}
-                                                    </span>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    {selectedTemplateDef ? (
-                                        <p className="text-xs text-muted-foreground">
-                                            {selectedTemplateDef.description}
-                                        </p>
-                                    ) : null}
-                                </div>
-
-                                <div className="space-y-2 min-w-0">
-                                    <p className="text-xs font-medium text-muted-foreground">Notification type</p>
-                                    <Select
-                                        value={notificationType}
-                                        onValueChange={(value) => setNotificationType(value)}
-                                    >
-                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                            <SelectValue placeholder="Select type" />
-                                        </SelectTrigger>
-                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                            {options.notificationTypes.map((nt) => (
-                                                <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
-                                                    <span className="block truncate" title={toLabel(nt)}>
-                                                        {toLabel(nt)}
-                                                    </span>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-
-                                <div className="space-y-2 min-w-0">
-                                    <p className="text-xs font-medium text-muted-foreground">Target mode</p>
-                                    <Select
-                                        value={targetMode}
-                                        onValueChange={(value) => setTargetMode(value as TargetMode)}
-                                    >
-                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                            <SelectValue placeholder="Select target mode" />
-                                        </SelectTrigger>
-                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                            {options.targetModes.map((tm) => (
-                                                <SelectItem key={tm.value} value={tm.value} textValue={tm.label}>
-                                                    <span className="block truncate" title={tm.description}>
-                                                        {tm.label}
-                                                    </span>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
+            <TooltipProvider delayDuration={150}>
+                <div className="space-y-4">
+                    <div className="rounded-lg border bg-card p-4">
+                        <div className="mb-4 flex items-center justify-between gap-2">
+                            <div>
+                                <h2 className="text-sm font-semibold">Notification Automation</h2>
+                                <p className="text-xs text-muted-foreground">
+                                    Choose template, recipients, and relevant fields to send automatically.
+                                </p>
                             </div>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void loadAutomationOptions()}
+                                disabled={optionsLoading || !!actionKey}
+                            >
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                                Refresh Options
+                            </Button>
+                        </div>
 
-                            <div className="rounded-md border bg-muted/20 p-3">
-                                <p className="mb-2 text-xs font-medium text-muted-foreground">Target selection</p>
-
-                                {targetMode === "users" ? (
+                        {optionsLoading && !options ? (
+                            <div className="space-y-2">
+                                <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                                <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                                <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                            </div>
+                        ) : !options ? (
+                            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                                Failed to load automation options.
+                            </div>
+                        ) : (
+                            <div className="grid gap-4">
+                                <div className="grid gap-3 md:grid-cols-3">
                                     <div className="space-y-2 min-w-0">
-                                        <DropdownMenu>
-                                            <DropdownMenuTrigger asChild>
-                                                <Button variant="outline" className="w-full justify-between min-w-0">
-                                                    <span className="truncate">{targetUsersButtonText}</span>
-                                                    <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
-                                                </Button>
-                                            </DropdownMenuTrigger>
-                                            <DropdownMenuContent className="w-96 max-w-full">
-                                                <DropdownMenuLabel>Recipients (users)</DropdownMenuLabel>
-                                                <DropdownMenuSeparator />
-                                                {options.context.users.length === 0 ? (
-                                                    <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                                                        No active users available.
-                                                    </div>
-                                                ) : (
-                                                    options.context.users.map((u) => {
-                                                        const label = `${u.label} • ${toLabel(u.role)}`
-                                                        return (
-                                                            <DropdownMenuCheckboxItem
-                                                                key={u.value}
-                                                                checked={targetUserIds.includes(u.value)}
-                                                                onCheckedChange={(checked) =>
-                                                                    toggleTargetUser(u.value, checked === true)
-                                                                }
-                                                            >
-                                                                <span className="block truncate" title={label}>
-                                                                    {label}
-                                                                </span>
-                                                            </DropdownMenuCheckboxItem>
-                                                        )
-                                                    })
-                                                )}
-                                            </DropdownMenuContent>
-                                        </DropdownMenu>
-                                    </div>
-                                ) : null}
-
-                                {targetMode === "role" ? (
-                                    <div className="space-y-2 min-w-0">
-                                        <Select value={targetRole} onValueChange={setTargetRole}>
+                                        <p className="text-xs font-medium text-muted-foreground">Template</p>
+                                        <Select
+                                            value={template || options.templates[0]?.value}
+                                            onValueChange={(value) =>
+                                                setTemplate(value as AutoNotificationTemplate)
+                                            }
+                                        >
                                             <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Select role" />
+                                                <SelectValue placeholder="Select template" />
                                             </SelectTrigger>
                                             <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value={NONE_VALUE}>Select role</SelectItem>
-                                                {options.context.roles.map((role) => (
-                                                    <SelectItem key={role} value={role} textValue={toLabel(role)}>
-                                                        <span className="block truncate">{toLabel(role)}</span>
+                                                {options.templates.map((t) => (
+                                                    <SelectItem key={t.value} value={t.value} textValue={t.label}>
+                                                        <span className="block truncate" title={t.label}>
+                                                            {t.label}
+                                                        </span>
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {selectedTemplateDef ? (
+                                            <p className="text-xs text-muted-foreground">
+                                                {selectedTemplateDef.description}
+                                            </p>
+                                        ) : null}
+                                    </div>
+
+                                    <div className="space-y-2 min-w-0">
+                                        <p className="text-xs font-medium text-muted-foreground">Notification type</p>
+                                        <Select
+                                            value={notificationType}
+                                            onValueChange={(value) => setNotificationType(value)}
+                                        >
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                <SelectValue placeholder="Select type" />
+                                            </SelectTrigger>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                {options.notificationTypes.map((nt) => (
+                                                    <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
+                                                        <span className="block truncate" title={toLabel(nt)}>
+                                                            {toLabel(nt)}
+                                                        </span>
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                ) : null}
 
-                                {targetMode === "group" ? (
-                                    <div className="grid gap-2 md:grid-cols-2">
-                                        <Select value={targetGroupId} onValueChange={setTargetGroupId}>
-                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Select thesis group" />
-                                            </SelectTrigger>
-                                            <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value={NONE_VALUE}>Select thesis group</SelectItem>
-                                                {options.context.groups.map((g) => {
-                                                    const label = buildGroupDisplayLabel(g)
-                                                    return (
-                                                        <SelectItem key={g.value} value={g.value} textValue={label}>
-                                                            <span className="block truncate" title={label}>
-                                                                {label}
-                                                            </span>
-                                                        </SelectItem>
-                                                    )
-                                                })}
-                                            </SelectContent>
-                                        </Select>
-
+                                    <div className="space-y-2 min-w-0">
+                                        <p className="text-xs font-medium text-muted-foreground">Target mode</p>
                                         <Select
-                                            value={boolToSelectValue(includeAdviser)}
-                                            onValueChange={(v) => setIncludeAdviser(selectValueToBool(v))}
+                                            value={targetMode}
+                                            onValueChange={(value) => setTargetMode(value as TargetMode)}
                                         >
                                             <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Include adviser?" />
+                                                <SelectValue placeholder="Select target mode" />
                                             </SelectTrigger>
                                             <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value="yes">Include adviser</SelectItem>
-                                                <SelectItem value="no">Students only</SelectItem>
+                                                {options.targetModes.map((tm) => (
+                                                    <SelectItem key={tm.value} value={tm.value} textValue={tm.label}>
+                                                        <span className="block truncate" title={tm.description}>
+                                                            {tm.label}
+                                                        </span>
+                                                    </SelectItem>
+                                                ))}
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                ) : null}
+                                </div>
 
-                                {targetMode === "schedule" ? (
-                                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
-                                        <Select value={targetScheduleId} onValueChange={setTargetScheduleId}>
-                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Select schedule" />
-                                            </SelectTrigger>
-                                            <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value={NONE_VALUE}>Select schedule</SelectItem>
-                                                {options.context.schedules.map((s) => {
-                                                    const primary = buildScheduleDisplayLabel(s)
-                                                    const secondary = s.groupTitle
-                                                        ? `Group: ${s.groupTitle}`
-                                                        : `Group ID: ${shortId(s.groupId)}`
-                                                    const full = `${primary} • ${secondary}`
-                                                    return (
-                                                        <SelectItem key={s.value} value={s.value} textValue={full}>
-                                                            <div className="flex min-w-0 flex-col">
-                                                                <span className="truncate" title={primary}>
-                                                                    {primary}
-                                                                </span>
-                                                                <span
-                                                                    className="truncate text-xs text-muted-foreground"
-                                                                    title={secondary}
+                                <div className="rounded-md border bg-muted/20 p-3">
+                                    <p className="mb-2 text-xs font-medium text-muted-foreground">Target selection</p>
+
+                                    {targetMode === "users" ? (
+                                        <div className="space-y-2 min-w-0">
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild>
+                                                    <Button variant="outline" className="w-full justify-between min-w-0">
+                                                        <span className="truncate">{targetUsersButtonText}</span>
+                                                        <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
+                                                    </Button>
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent className="w-96 max-w-full">
+                                                    <DropdownMenuLabel>Recipients (users)</DropdownMenuLabel>
+                                                    <DropdownMenuSeparator />
+                                                    {options.context.users.length === 0 ? (
+                                                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                                                            No active users available.
+                                                        </div>
+                                                    ) : (
+                                                        options.context.users.map((u) => {
+                                                            const label = `${u.label} • ${toLabel(u.role)}`
+                                                            return (
+                                                                <DropdownMenuCheckboxItem
+                                                                    key={u.value}
+                                                                    checked={targetUserIds.includes(u.value)}
+                                                                    onCheckedChange={(checked) =>
+                                                                        toggleTargetUser(u.value, checked === true)
+                                                                    }
                                                                 >
-                                                                    {secondary}
-                                                                </span>
-                                                            </div>
+                                                                    <span className="block truncate" title={label}>
+                                                                        {label}
+                                                                    </span>
+                                                                </DropdownMenuCheckboxItem>
+                                                            )
+                                                        })
+                                                    )}
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                        </div>
+                                    ) : null}
+
+                                    {targetMode === "role" ? (
+                                        <div className="space-y-2 min-w-0">
+                                            <Select value={targetRole} onValueChange={setTargetRole}>
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Select role" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value={NONE_VALUE}>Select role</SelectItem>
+                                                    {options.context.roles.map((role) => (
+                                                        <SelectItem key={role} value={role} textValue={toLabel(role)}>
+                                                            <span className="block truncate">{toLabel(role)}</span>
                                                         </SelectItem>
-                                                    )
-                                                })}
-                                            </SelectContent>
-                                        </Select>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    ) : null}
 
-                                        <Select
-                                            value={boolToSelectValue(includeStudents)}
-                                            onValueChange={(v) => setIncludeStudents(selectValueToBool(v))}
-                                        >
-                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Include students" />
-                                            </SelectTrigger>
-                                            <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value="yes">Include students</SelectItem>
-                                                <SelectItem value="no">Skip students</SelectItem>
-                                            </SelectContent>
-                                        </Select>
+                                    {targetMode === "group" ? (
+                                        <div className="grid gap-2 md:grid-cols-2">
+                                            <Select value={targetGroupId} onValueChange={setTargetGroupId}>
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Select thesis group" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value={NONE_VALUE}>Select thesis group</SelectItem>
+                                                    {options.context.groups.map((g) => {
+                                                        const label = buildGroupDisplayLabel(g)
+                                                        return (
+                                                            <SelectItem key={g.value} value={g.value} textValue={label}>
+                                                                <span className="block truncate" title={label}>
+                                                                    {label}
+                                                                </span>
+                                                            </SelectItem>
+                                                        )
+                                                    })}
+                                                </SelectContent>
+                                            </Select>
 
-                                        <Select
-                                            value={boolToSelectValue(includePanelists)}
-                                            onValueChange={(v) => setIncludePanelists(selectValueToBool(v))}
-                                        >
-                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Include panelists" />
-                                            </SelectTrigger>
-                                            <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value="yes">Include panelists</SelectItem>
-                                                <SelectItem value="no">Skip panelists</SelectItem>
-                                            </SelectContent>
-                                        </Select>
+                                            <Select
+                                                value={boolToSelectValue(includeAdviser)}
+                                                onValueChange={(v) => setIncludeAdviser(selectValueToBool(v))}
+                                            >
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Include adviser?" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value="yes">Include adviser</SelectItem>
+                                                    <SelectItem value="no">Students only</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    ) : null}
 
-                                        <Select
-                                            value={boolToSelectValue(includeCreator)}
-                                            onValueChange={(v) => setIncludeCreator(selectValueToBool(v))}
-                                        >
-                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                <SelectValue placeholder="Include creator" />
-                                            </SelectTrigger>
-                                            <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                <SelectItem value="yes">Include creator</SelectItem>
-                                                <SelectItem value="no">Skip creator</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                ) : null}
-                            </div>
+                                    {targetMode === "schedule" ? (
+                                        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                                            <Select value={targetScheduleId} onValueChange={setTargetScheduleId}>
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Select schedule" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value={NONE_VALUE}>Select schedule</SelectItem>
+                                                    {options.context.schedules.map((s) => {
+                                                        const primary = buildScheduleDisplayLabel(s)
+                                                        const secondary = s.groupTitle
+                                                            ? `Group: ${s.groupTitle}`
+                                                            : `Group ID: ${shortId(s.groupId)}`
+                                                        const full = `${primary} • ${secondary}`
+                                                        return (
+                                                            <SelectItem key={s.value} value={s.value} textValue={full}>
+                                                                <div className="flex min-w-0 flex-col">
+                                                                    <span className="truncate" title={primary}>
+                                                                        {primary}
+                                                                    </span>
+                                                                    <span
+                                                                        className="truncate text-xs text-muted-foreground"
+                                                                        title={secondary}
+                                                                    >
+                                                                        {secondary}
+                                                                    </span>
+                                                                </div>
+                                                            </SelectItem>
+                                                        )
+                                                    })}
+                                                </SelectContent>
+                                            </Select>
 
-                            <div className="rounded-md border bg-muted/20 p-3">
-                                <div className="mb-2 flex items-center justify-between gap-2">
-                                    <p className="text-xs font-medium text-muted-foreground">Context selection</p>
-                                    {contextSelectorCount > 0 ? (
-                                        <span className="text-xs text-muted-foreground">
-                                            {contextSelectorCount} selector{contextSelectorCount > 1 ? "s" : ""} active
-                                        </span>
+                                            <Select
+                                                value={boolToSelectValue(includeStudents)}
+                                                onValueChange={(v) => setIncludeStudents(selectValueToBool(v))}
+                                            >
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Include students" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value="yes">Include students</SelectItem>
+                                                    <SelectItem value="no">Skip students</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+
+                                            <Select
+                                                value={boolToSelectValue(includePanelists)}
+                                                onValueChange={(v) => setIncludePanelists(selectValueToBool(v))}
+                                            >
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Include panelists" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value="yes">Include panelists</SelectItem>
+                                                    <SelectItem value="no">Skip panelists</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+
+                                            <Select
+                                                value={boolToSelectValue(includeCreator)}
+                                                onValueChange={(v) => setIncludeCreator(selectValueToBool(v))}
+                                            >
+                                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                    <SelectValue placeholder="Include creator" />
+                                                </SelectTrigger>
+                                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                    <SelectItem value="yes">Include creator</SelectItem>
+                                                    <SelectItem value="no">Skip creator</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
                                     ) : null}
                                 </div>
 
-                                {contextSelectorCount === 0 ? (
-                                    <div className="rounded-md border border-dashed bg-background px-3 py-2 text-xs text-muted-foreground">
-                                        No context is required for the current template and included fields.
-                                        Add fields like schedule, group, or evaluation details to enable context selectors.
-                                    </div>
-                                ) : (
-                                    <div className="grid gap-2 md:grid-cols-3">
-                                        {needsEvaluationSelector ? (
-                                            <div className="space-y-1 min-w-0">
-                                                <p className="text-xs text-muted-foreground">Evaluation context</p>
-                                                {hasEvaluationOptions || !selectedTemplateDef?.requiredContext.includes("evaluationId") ? (
-                                                    <Select value={contextEvaluationId} onValueChange={setContextEvaluationId}>
-                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                            <SelectValue placeholder="Select evaluation context" />
-                                                        </SelectTrigger>
-                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                            <SelectItem value={NONE_VALUE}>
-                                                                {selectedTemplateDef?.requiredContext.includes("evaluationId")
-                                                                    ? "Select evaluation context"
-                                                                    : "No evaluation context"}
-                                                            </SelectItem>
-                                                            {options.context.evaluations.map((e) => {
-                                                                const primary = buildEvaluationDisplayLabel(e)
-                                                                const secondary = `Evaluation #${shortId(e.value)} • Schedule #${shortId(e.scheduleId)}`
-                                                                const full = `${primary} • ${secondary}`
-                                                                return (
-                                                                    <SelectItem key={e.value} value={e.value} textValue={full}>
-                                                                        <div className="flex min-w-0 flex-col">
-                                                                            <span className="truncate" title={primary}>
-                                                                                {primary}
-                                                                            </span>
-                                                                            <span
-                                                                                className="truncate text-xs text-muted-foreground"
-                                                                                title={secondary}
-                                                                            >
-                                                                                {secondary}
-                                                                            </span>
-                                                                        </div>
-                                                                    </SelectItem>
-                                                                )
-                                                            })}
-                                                        </SelectContent>
-                                                    </Select>
-                                                ) : (
-                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
-                                                        No evaluation records are available yet.
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ) : null}
-
-                                        {needsScheduleSelector ? (
-                                            <div className="space-y-1 min-w-0">
-                                                <p className="text-xs text-muted-foreground">Schedule context</p>
-                                                {hasScheduleOptions || !selectedTemplateDef?.requiredContext.includes("scheduleId") ? (
-                                                    <Select value={contextScheduleId} onValueChange={setContextScheduleId}>
-                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                            <SelectValue placeholder="Select schedule context" />
-                                                        </SelectTrigger>
-                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                            <SelectItem value={NONE_VALUE}>
-                                                                {selectedTemplateDef?.requiredContext.includes("scheduleId")
-                                                                    ? "Select schedule context"
-                                                                    : "No schedule context"}
-                                                            </SelectItem>
-                                                            {options.context.schedules.map((s) => {
-                                                                const primary = buildScheduleDisplayLabel(s)
-                                                                const secondary = s.groupTitle
-                                                                    ? `Group: ${s.groupTitle}`
-                                                                    : `Group ID: ${shortId(s.groupId)}`
-                                                                const full = `${primary} • ${secondary}`
-                                                                return (
-                                                                    <SelectItem key={s.value} value={s.value} textValue={full}>
-                                                                        <div className="flex min-w-0 flex-col">
-                                                                            <span className="truncate" title={primary}>
-                                                                                {primary}
-                                                                            </span>
-                                                                            <span
-                                                                                className="truncate text-xs text-muted-foreground"
-                                                                                title={secondary}
-                                                                            >
-                                                                                {secondary}
-                                                                            </span>
-                                                                        </div>
-                                                                    </SelectItem>
-                                                                )
-                                                            })}
-                                                        </SelectContent>
-                                                    </Select>
-                                                ) : (
-                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
-                                                        No schedules are available yet.
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ) : null}
-
-                                        {needsGroupSelector ? (
-                                            <div className="space-y-1 min-w-0">
-                                                <p className="text-xs text-muted-foreground">Group context</p>
-                                                {hasGroupOptions || !selectedTemplateDef?.requiredContext.includes("groupId") ? (
-                                                    <Select value={contextGroupId} onValueChange={setContextGroupId}>
-                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                                            <SelectValue placeholder="Select group context" />
-                                                        </SelectTrigger>
-                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
-                                                            <SelectItem value={NONE_VALUE}>
-                                                                {selectedTemplateDef?.requiredContext.includes("groupId")
-                                                                    ? "Select group context"
-                                                                    : "No group context"}
-                                                            </SelectItem>
-                                                            {options.context.groups.map((g) => {
-                                                                const label = buildGroupDisplayLabel(g)
-                                                                return (
-                                                                    <SelectItem key={g.value} value={g.value} textValue={label}>
-                                                                        <span className="block truncate" title={label}>
-                                                                            {label}
-                                                                        </span>
-                                                                    </SelectItem>
-                                                                )
-                                                            })}
-                                                        </SelectContent>
-                                                    </Select>
-                                                ) : (
-                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
-                                                        No groups are available yet.
-                                                    </div>
-                                                )}
-                                            </div>
+                                <div className="rounded-md border bg-muted/20 p-3">
+                                    <div className="mb-2 flex items-center justify-between gap-2">
+                                        <p className="text-xs font-medium text-muted-foreground">Context selection</p>
+                                        {contextSelectorCount > 0 ? (
+                                            <span className="text-xs text-muted-foreground">
+                                                {contextSelectorCount} selector{contextSelectorCount > 1 ? "s" : ""} active
+                                            </span>
                                         ) : null}
                                     </div>
-                                )}
-                            </div>
 
-                            <div className="rounded-md border bg-muted/20 p-3">
-                                <p className="mb-2 text-xs font-medium text-muted-foreground">Included information</p>
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger asChild>
-                                            <Button variant="outline" className="justify-between min-w-0 max-w-full">
-                                                <span className="truncate">{includeButtonText}</span>
-                                                <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
-                                            </Button>
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent className="w-96 max-w-full">
-                                            <DropdownMenuLabel>Information fields</DropdownMenuLabel>
-                                            <DropdownMenuSeparator />
-                                            {includeChoices.map((field) => (
-                                                <DropdownMenuCheckboxItem
-                                                    key={field.value}
-                                                    checked={includeFields.includes(field.value)}
-                                                    onCheckedChange={(checked) =>
-                                                        toggleIncludeField(field.value, checked === true)
-                                                    }
-                                                >
-                                                    <div className="flex min-w-0 flex-col">
-                                                        <span className="truncate" title={field.label}>
-                                                            {field.label}
-                                                        </span>
-                                                        <span className="text-xs text-muted-foreground truncate" title={field.description}>
-                                                            {field.description}
-                                                        </span>
-                                                    </div>
-                                                </DropdownMenuCheckboxItem>
-                                            ))}
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
+                                    {contextSelectorCount === 0 ? (
+                                        <div className="rounded-md border border-dashed bg-background px-3 py-2 text-xs text-muted-foreground">
+                                            No context is required for the current template and included fields.
+                                            Add fields like schedule, group, or evaluation details to enable context selectors.
+                                        </div>
+                                    ) : (
+                                        <div className="grid gap-2 md:grid-cols-3">
+                                            {needsEvaluationSelector ? (
+                                                <div className="space-y-1 min-w-0">
+                                                    <p className="text-xs text-muted-foreground">Evaluation context</p>
+                                                    {hasEvaluationOptions || !selectedTemplateDef?.requiredContext.includes("evaluationId") ? (
+                                                        <Select value={contextEvaluationId} onValueChange={setContextEvaluationId}>
+                                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                                <SelectValue placeholder="Select evaluation context" />
+                                                            </SelectTrigger>
+                                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                                <SelectItem value={NONE_VALUE}>
+                                                                    {selectedTemplateDef?.requiredContext.includes("evaluationId")
+                                                                        ? "Select evaluation context"
+                                                                        : "No evaluation context"}
+                                                                </SelectItem>
+                                                                {options.context.evaluations.map((e) => {
+                                                                    const primary = buildEvaluationDisplayLabel(e)
+                                                                    const secondary = `Evaluation #${shortId(e.value)} • Schedule #${shortId(e.scheduleId)}`
+                                                                    const full = `${primary} • ${secondary}`
+                                                                    return (
+                                                                        <SelectItem key={e.value} value={e.value} textValue={full}>
+                                                                            <div className="flex min-w-0 flex-col">
+                                                                                <span className="truncate" title={primary}>
+                                                                                    {primary}
+                                                                                </span>
+                                                                                <span
+                                                                                    className="truncate text-xs text-muted-foreground"
+                                                                                    title={secondary}
+                                                                                >
+                                                                                    {secondary}
+                                                                                </span>
+                                                                            </div>
+                                                                        </SelectItem>
+                                                                    )
+                                                                })}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    ) : (
+                                                        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                            No evaluation records are available yet.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : null}
 
-                                    {includeFields.map((field) => (
-                                        <span
-                                            key={field}
-                                            className="inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs"
-                                            title={toLabel(field)}
-                                        >
-                                            <Check className="mr-1 h-3 w-3 shrink-0" />
-                                            <span className="truncate">{toLabel(field)}</span>
-                                        </span>
-                                    ))}
+                                            {needsScheduleSelector ? (
+                                                <div className="space-y-1 min-w-0">
+                                                    <p className="text-xs text-muted-foreground">Schedule context</p>
+                                                    {hasScheduleOptions || !selectedTemplateDef?.requiredContext.includes("scheduleId") ? (
+                                                        <Select value={contextScheduleId} onValueChange={setContextScheduleId}>
+                                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                                <SelectValue placeholder="Select schedule context" />
+                                                            </SelectTrigger>
+                                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                                <SelectItem value={NONE_VALUE}>
+                                                                    {selectedTemplateDef?.requiredContext.includes("scheduleId")
+                                                                        ? "Select schedule context"
+                                                                        : "No schedule context"}
+                                                                </SelectItem>
+                                                                {options.context.schedules.map((s) => {
+                                                                    const primary = buildScheduleDisplayLabel(s)
+                                                                    const secondary = s.groupTitle
+                                                                        ? `Group: ${s.groupTitle}`
+                                                                        : `Group ID: ${shortId(s.groupId)}`
+                                                                    const full = `${primary} • ${secondary}`
+                                                                    return (
+                                                                        <SelectItem key={s.value} value={s.value} textValue={full}>
+                                                                            <div className="flex min-w-0 flex-col">
+                                                                                <span className="truncate" title={primary}>
+                                                                                    {primary}
+                                                                                </span>
+                                                                                <span
+                                                                                    className="truncate text-xs text-muted-foreground"
+                                                                                    title={secondary}
+                                                                                >
+                                                                                    {secondary}
+                                                                                </span>
+                                                                            </div>
+                                                                        </SelectItem>
+                                                                    )
+                                                                })}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    ) : (
+                                                        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                            No schedules are available yet.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : null}
+
+                                            {needsGroupSelector ? (
+                                                <div className="space-y-1 min-w-0">
+                                                    <p className="text-xs text-muted-foreground">Group context</p>
+                                                    {hasGroupOptions || !selectedTemplateDef?.requiredContext.includes("groupId") ? (
+                                                        <Select value={contextGroupId} onValueChange={setContextGroupId}>
+                                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                                <SelectValue placeholder="Select group context" />
+                                                            </SelectTrigger>
+                                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                                <SelectItem value={NONE_VALUE}>
+                                                                    {selectedTemplateDef?.requiredContext.includes("groupId")
+                                                                        ? "Select group context"
+                                                                        : "No group context"}
+                                                                </SelectItem>
+                                                                {options.context.groups.map((g) => {
+                                                                    const label = buildGroupDisplayLabel(g)
+                                                                    return (
+                                                                        <SelectItem key={g.value} value={g.value} textValue={label}>
+                                                                            <span className="block truncate" title={label}>
+                                                                                {label}
+                                                                            </span>
+                                                                        </SelectItem>
+                                                                    )
+                                                                })}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    ) : (
+                                                        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                            No groups are available yet.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-md border bg-muted/20 p-3">
+                                    <p className="mb-2 text-xs font-medium text-muted-foreground">Included information</p>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button variant="outline" className="justify-between min-w-0 max-w-full">
+                                                    <span className="truncate">{includeButtonText}</span>
+                                                    <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent className="w-96 max-w-full">
+                                                <DropdownMenuLabel>Information fields</DropdownMenuLabel>
+                                                <DropdownMenuSeparator />
+                                                {includeChoices.map((field) => (
+                                                    <DropdownMenuCheckboxItem
+                                                        key={field.value}
+                                                        checked={includeFields.includes(field.value)}
+                                                        onCheckedChange={(checked) =>
+                                                            toggleIncludeField(field.value, checked === true)
+                                                        }
+                                                    >
+                                                        <div className="flex min-w-0 flex-col">
+                                                            <span className="truncate" title={field.label}>
+                                                                {field.label}
+                                                            </span>
+                                                            <span className="text-xs text-muted-foreground truncate" title={field.description}>
+                                                                {field.description}
+                                                            </span>
+                                                        </div>
+                                                    </DropdownMenuCheckboxItem>
+                                                ))}
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+
+                                        {includeFields.map((field) => (
+                                            <span
+                                                key={field}
+                                                className="inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs"
+                                                title={toLabel(field)}
+                                            >
+                                                <Check className="mr-1 h-3 w-3 shrink-0" />
+                                                <span className="truncate">{toLabel(field)}</span>
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col items-end gap-2">
+                                    {requiredContextIssue ? (
+                                        <p className="text-xs text-amber-600 dark:text-amber-300">
+                                            {requiredContextIssue}
+                                        </p>
+                                    ) : null}
+                                    <Button
+                                        onClick={() => void sendAutomaticNotification()}
+                                        disabled={sendDisabled}
+                                    >
+                                        <Send className="mr-2 h-4 w-4" />
+                                        {actionKey === "send-auto" ? "Sending..." : "Send Automatic Notification"}
+                                    </Button>
                                 </div>
                             </div>
-
-                            <div className="flex flex-col items-end gap-2">
-                                {requiredContextIssue ? (
-                                    <p className="text-xs text-amber-600 dark:text-amber-300">
-                                        {requiredContextIssue}
-                                    </p>
-                                ) : null}
-                                <Button
-                                    onClick={() => void sendAutomaticNotification()}
-                                    disabled={sendDisabled}
-                                >
-                                    <Send className="mr-2 h-4 w-4" />
-                                    {actionKey === "send-auto" ? "Sending..." : "Send Automatic Notification"}
-                                </Button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-                        <div>
-                            <h2 className="text-sm font-semibold">Notification Viewer</h2>
-                            <p className="text-xs text-muted-foreground">
-                                Review sent notifications for a selected user.
-                            </p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                variant="outline"
-                                onClick={() => void loadNotifications()}
-                                disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
-                            >
-                                {listLoading ? "Loading..." : "Load"}
-                            </Button>
-
-                            <Button
-                                variant="outline"
-                                onClick={() => void markAllAsRead()}
-                                disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
-                            >
-                                {actionKey === "read-all" ? "Updating..." : "Mark All Read"}
-                            </Button>
-                        </div>
+                        )}
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-3">
-                        <div className="space-y-2 min-w-0">
-                            <p className="text-xs font-medium text-muted-foreground">User</p>
-                            <Select value={viewerUserId} onValueChange={setViewerUserId}>
-                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                    <SelectValue placeholder="Select user" />
-                                </SelectTrigger>
-                                <SelectContent className={SELECT_CONTENT_CLASS}>
-                                    <SelectItem value={NONE_VALUE}>Select user</SelectItem>
-                                    {options?.context.users.map((u) => {
-                                        const label = `${u.label} • ${toLabel(u.role)}`
-                                        return (
-                                            <SelectItem key={u.value} value={u.value} textValue={label}>
-                                                <span className="block truncate" title={label}>
-                                                    {label}
-                                                </span>
-                                            </SelectItem>
-                                        )
-                                    }) ?? null}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div className="space-y-2 min-w-0">
-                            <p className="text-xs font-medium text-muted-foreground">Type filter</p>
-                            <Select value={typeFilter} onValueChange={setTypeFilter}>
-                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                    <SelectValue placeholder="Filter by type" />
-                                </SelectTrigger>
-                                <SelectContent className={SELECT_CONTENT_CLASS}>
-                                    <SelectItem value="all">All</SelectItem>
-                                    {(options?.notificationTypes ?? []).map((nt) => (
-                                        <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
-                                            <span className="block truncate">{toLabel(nt)}</span>
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div className="space-y-2 min-w-0">
-                            <p className="text-xs font-medium text-muted-foreground">Read filter</p>
-                            <Select
-                                value={readFilter}
-                                onValueChange={(v) => setReadFilter(v as "all" | "unread" | "read")}
-                            >
-                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
-                                    <SelectValue placeholder="Filter by read status" />
-                                </SelectTrigger>
-                                <SelectContent className={SELECT_CONTENT_CLASS}>
-                                    {READ_FILTERS.map((rf) => (
-                                        <SelectItem key={rf.value} value={rf.value}>
-                                            {rf.label}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                    </div>
-
-                    {/* Push Notification Device Controls */}
-                    <div className="mt-4 rounded-md border bg-muted/20 p-3">
-                        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                            <div className="min-w-0">
-                                <p className="text-xs font-medium text-muted-foreground">Browser Push Device</p>
+                    <div className="rounded-lg border bg-card p-4">
+                        <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                            <div>
+                                <h2 className="text-sm font-semibold">Notification Viewer</h2>
                                 <p className="text-xs text-muted-foreground">
-                                    Connect this browser to the selected user, then send a test push.
+                                    Review sent notifications for a selected user.
                                 </p>
                             </div>
 
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button
-                                    size="sm"
                                     variant="outline"
-                                    onClick={() => void loadPushEnvironment(true)}
-                                    disabled={!!actionKey}
+                                    onClick={() => void loadNotifications()}
+                                    disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
                                 >
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                    Refresh Push Config
+                                    {listLoading ? "Loading..." : "Load"}
                                 </Button>
 
                                 <Button
-                                    size="sm"
                                     variant="outline"
-                                    onClick={() => void enablePushForSelectedUser()}
-                                    disabled={!!actionKey || !canManagePush}
+                                    onClick={() => void markAllAsRead()}
+                                    disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
                                 >
-                                    <Bell className="mr-2 h-4 w-4" />
-                                    {actionKey === "push:enable" ? "Enabling..." : "Enable Push"}
-                                </Button>
-
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => void disablePushForCurrentBrowser()}
-                                    disabled={!!actionKey || !pushSupported}
-                                >
-                                    {actionKey === "push:disable" ? "Disabling..." : "Disable Push"}
-                                </Button>
-
-                                <Button
-                                    size="sm"
-                                    onClick={() => void sendPushTestToSelectedUser()}
-                                    disabled={!!actionKey || viewerUserId === NONE_VALUE}
-                                >
-                                    <Send className="mr-2 h-4 w-4" />
-                                    {actionKey === "push:test" ? "Sending..." : "Send Test Push"}
+                                    {actionKey === "read-all" ? "Updating..." : "Mark All Read"}
                                 </Button>
                             </div>
                         </div>
 
-                        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
-                            <div className="rounded-md border bg-background px-3 py-2">
-                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                                    Browser Support
-                                </p>
-                                <p className="text-sm font-medium">
-                                    {pushSupported ? "Supported" : "Not Supported"}
-                                </p>
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <div className="space-y-2 min-w-0">
+                                <p className="text-xs font-medium text-muted-foreground">User</p>
+                                <Select value={viewerUserId} onValueChange={setViewerUserId}>
+                                    <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                        <SelectValue placeholder="Select user" />
+                                    </SelectTrigger>
+                                    <SelectContent className={SELECT_CONTENT_CLASS}>
+                                        <SelectItem value={NONE_VALUE}>Select user</SelectItem>
+                                        {options?.context.users.map((u) => {
+                                            const label = `${u.label} • ${toLabel(u.role)}`
+                                            return (
+                                                <SelectItem key={u.value} value={u.value} textValue={label}>
+                                                    <span className="block truncate" title={label}>
+                                                        {label}
+                                                    </span>
+                                                </SelectItem>
+                                            )
+                                        }) ?? null}
+                                    </SelectContent>
+                                </Select>
                             </div>
 
-                            <div className="rounded-md border bg-background px-3 py-2">
-                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                                    Permission
-                                </p>
-                                <p className="text-sm font-medium">
-                                    {pushPermissionLabel(pushPermission)}
-                                </p>
+                            <div className="space-y-2 min-w-0">
+                                <p className="text-xs font-medium text-muted-foreground">Type filter</p>
+                                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                                    <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                        <SelectValue placeholder="Filter by type" />
+                                    </SelectTrigger>
+                                    <SelectContent className={SELECT_CONTENT_CLASS}>
+                                        <SelectItem value="all">All</SelectItem>
+                                        {(options?.notificationTypes ?? []).map((nt) => (
+                                            <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
+                                                <span className="block truncate">{toLabel(nt)}</span>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             </div>
 
-                            <div className="rounded-md border bg-background px-3 py-2">
-                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                                    Server Push Config
-                                </p>
-                                <p className="text-sm font-medium">
-                                    {pushConfigured ? "Configured" : "Not Configured"}
-                                </p>
-                            </div>
-
-                            <div className="rounded-md border bg-background px-3 py-2">
-                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                                    This Browser Device
-                                </p>
-                                <p className="text-sm font-medium">
-                                    {localPushEndpoint ? "Subscribed" : "Not Subscribed"}
-                                </p>
+                            <div className="space-y-2 min-w-0">
+                                <p className="text-xs font-medium text-muted-foreground">Read filter</p>
+                                <Select
+                                    value={readFilter}
+                                    onValueChange={(v) => setReadFilter(v as "all" | "unread" | "read")}
+                                >
+                                    <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                        <SelectValue placeholder="Filter by read status" />
+                                    </SelectTrigger>
+                                    <SelectContent className={SELECT_CONTENT_CLASS}>
+                                        {READ_FILTERS.map((rf) => (
+                                            <SelectItem key={rf.value} value={rf.value}>
+                                                {rf.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             </div>
                         </div>
 
-                        {!pushConfigured && pushConfigReason ? (
-                            <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
-                                {pushConfigReason}
-                            </p>
-                        ) : null}
+                        {/* Push Notification Device Controls */}
+                        <div className="mt-4 rounded-md border bg-muted/20 p-3">
+                            <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="min-w-0">
+                                    <p className="text-xs font-medium text-muted-foreground">Browser Push Device</p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Connect this browser to the selected user, then send a test push.
+                                    </p>
+                                </div>
 
-                        {localPushEndpoint ? (
-                            <p className="mt-2 text-xs text-muted-foreground">
-                                Endpoint:{" "}
-                                <span className="font-mono">
-                                    {truncateMiddle(localPushEndpoint)}
-                                </span>
-                            </p>
-                        ) : null}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void loadPushEnvironment(true)}
+                                        disabled={!!actionKey}
+                                    >
+                                        <RefreshCw className="mr-2 h-4 w-4" />
+                                        Refresh Push Config
+                                    </Button>
 
-                        {!pushSupported ? (
-                            <p className="mt-2 text-xs text-destructive">
-                                This browser does not support service worker push.
-                            </p>
-                        ) : null}
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void enablePushForSelectedUser()}
+                                        disabled={!!actionKey || !canManagePush}
+                                    >
+                                        <Bell className="mr-2 h-4 w-4" />
+                                        {actionKey === "push:enable" ? "Enabling..." : "Enable Push"}
+                                    </Button>
 
-                        {viewerUserId === NONE_VALUE ? (
-                            <p className="mt-2 text-xs text-muted-foreground">
-                                Select a user in the Notification Viewer to bind this browser subscription.
-                            </p>
-                        ) : null}
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void disablePushForCurrentBrowser()}
+                                        disabled={!!actionKey || !pushSupported}
+                                    >
+                                        {actionKey === "push:disable" ? "Disabling..." : "Disable Push"}
+                                    </Button>
 
-                        {pushActionsBusy ? (
-                            <p className="mt-2 text-xs text-muted-foreground">
-                                Updating push subscription...
-                            </p>
-                        ) : null}
+                                    <Button
+                                        size="sm"
+                                        onClick={() => void sendPushTestToSelectedUser()}
+                                        disabled={!!actionKey || viewerUserId === NONE_VALUE}
+                                    >
+                                        <Send className="mr-2 h-4 w-4" />
+                                        {actionKey === "push:test" ? "Sending..." : "Send Test Push"}
+                                    </Button>
+                                </div>
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                                <div className="rounded-md border bg-background px-3 py-2">
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Browser Support
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {pushSupported ? "Supported" : "Not Supported"}
+                                    </p>
+                                </div>
+
+                                <div className="rounded-md border bg-background px-3 py-2">
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Permission
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {pushPermissionLabel(pushPermission)}
+                                    </p>
+                                </div>
+
+                                <div className="rounded-md border bg-background px-3 py-2">
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Server Push Config
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {pushConfigured ? "Configured" : "Not Configured"}
+                                    </p>
+                                </div>
+
+                                <div className="rounded-md border bg-background px-3 py-2">
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        This Browser Device
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {localPushEndpoint ? "Subscribed" : "Not Subscribed"}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {!pushConfigured && pushConfigReason ? (
+                                <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                                    {pushConfigReason}
+                                </p>
+                            ) : null}
+
+                            {localPushEndpoint ? (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                    Endpoint:{" "}
+                                    <span className="font-mono">
+                                        {truncateMiddle(localPushEndpoint)}
+                                    </span>
+                                </p>
+                            ) : null}
+
+                            {!pushSupported ? (
+                                <p className="mt-2 text-xs text-destructive">
+                                    This browser does not support service worker push.
+                                </p>
+                            ) : null}
+
+                            {viewerUserId === NONE_VALUE ? (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                    Select a user in the Notification Viewer to bind this browser subscription.
+                                </p>
+                            ) : null}
+
+                            {pushActionsBusy ? (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                    Updating push subscription...
+                                </p>
+                            ) : null}
+                        </div>
+
+                        <p className="mt-3 text-sm text-muted-foreground">
+                            Total: <span className="font-semibold text-foreground">{notifications.length}</span> •
+                            Unread: <span className="font-semibold text-foreground">{unreadCount}</span>
+                        </p>
                     </div>
 
-                    <p className="mt-3 text-sm text-muted-foreground">
-                        Total: <span className="font-semibold text-foreground">{notifications.length}</span> •
-                        Unread: <span className="font-semibold text-foreground">{unreadCount}</span>
-                    </p>
-                </div>
-
-                <div className="overflow-x-auto rounded-lg border bg-card">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead className="min-w-72">Notification</TableHead>
-                                <TableHead className="min-w-40">Type</TableHead>
-                                <TableHead className="min-w-28">Status</TableHead>
-                                <TableHead className="min-w-44">Created</TableHead>
-                                <TableHead className="min-w-44 text-right">Actions</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {listLoading ? (
-                                Array.from({ length: 6 }).map((_, i) => (
-                                    <TableRow key={`skeleton-${i}`}>
-                                        <TableCell colSpan={5}>
-                                            <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                    <div className="overflow-x-auto rounded-lg border bg-card">
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="min-w-72">Notification</TableHead>
+                                    <TableHead className="min-w-40">Type</TableHead>
+                                    <TableHead className="min-w-28">Status</TableHead>
+                                    <TableHead className="min-w-44">Created</TableHead>
+                                    <TableHead className="min-w-44 text-right">Actions</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {listLoading ? (
+                                    Array.from({ length: 6 }).map((_, i) => (
+                                        <TableRow key={`skeleton-${i}`}>
+                                            <TableCell colSpan={5}>
+                                                <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                            </TableCell>
+                                        </TableRow>
+                                    ))
+                                ) : notifications.length === 0 ? (
+                                    <TableRow>
+                                        <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                                            Select a user and click Load to view notifications.
                                         </TableCell>
                                     </TableRow>
-                                ))
-                            ) : notifications.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                                        Select a user and click Load to view notifications.
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                notifications.map((n) => {
-                                    const reading = actionKey === `read:${n.id}`
-                                    const deleting = actionKey === `delete:${n.id}`
+                                ) : (
+                                    notifications.map((n) => {
+                                        const reading = actionKey === `read:${n.id}`
+                                        const deleting = actionKey === `delete:${n.id}`
+                                        const friendly = toFriendlyNotification(n)
 
-                                    return (
-                                        <TableRow key={n.id}>
-                                            <TableCell>
-                                                <div className="flex min-w-0 flex-col">
-                                                    <span className="font-medium truncate" title={n.title}>
-                                                        {n.title}
+                                        return (
+                                            <TableRow key={n.id}>
+                                                <TableCell>
+                                                    <Tooltip>
+                                                        <TooltipTrigger asChild>
+                                                            <Button
+                                                                variant="ghost"
+                                                                className="h-auto w-full justify-start p-0 text-left"
+                                                                onClick={() => openNotificationDetails(n)}
+                                                            >
+                                                                <div className="flex min-w-0 w-full flex-col">
+                                                                    <span className="font-medium truncate" title={friendly.title}>
+                                                                        {friendly.title}
+                                                                    </span>
+                                                                    <span className="text-xs text-muted-foreground truncate" title={friendly.summary}>
+                                                                        {friendly.summary}
+                                                                    </span>
+                                                                    <span className="mt-1 inline-flex w-fit items-center rounded-md border px-2 py-0.5 text-xs text-muted-foreground">
+                                                                        Click to view formal notice
+                                                                    </span>
+                                                                </div>
+                                                            </Button>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent side="top" align="start">
+                                                            Click this row to open the full formal message
+                                                        </TooltipContent>
+                                                    </Tooltip>
+                                                </TableCell>
+
+                                                <TableCell>
+                                                    <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
+                                                        {toLabel(n.type)}
                                                     </span>
-                                                    <span className="text-xs text-muted-foreground truncate" title={n.body}>
-                                                        {n.body}
+                                                </TableCell>
+
+                                                <TableCell>
+                                                    <span
+                                                        className={[
+                                                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                            n.read_at
+                                                                ? "border-muted-foreground/30 bg-muted text-muted-foreground"
+                                                                : "border-primary/40 bg-primary/10 text-foreground",
+                                                        ].join(" ")}
+                                                    >
+                                                        {n.read_at ? "Read" : "Unread"}
                                                     </span>
-                                                    <span className="mt-1 text-xs text-muted-foreground">
-                                                        ID: {n.id}
-                                                    </span>
-                                                </div>
-                                            </TableCell>
+                                                </TableCell>
 
-                                            <TableCell>
-                                                <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
-                                                    {toLabel(n.type)}
-                                                </span>
-                                            </TableCell>
+                                                <TableCell className="text-muted-foreground">
+                                                    {formatDate(n.created_at)}
+                                                </TableCell>
 
-                                            <TableCell>
-                                                <span
-                                                    className={[
-                                                        "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                        n.read_at
-                                                            ? "border-muted-foreground/30 bg-muted text-muted-foreground"
-                                                            : "border-primary/40 bg-primary/10 text-foreground",
-                                                    ].join(" ")}
-                                                >
-                                                    {n.read_at ? "Read" : "Unread"}
-                                                </span>
-                                            </TableCell>
+                                                <TableCell>
+                                                    <div className="flex items-center justify-end gap-2">
+                                                        {!n.read_at ? (
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => void markAsRead(n.id)}
+                                                                disabled={!!actionKey}
+                                                            >
+                                                                {reading ? "Updating..." : "Mark Read"}
+                                                            </Button>
+                                                        ) : null}
 
-                                            <TableCell className="text-muted-foreground">
-                                                {formatDate(n.created_at)}
-                                            </TableCell>
-
-                                            <TableCell>
-                                                <div className="flex items-center justify-end gap-2">
-                                                    {!n.read_at ? (
                                                         <Button
                                                             size="sm"
                                                             variant="outline"
-                                                            onClick={() => void markAsRead(n.id)}
+                                                            onClick={() => void deleteNotification(n.id)}
                                                             disabled={!!actionKey}
                                                         >
-                                                            {reading ? "Updating..." : "Mark Read"}
+                                                            {deleting ? "Deleting..." : "Delete"}
                                                         </Button>
-                                                    ) : null}
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                        )
+                                    })
+                                )}
+                            </TableBody>
+                        </Table>
+                    </div>
 
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        onClick={() => void deleteNotification(n.id)}
-                                                        disabled={!!actionKey}
-                                                    >
-                                                        {deleting ? "Deleting..." : "Delete"}
-                                                    </Button>
+                    <Dialog open={notificationDialogOpen} onOpenChange={setNotificationDialogOpen}>
+                        <DialogContent className="sm:max-w-2xl h-[90svh] overflow-auto">
+                            {selectedNotification && selectedNotificationFriendly ? (
+                                <>
+                                    <DialogHeader>
+                                        <DialogTitle>{selectedNotificationFriendly.title}</DialogTitle>
+                                        <DialogDescription>
+                                            {selectedNotificationFriendly.summary}
+                                        </DialogDescription>
+                                    </DialogHeader>
+
+                                    <div className="grid gap-3">
+                                        <div className="grid gap-2 sm:grid-cols-3">
+                                            <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                                <p className="text-xs text-muted-foreground">Type</p>
+                                                <p className="text-sm font-medium">
+                                                    {toLabel(selectedNotification.type)}
+                                                </p>
+                                            </div>
+                                            <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                                <p className="text-xs text-muted-foreground">Status</p>
+                                                <p className="text-sm font-medium">
+                                                    {selectedNotification.read_at ? "Read" : "Unread"}
+                                                </p>
+                                            </div>
+                                            <div className="rounded-md border bg-muted/20 px-3 py-2">
+                                                <p className="text-xs text-muted-foreground">Created</p>
+                                                <p className="text-sm font-medium">
+                                                    {formatDate(selectedNotification.created_at)}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-md border bg-background p-3">
+                                            <p className="text-xs font-medium text-muted-foreground">
+                                                Subject
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold">
+                                                {selectedNotificationFriendly.formalSubject}
+                                            </p>
+
+                                            <div className="mt-3 rounded-md border bg-muted/10 p-3">
+                                                <p className="whitespace-pre-line text-sm leading-6">
+                                                    {selectedNotificationFriendly.formalMessage}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {selectedNotificationFriendly.details.length > 0 ? (
+                                            <div className="rounded-md border bg-muted/10 p-3">
+                                                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                                                    Included details
+                                                </p>
+                                                <div className="grid gap-2 sm:grid-cols-2">
+                                                    {selectedNotificationFriendly.details.map((detail, index) => (
+                                                        <div
+                                                            key={`${detail.label}-${index}`}
+                                                            className="rounded-md border bg-background px-3 py-2"
+                                                        >
+                                                            <p className="text-xs text-muted-foreground">
+                                                                {detail.label}
+                                                            </p>
+                                                            <p className="text-sm font-medium wrap-break-word">
+                                                                {detail.value}
+                                                            </p>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    )
-                                })
-                            )}
-                        </TableBody>
-                    </Table>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                                                No additional details were attached to this notification.
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <p className="text-xs text-muted-foreground">
+                                            Reference ID: {selectedNotification.id}
+                                        </p>
+
+                                        <div className="flex items-center gap-2">
+                                            {!selectedNotification.read_at ? (
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => void markSelectedNotificationAsRead()}
+                                                    disabled={!!actionKey}
+                                                >
+                                                    {actionKey === `read:${selectedNotification.id}` ? "Updating..." : "Mark Read"}
+                                                </Button>
+                                            ) : null}
+
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => void deleteSelectedNotification()}
+                                                disabled={!!actionKey}
+                                            >
+                                                {actionKey === `delete:${selectedNotification.id}` ? "Deleting..." : "Delete"}
+                                            </Button>
+                                        </div>
+                                    </DialogFooter>
+                                </>
+                            ) : null}
+                        </DialogContent>
+                    </Dialog>
                 </div>
-            </div>
+            </TooltipProvider>
         </DashboardLayout>
     )
 }
