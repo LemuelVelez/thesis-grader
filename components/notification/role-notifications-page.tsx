@@ -604,7 +604,7 @@ export function RoleNotificationsPage({ perspective }: RoleNotificationsPageProp
                                                     <p className="text-xs text-muted-foreground">
                                                         {detail.label}
                                                     </p>
-                                                    <p className="break-words text-sm font-medium">
+                                                    <p className="wrap-break-word text-sm font-medium">
                                                         {detail.value}
                                                     </p>
                                                 </div>
