@@ -77,6 +77,92 @@ const RUBRIC_CRITERION_ID_CANDIDATE_KEYS = [
     'rubricCriterionId',
 ] as const;
 
+const RUBRIC_CRITERION_LABEL_CANDIDATE_KEYS = [
+    'criterion',
+    'criteria',
+    'title',
+    'name',
+    'label',
+    'criterion_title',
+    'criterionTitle',
+    'criteria_title',
+    'criteriaTitle',
+    'criterion_name',
+    'criterionName',
+    'criteria_name',
+    'criteriaName',
+    'indicator',
+    'aspect',
+    'objective',
+    'heading',
+    'text',
+] as const;
+
+const RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS = [
+    'description',
+    'details',
+    'detail',
+    'note',
+    'notes',
+    'criterion_description',
+    'criterionDescription',
+] as const;
+
+const RUBRIC_CRITERION_WEIGHT_CANDIDATE_KEYS = [
+    'weight',
+    'percentage',
+    'percent',
+    'points',
+    'point',
+    'weight_percent',
+    'weightPercent',
+    'score_weight',
+    'scoreWeight',
+    'value',
+] as const;
+
+const RUBRIC_CRITERION_MIN_SCORE_CANDIDATE_KEYS = [
+    'min_score',
+    'minScore',
+    'min',
+    'minimum',
+    'minimum_score',
+    'minimumScore',
+    'min_points',
+    'minPoints',
+] as const;
+
+const RUBRIC_CRITERION_MAX_SCORE_CANDIDATE_KEYS = [
+    'max_score',
+    'maxScore',
+    'max',
+    'maximum',
+    'maximum_score',
+    'maximumScore',
+    'max_points',
+    'maxPoints',
+] as const;
+
+const RUBRIC_CRITERIA_ARRAY_CANDIDATE_KEYS = [
+    'criteria',
+    'criteria_items',
+    'criteriaItems',
+    'items',
+    'rows',
+    'rubric_criteria',
+    'rubricCriteria',
+    'criteria_list',
+    'criteriaList',
+] as const;
+
+const RUBRIC_CRITERIA_SINGLE_CANDIDATE_KEYS = [
+    'criterion',
+    'criteria_item',
+    'criteriaItem',
+    'item',
+    'row',
+] as const;
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -119,56 +205,157 @@ function toNullableTrimmedString(value: unknown): string | null | undefined {
     return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseFlexibleNumberString(raw: string): number | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+
+    // Accept common inputs: "20", "20.5", "20%", "20 %", "1,000", "-5"
+    const normalized = trimmed.replace(/,/g, '').replace(/%/g, '').trim();
+    if (!/^[-+]?(?:\d+\.?\d*|\.\d+)$/.test(normalized)) return null;
+
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toFiniteNumber(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
+
     if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) return null;
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed)) return parsed;
+        return parseFlexibleNumberString(value);
     }
+
+    if (isObjectRecord(value)) {
+        const nested = readFirstDefined(value, [
+            'value',
+            'amount',
+            'number',
+            'score',
+            'weight',
+            'percentage',
+            'percent',
+            'points',
+            'min',
+            'max',
+            'raw',
+        ]);
+
+        if (nested === value) return null;
+        return toFiniteNumber(nested);
+    }
+
     return null;
 }
 
+function toNonEmptyStringFromUnknown(value: unknown): string | null {
+    if (typeof value === 'string') return toNonEmptyTrimmedString(value);
+
+    if (isObjectRecord(value)) {
+        const nested = readFirstDefined(value, [
+            'value',
+            'text',
+            'label',
+            'name',
+            'title',
+            'criterion',
+            'criteria',
+            'display',
+        ]);
+
+        if (nested === value) return null;
+        return toNonEmptyStringFromUnknown(nested);
+    }
+
+    return null;
+}
+
+function normalizeCriteriaArrayEntries(candidate: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(candidate)) return [];
+
+    const out: Record<string, unknown>[] = [];
+
+    for (const entry of candidate) {
+        if (isObjectRecord(entry)) {
+            out.push({ ...entry });
+            continue;
+        }
+
+        const text = toNonEmptyStringFromUnknown(entry);
+        if (text) {
+            out.push({ criterion: text });
+        }
+    }
+
+    return out;
+}
+
 function parseRubricCriteriaInputsFromBody(body: Record<string, unknown>): Record<string, unknown>[] {
-    const arrayCandidates: unknown[] = [
-        body.criteria,
-        body.criteria_items,
-        body.criteriaItems,
-        body.items,
-        body.rows,
+    const arrayCandidates: unknown[] = [];
+
+    // Direct root-level candidates
+    for (const key of RUBRIC_CRITERIA_ARRAY_CANDIDATE_KEYS) {
+        arrayCandidates.push(body[key]);
+    }
+
+    // Common nested wrappers from frontend payloads
+    const nestedContainers: unknown[] = [
+        body.data,
+        body.payload,
+        body.template,
+        body.rubricTemplate,
+        body.rubric_template,
+        body.form,
     ];
 
+    for (const container of nestedContainers) {
+        if (!isObjectRecord(container)) continue;
+        for (const key of RUBRIC_CRITERIA_ARRAY_CANDIDATE_KEYS) {
+            arrayCandidates.push(container[key]);
+        }
+    }
+
     for (const candidate of arrayCandidates) {
-        if (!Array.isArray(candidate)) continue;
-        const parsed = candidate.filter(isObjectRecord).map((entry) => ({ ...entry }));
+        const parsed = normalizeCriteriaArrayEntries(candidate);
         if (parsed.length > 0) return parsed;
     }
 
-    const singleCandidates: unknown[] = [
-        body.criterion,
-        body.criteria_item,
-        body.criteriaItem,
-        body.item,
-        body.row,
-    ];
+    const singleCandidates: unknown[] = [];
+
+    for (const key of RUBRIC_CRITERIA_SINGLE_CANDIDATE_KEYS) {
+        singleCandidates.push(body[key]);
+    }
+
+    for (const container of nestedContainers) {
+        if (!isObjectRecord(container)) continue;
+        for (const key of RUBRIC_CRITERIA_SINGLE_CANDIDATE_KEYS) {
+            singleCandidates.push(container[key]);
+        }
+    }
 
     for (const candidate of singleCandidates) {
-        if (!isObjectRecord(candidate)) continue;
-        return [{ ...candidate }];
+        if (isObjectRecord(candidate)) {
+            return [{ ...candidate }];
+        }
+
+        const text = toNonEmptyStringFromUnknown(candidate);
+        if (text) {
+            return [{ criterion: text }];
+        }
     }
 
     const clone: Record<string, unknown> = { ...body };
-    delete clone.criteria;
-    delete clone.criteria_items;
-    delete clone.criteriaItems;
-    delete clone.items;
-    delete clone.rows;
-    delete clone.criterion;
-    delete clone.criteria_item;
-    delete clone.criteriaItem;
-    delete clone.item;
-    delete clone.row;
+
+    for (const key of [
+        ...RUBRIC_CRITERIA_ARRAY_CANDIDATE_KEYS,
+        ...RUBRIC_CRITERIA_SINGLE_CANDIDATE_KEYS,
+        'data',
+        'payload',
+        'template',
+        'rubricTemplate',
+        'rubric_template',
+        'form',
+    ]) {
+        delete clone[key];
+    }
 
     return Object.keys(clone).length > 0 ? [clone] : [];
 }
@@ -176,34 +363,35 @@ function parseRubricCriteriaInputsFromBody(body: Record<string, unknown>): Recor
 function normalizeRubricCriterionCreateInput(
     input: Record<string, unknown>,
 ): { item: Record<string, unknown> | null; error: string | null } {
-    const criterionRaw = readFirstDefined(input, [
-        'criterion',
-        'title',
-        'name',
-        'label',
-    ]);
-    const criterion = toNonEmptyTrimmedString(criterionRaw);
+    let criterion = toNonEmptyStringFromUnknown(
+        readFirstDefined(input, RUBRIC_CRITERION_LABEL_CANDIDATE_KEYS),
+    );
+
+    // Fallback: in some UIs, criterion text is sent in description/details only.
+    if (!criterion) {
+        criterion = toNonEmptyStringFromUnknown(
+            readFirstDefined(input, RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS),
+        );
+    }
+
     if (!criterion) {
         return {
             item: null,
-            error: 'criterion/title/name is required and must be a non-empty string.',
+            error:
+                'criterion/title/name is required and must be a non-empty string.',
         };
     }
 
-    const descriptionRaw = readFirstDefined(input, [
-        'description',
-        'details',
-        'note',
-        'notes',
-    ]);
+    const descriptionRaw = readFirstDefined(
+        input,
+        RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS,
+    );
     const description = toNullableTrimmedString(descriptionRaw);
 
-    const weightRaw = readFirstDefined(input, [
-        'weight',
-        'percentage',
-        'percent',
-        'points',
-    ]);
+    const weightRaw = readFirstDefined(
+        input,
+        RUBRIC_CRITERION_WEIGHT_CANDIDATE_KEYS,
+    );
     const weight = toFiniteNumber(weightRaw);
     if (weight === null) {
         return {
@@ -212,8 +400,8 @@ function normalizeRubricCriterionCreateInput(
         };
     }
 
-    const minRaw = readFirstDefined(input, ['min_score', 'minScore', 'min']);
-    const maxRaw = readFirstDefined(input, ['max_score', 'maxScore', 'max']);
+    const minRaw = readFirstDefined(input, RUBRIC_CRITERION_MIN_SCORE_CANDIDATE_KEYS);
+    const maxRaw = readFirstDefined(input, RUBRIC_CRITERION_MAX_SCORE_CANDIDATE_KEYS);
 
     const minScore = minRaw === undefined ? 1 : toFiniteNumber(minRaw);
     const maxScore = maxRaw === undefined ? 5 : toFiniteNumber(maxRaw);
@@ -249,12 +437,12 @@ function normalizeRubricCriterionPatchInput(
 ): { patch: Record<string, unknown> | null; error: string | null } {
     const patch: Record<string, unknown> = {};
 
-    const hasCriterion = ['criterion', 'title', 'name', 'label'].some((key) =>
+    const hasCriterion = RUBRIC_CRITERION_LABEL_CANDIDATE_KEYS.some((key) =>
         hasOwnKey(input, key),
     );
     if (hasCriterion) {
-        const criterion = toNonEmptyTrimmedString(
-            readFirstDefined(input, ['criterion', 'title', 'name', 'label']),
+        const criterion = toNonEmptyStringFromUnknown(
+            readFirstDefined(input, RUBRIC_CRITERION_LABEL_CANDIDATE_KEYS),
         );
         if (!criterion) {
             return {
@@ -265,12 +453,12 @@ function normalizeRubricCriterionPatchInput(
         patch.criterion = criterion;
     }
 
-    const hasDescription = ['description', 'details', 'note', 'notes'].some((key) =>
+    const hasDescription = RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS.some((key) =>
         hasOwnKey(input, key),
     );
     if (hasDescription) {
         const description = toNullableTrimmedString(
-            readFirstDefined(input, ['description', 'details', 'note', 'notes']),
+            readFirstDefined(input, RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS),
         );
         if (description === undefined) {
             return {
@@ -281,12 +469,12 @@ function normalizeRubricCriterionPatchInput(
         patch.description = description;
     }
 
-    const hasWeight = ['weight', 'percentage', 'percent', 'points'].some((key) =>
+    const hasWeight = RUBRIC_CRITERION_WEIGHT_CANDIDATE_KEYS.some((key) =>
         hasOwnKey(input, key),
     );
     if (hasWeight) {
         const weight = toFiniteNumber(
-            readFirstDefined(input, ['weight', 'percentage', 'percent', 'points']),
+            readFirstDefined(input, RUBRIC_CRITERION_WEIGHT_CANDIDATE_KEYS),
         );
         if (weight === null) {
             return {
@@ -297,10 +485,12 @@ function normalizeRubricCriterionPatchInput(
         patch.weight = weight;
     }
 
-    const hasMin = ['min_score', 'minScore', 'min'].some((key) => hasOwnKey(input, key));
+    const hasMin = RUBRIC_CRITERION_MIN_SCORE_CANDIDATE_KEYS.some((key) =>
+        hasOwnKey(input, key),
+    );
     if (hasMin) {
         const minScore = toFiniteNumber(
-            readFirstDefined(input, ['min_score', 'minScore', 'min']),
+            readFirstDefined(input, RUBRIC_CRITERION_MIN_SCORE_CANDIDATE_KEYS),
         );
         if (minScore === null) {
             return {
@@ -311,10 +501,12 @@ function normalizeRubricCriterionPatchInput(
         patch.min_score = minScore;
     }
 
-    const hasMax = ['max_score', 'maxScore', 'max'].some((key) => hasOwnKey(input, key));
+    const hasMax = RUBRIC_CRITERION_MAX_SCORE_CANDIDATE_KEYS.some((key) =>
+        hasOwnKey(input, key),
+    );
     if (hasMax) {
         const maxScore = toFiniteNumber(
-            readFirstDefined(input, ['max_score', 'maxScore', 'max']),
+            readFirstDefined(input, RUBRIC_CRITERION_MAX_SCORE_CANDIDATE_KEYS),
         );
         if (maxScore === null) {
             return {
