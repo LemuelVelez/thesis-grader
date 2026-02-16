@@ -29,6 +29,8 @@ import {
     type EvaluationRow,
     type EvaluationStatus,
     type GroupMemberRow,
+    type JsonObject,
+    type JsonValue,
     type NotificationType,
     type StudentRow,
     type ThesisRole,
@@ -335,6 +337,62 @@ export function json201(payload: Record<string, unknown>): NextResponse {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toJsonValue(value: unknown): JsonValue {
+    if (value === null) return null;
+
+    if (typeof value === 'string') return value;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+
+    if (Array.isArray(value)) {
+        return value.map((item) => toJsonValue(item));
+    }
+
+    if (isRecord(value)) {
+        const out: JsonObject = {};
+        for (const [key, val] of Object.entries(value)) {
+            out[key] = toJsonValue(val);
+        }
+        return out;
+    }
+
+    return null;
+}
+
+function toJsonObject(value: unknown): JsonObject {
+    if (!isRecord(value)) return {};
+    const out: JsonObject = {};
+    for (const [key, val] of Object.entries(value)) {
+        out[key] = toJsonValue(val);
+    }
+    return out;
+}
+
+function parseUuidArray(value: unknown): UUID[] {
+    if (!Array.isArray(value)) return [];
+
+    const seen = new Set<string>();
+    const out: UUID[] = [];
+
+    for (const item of value) {
+        if (typeof item !== 'string') continue;
+        const trimmed = item.trim();
+        if (!isUuidLike(trimmed)) continue;
+
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        out.push(trimmed as UUID);
+    }
+
+    return out;
 }
 
 export async function readJsonRecord(
@@ -939,6 +997,10 @@ async function dispatchNotificationsRequest(
                     broadcast: 'POST /api/notifications/broadcast',
                     autoOptions: 'GET /api/notifications/auto/options?limit=30',
                     autoDispatch: 'POST /api/notifications/auto/send',
+                    pushPublicKey: 'GET /api/notifications/push/public-key',
+                    pushSubscribe: 'POST /api/notifications/push/subscriptions',
+                    pushUnsubscribe: 'DELETE /api/notifications/push/subscriptions',
+                    pushSend: 'POST /api/notifications/push/send',
                     getById: 'GET /api/notifications/:id',
                     update: 'PATCH|PUT /api/notifications/:id',
                     remove: 'DELETE /api/notifications/:id',
@@ -988,6 +1050,100 @@ async function dispatchNotificationsRequest(
 
         if (isOptionsPath || isSendPath) {
             return json405(['GET', 'POST', 'OPTIONS']);
+        }
+
+        return json404Api();
+    }
+
+    /* ----------------------------- PUSH ENDPOINTS ---------------------------- */
+
+    if (tail[0] === 'push') {
+        if (tail.length === 1) {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+            return json200({
+                service: 'notifications.push',
+                routes: {
+                    publicKey: 'GET /api/notifications/push/public-key',
+                    subscribe: 'POST /api/notifications/push/subscriptions',
+                    unsubscribe: 'DELETE /api/notifications/push/subscriptions',
+                    send: 'POST /api/notifications/push/send',
+                },
+            });
+        }
+
+        if (tail.length === 2 && tail[1] === 'public-key') {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+            const item = await controller.getPushPublicKey();
+            return json200({ item });
+        }
+
+        if (tail.length === 2 && tail[1] === 'subscriptions') {
+            if (method === 'POST') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                try {
+                    const item = await controller.registerPushSubscription(body);
+                    return json201({ item });
+                } catch (error) {
+                    return json400(toErrorMessage(error));
+                }
+            }
+
+            if (method === 'DELETE') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                try {
+                    const result = await controller.unregisterPushSubscription(body);
+                    return json200({ deleted: result.deleted });
+                } catch (error) {
+                    return json400(toErrorMessage(error));
+                }
+            }
+
+            return json405(['POST', 'DELETE', 'OPTIONS']);
+        }
+
+        if (tail.length === 2 && (tail[1] === 'send' || tail[1] === 'dispatch')) {
+            if (method !== 'POST') return json405(['POST', 'OPTIONS']);
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const userIds = parseUuidArray(body.userIds);
+
+            if (userIds.length === 0) {
+                return json400('userIds must be a non-empty UUID string array.');
+            }
+
+            const payloadNode = isRecord(body.payload) ? body.payload : body;
+
+            const title = toNonEmptyString(payloadNode.title) ?? 'New notification';
+            const messageBody =
+                toNonEmptyString(payloadNode.body) ?? 'You have a new update.';
+
+            const typeRaw = toNonEmptyString(payloadNode.type);
+            const typeParsed = typeRaw ? toNotificationType(typeRaw) : 'general';
+            if (typeRaw && !typeParsed) {
+                return json400(
+                    `Invalid notification type. Allowed: ${NOTIFICATION_TYPES.join(', ')}`,
+                );
+            }
+
+            const data = toJsonObject(payloadNode.data);
+
+            try {
+                const item = await controller.sendPushToUsers(userIds, {
+                    type: typeParsed ?? 'general',
+                    title,
+                    body: messageBody,
+                    data,
+                });
+                return json200({ item });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
         }
 
         return json404Api();

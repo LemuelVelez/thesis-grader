@@ -15,6 +15,24 @@ import type {
     Services,
 } from '../services/Services';
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const webpush = require('web-push') as {
+    setVapidDetails: (
+        subject: string,
+        publicKey: string,
+        privateKey: string,
+    ) => void;
+    sendNotification: (
+        subscription: WebPushSubscriptionPayload,
+        payload?: string,
+        options?: Record<string, unknown>,
+    ) => Promise<{
+        statusCode?: number;
+        headers?: Record<string, string>;
+        body?: string;
+    }>;
+};
+
 function stripUndefined<T extends object>(input: T): Partial<T> {
     const out: Partial<T> = {};
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
@@ -44,6 +62,14 @@ function toBoolean(value: unknown): boolean | undefined {
     return undefined;
 }
 
+function toInteger(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+    if (typeof value !== 'string') return undefined;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return undefined;
+    return Math.trunc(parsed);
+}
+
 function unique<T>(values: T[]): T[] {
     return Array.from(new Set(values));
 }
@@ -61,7 +87,87 @@ function toUuidArray(value: unknown): UUID[] {
     );
 }
 
+function safeJsonStringify(value: unknown): string {
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return '{}';
+    }
+}
+
 export type ListUserNotificationsQuery = Omit<ListQuery<NotificationRow>, 'where'>;
+
+/* -------------------------------------------------------------------------- */
+/*                             Web Push (VAPID) types                         */
+/* -------------------------------------------------------------------------- */
+
+type PushUrgency = 'very-low' | 'low' | 'normal' | 'high';
+
+interface WebPushSubscriptionPayload {
+    endpoint: string;
+    keys: {
+        p256dh: string;
+        auth: string;
+    };
+    expirationTime?: number | null;
+    contentEncoding?: string;
+}
+
+interface StoredPushSubscription {
+    id: string | null;
+    userId: UUID;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    contentEncoding: string | null;
+    raw: JsonObject;
+}
+
+interface PushSubscriptionsServiceLike {
+    findMany?: (query?: Record<string, unknown>) => Promise<unknown[]>;
+    create?: (payload: Record<string, unknown>) => Promise<unknown>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: Record<string, unknown>,
+    ) => Promise<unknown>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
+    deleteByEndpoint?: (endpoint: string) => Promise<number>;
+    findByEndpoint?: (endpoint: string) => Promise<unknown | null>;
+    listByUser?: (userId: UUID) => Promise<unknown[]>;
+    listByUsers?: (userIds: UUID[]) => Promise<unknown[]>;
+}
+
+export interface PushPublicKeyInfo {
+    enabled: boolean;
+    publicKey: string | null;
+    reason?: string;
+}
+
+export interface PushSubscriptionMutationResult {
+    item: {
+        id: string | null;
+        userId: UUID;
+        endpoint: string;
+        contentEncoding: string | null;
+    };
+    created: boolean;
+    updated: boolean;
+}
+
+export interface PushUnsubscribeResult {
+    deleted: number;
+}
+
+export interface PushDispatchResult {
+    enabled: boolean;
+    totalSubscriptions: number;
+    sent: number;
+    failed: number;
+    removed: number;
+    reason?: string;
+}
+
+let webPushConfiguredSignature: string | null = null;
 
 /* -------------------------------------------------------------------------- */
 /*                    Automatic notification (select-based)                   */
@@ -359,10 +465,655 @@ interface ResolvedAutoContext {
 export class NotificationController {
     constructor(private readonly services: Services) { }
 
+    /* ------------------------------ PUSH HELPERS ----------------------------- */
+
+    private getPushSubscriptionsService(): PushSubscriptionsServiceLike | null {
+        const svc = (this.services as unknown as { push_subscriptions?: unknown })
+            .push_subscriptions;
+
+        if (!svc || typeof svc !== 'object') return null;
+        return svc as PushSubscriptionsServiceLike;
+    }
+
+    private getPushConfig(): {
+        enabled: boolean;
+        reason?: string;
+        subject: string | null;
+        publicKey: string | null;
+        privateKey: string | null;
+        ttl: number;
+        urgency: PushUrgency;
+    } {
+        const enabledFromEnv =
+            toBoolean(process.env.PUSH_NOTIFICATIONS_ENABLED ?? 'true') ?? true;
+        const subject = toTrimmedString(process.env.VAPID_SUBJECT);
+        const publicKey = toTrimmedString(process.env.VAPID_PUBLIC_KEY);
+        const privateKey = toTrimmedString(process.env.VAPID_PRIVATE_KEY);
+
+        const ttlRaw = toInteger(process.env.PUSH_TTL_SECONDS ?? '60');
+        const ttl = ttlRaw && ttlRaw > 0 ? ttlRaw : 60;
+
+        const urgencyRaw = toTrimmedString(process.env.PUSH_URGENCY)?.toLowerCase();
+        const urgency: PushUrgency =
+            urgencyRaw === 'very-low' ||
+                urgencyRaw === 'low' ||
+                urgencyRaw === 'normal' ||
+                urgencyRaw === 'high'
+                ? urgencyRaw
+                : 'normal';
+
+        if (!enabledFromEnv) {
+            return {
+                enabled: false,
+                reason: 'Push notifications are disabled by PUSH_NOTIFICATIONS_ENABLED.',
+                subject,
+                publicKey,
+                privateKey,
+                ttl,
+                urgency,
+            };
+        }
+
+        if (!subject || !publicKey || !privateKey) {
+            return {
+                enabled: false,
+                reason:
+                    'Missing VAPID config. Set VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY.',
+                subject,
+                publicKey,
+                privateKey,
+                ttl,
+                urgency,
+            };
+        }
+
+        const normalizedSubject = subject.toLowerCase();
+        if (
+            !normalizedSubject.startsWith('mailto:') &&
+            !normalizedSubject.startsWith('https://')
+        ) {
+            return {
+                enabled: false,
+                reason: 'VAPID_SUBJECT must start with "mailto:" or "https://".',
+                subject,
+                publicKey,
+                privateKey,
+                ttl,
+                urgency,
+            };
+        }
+
+        return {
+            enabled: true,
+            subject,
+            publicKey,
+            privateKey,
+            ttl,
+            urgency,
+        };
+    }
+
+    private ensureWebPushConfigured(): {
+        enabled: boolean;
+        publicKey: string | null;
+        reason?: string;
+        ttl?: number;
+        urgency?: PushUrgency;
+    } {
+        const cfg = this.getPushConfig();
+        if (!cfg.enabled || !cfg.subject || !cfg.publicKey || !cfg.privateKey) {
+            return {
+                enabled: false,
+                publicKey: cfg.publicKey,
+                reason: cfg.reason,
+            };
+        }
+
+        const signature = `${cfg.subject}|${cfg.publicKey}|${cfg.privateKey}`;
+        if (webPushConfiguredSignature !== signature) {
+            webpush.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
+            webPushConfiguredSignature = signature;
+        }
+
+        return {
+            enabled: true,
+            publicKey: cfg.publicKey,
+            ttl: cfg.ttl,
+            urgency: cfg.urgency,
+        };
+    }
+
+    private readUuid(value: unknown): UUID | null {
+        const str = toTrimmedString(value);
+        if (!str || !UUID_RE.test(str)) return null;
+        return str as UUID;
+    }
+
+    private parseWebPushSubscription(value: unknown): WebPushSubscriptionPayload | null {
+        if (!isRecord(value)) return null;
+
+        const endpoint = toTrimmedString(value.endpoint);
+        const keys = isRecord(value.keys) ? value.keys : null;
+        const p256dh = toTrimmedString(keys?.p256dh);
+        const auth = toTrimmedString(keys?.auth);
+
+        if (!endpoint || !p256dh || !auth) return null;
+
+        const expirationTime =
+            typeof value.expirationTime === 'number' && Number.isFinite(value.expirationTime)
+                ? value.expirationTime
+                : value.expirationTime === null
+                    ? null
+                    : undefined;
+
+        const contentEncoding =
+            toTrimmedString(value.contentEncoding ?? value.content_encoding) ?? undefined;
+
+        return {
+            endpoint,
+            keys: { p256dh, auth },
+            expirationTime,
+            contentEncoding,
+        };
+    }
+
+    private normalizeStoredPushSubscription(raw: unknown): StoredPushSubscription | null {
+        if (!isRecord(raw)) return null;
+
+        const subscriptionNode = isRecord(raw.subscription)
+            ? raw.subscription
+            : raw;
+
+        const parsed = this.parseWebPushSubscription(subscriptionNode);
+        if (!parsed) return null;
+
+        const userId = this.readUuid(raw.user_id ?? raw.userId);
+        if (!userId) return null;
+
+        const id = toTrimmedString(raw.id ?? raw.subscription_id) ?? null;
+        const contentEncoding =
+            toTrimmedString(raw.content_encoding ?? raw.contentEncoding) ??
+            parsed.contentEncoding ??
+            null;
+
+        const rawJson: JsonObject = {
+            endpoint: parsed.endpoint,
+            keys: {
+                p256dh: parsed.keys.p256dh,
+                auth: parsed.keys.auth,
+            },
+            expirationTime:
+                parsed.expirationTime === undefined ? null : parsed.expirationTime,
+        };
+
+        return {
+            id,
+            userId,
+            endpoint: parsed.endpoint,
+            p256dh: parsed.keys.p256dh,
+            auth: parsed.keys.auth,
+            contentEncoding,
+            raw: rawJson,
+        };
+    }
+
+    private async findPushSubscriptionByEndpoint(
+        endpoint: string,
+    ): Promise<StoredPushSubscription | null> {
+        const svc = this.getPushSubscriptionsService();
+        if (!svc) return null;
+
+        if (typeof svc.findByEndpoint === 'function') {
+            const found = await svc.findByEndpoint(endpoint);
+            return this.normalizeStoredPushSubscription(found);
+        }
+
+        if (typeof svc.findMany === 'function') {
+            const rows = await svc.findMany({
+                where: { endpoint },
+                limit: 1,
+            });
+            const first = Array.isArray(rows) ? rows[0] : null;
+            return this.normalizeStoredPushSubscription(first);
+        }
+
+        return null;
+    }
+
+    private async listPushSubscriptionsByUsers(
+        userIds: UUID[],
+    ): Promise<StoredPushSubscription[]> {
+        const svc = this.getPushSubscriptionsService();
+        if (!svc) return [];
+
+        const ids = unique(userIds);
+        if (ids.length === 0) return [];
+
+        const out: StoredPushSubscription[] = [];
+
+        if (typeof svc.listByUsers === 'function') {
+            const rows = await svc.listByUsers(ids);
+            for (const row of rows) {
+                const parsed = this.normalizeStoredPushSubscription(row);
+                if (parsed && ids.includes(parsed.userId)) out.push(parsed);
+            }
+            return unique(out.map((s) => `${s.userId}:${s.endpoint}`))
+                .map((key) => {
+                    const found = out.find((s) => `${s.userId}:${s.endpoint}` === key);
+                    return found!;
+                });
+        }
+
+        if (typeof svc.listByUser === 'function') {
+            const chunks = await Promise.all(ids.map((id) => svc.listByUser!(id)));
+            for (const chunk of chunks) {
+                for (const row of chunk) {
+                    const parsed = this.normalizeStoredPushSubscription(row);
+                    if (parsed && ids.includes(parsed.userId)) out.push(parsed);
+                }
+            }
+
+            return unique(out.map((s) => `${s.userId}:${s.endpoint}`))
+                .map((key) => {
+                    const found = out.find((s) => `${s.userId}:${s.endpoint}` === key);
+                    return found!;
+                });
+        }
+
+        if (typeof svc.findMany === 'function') {
+            const chunks = await Promise.all(
+                ids.map((id) =>
+                    svc.findMany!({
+                        where: { user_id: id },
+                        limit: 1000,
+                        orderBy: 'updated_at',
+                        orderDirection: 'desc',
+                    }),
+                ),
+            );
+
+            for (const chunk of chunks) {
+                for (const row of chunk) {
+                    const parsed = this.normalizeStoredPushSubscription(row);
+                    if (parsed && ids.includes(parsed.userId)) out.push(parsed);
+                }
+            }
+
+            return unique(out.map((s) => `${s.userId}:${s.endpoint}`))
+                .map((key) => {
+                    const found = out.find((s) => `${s.userId}:${s.endpoint}` === key);
+                    return found!;
+                });
+        }
+
+        return [];
+    }
+
+    private async removeSubscriptionByEndpoint(
+        endpoint: string,
+        userId?: UUID,
+    ): Promise<number> {
+        const svc = this.getPushSubscriptionsService();
+        if (!svc) return 0;
+
+        if (typeof svc.deleteByEndpoint === 'function' && !userId) {
+            return svc.deleteByEndpoint(endpoint);
+        }
+
+        if (typeof svc.delete === 'function') {
+            if (userId) {
+                return svc.delete({ endpoint, user_id: userId });
+            }
+            return svc.delete({ endpoint });
+        }
+
+        return 0;
+    }
+
+    private buildPushPayloadString(payload: NotificationBroadcastPayload): string {
+        const title = toTrimmedString(payload.title) ?? 'New notification';
+        const body = toTrimmedString(payload.body) ?? 'You have a new update.';
+        const type = toTrimmedString(payload.type) ?? 'general';
+        const data = isRecord(payload.data) ? payload.data : {};
+
+        return safeJsonStringify({
+            title,
+            body,
+            type,
+            data,
+            createdAt: new Date().toISOString(),
+        });
+    }
+
+    private async trySendPush(
+        userIds: UUID[],
+        payload: NotificationBroadcastPayload,
+    ): Promise<void> {
+        try {
+            await this.sendPushToUsers(userIds, payload);
+        } catch {
+            // Intentionally swallow push errors so DB notifications still succeed.
+        }
+    }
+
+    /* -------------------------------- PUSH API ------------------------------ */
+
+    async getPushPublicKey(): Promise<PushPublicKeyInfo> {
+        const cfg = this.ensureWebPushConfigured();
+        if (!cfg.enabled) {
+            return {
+                enabled: false,
+                publicKey: cfg.publicKey,
+                reason: cfg.reason,
+            };
+        }
+
+        return {
+            enabled: true,
+            publicKey: cfg.publicKey,
+        };
+    }
+
+    async registerPushSubscription(
+        input: Record<string, unknown>,
+    ): Promise<PushSubscriptionMutationResult> {
+        const svc = this.getPushSubscriptionsService();
+        if (!svc) {
+            throw new Error(
+                'push_subscriptions service is not configured in DatabaseServices.',
+            );
+        }
+
+        const userId = this.readUuid(input.userId ?? input.user_id);
+        if (!userId) {
+            throw new Error('userId is required and must be a valid UUID.');
+        }
+
+        const user = await this.services.users.findById(userId);
+        if (!user) {
+            throw new Error('User not found.');
+        }
+
+        const subscription = this.parseWebPushSubscription(
+            input.subscription ??
+            input.pushSubscription ??
+            input.push_subscription ??
+            input,
+        );
+
+        if (!subscription) {
+            throw new Error(
+                'subscription is required with endpoint and keys { p256dh, auth }.',
+            );
+        }
+
+        const existing = await this.findPushSubscriptionByEndpoint(subscription.endpoint);
+
+        const persistPayload: Record<string, unknown> = {
+            user_id: userId,
+            endpoint: subscription.endpoint,
+            p256dh: subscription.keys.p256dh,
+            auth: subscription.keys.auth,
+            content_encoding: subscription.contentEncoding ?? 'aes128gcm',
+            subscription: {
+                endpoint: subscription.endpoint,
+                keys: {
+                    p256dh: subscription.keys.p256dh,
+                    auth: subscription.keys.auth,
+                },
+                expirationTime:
+                    subscription.expirationTime === undefined
+                        ? null
+                        : subscription.expirationTime,
+            },
+            updated_at: new Date().toISOString(),
+        };
+
+        let created = false;
+        let updated = false;
+        let storedRaw: unknown = null;
+
+        if (existing) {
+            if (typeof svc.updateOne === 'function') {
+                storedRaw = await svc.updateOne(
+                    existing.id ? { id: existing.id } : { endpoint: existing.endpoint },
+                    persistPayload,
+                );
+                updated = true;
+            } else if (typeof svc.deleteByEndpoint === 'function' && typeof svc.create === 'function') {
+                await svc.deleteByEndpoint(existing.endpoint);
+                storedRaw = await svc.create(persistPayload);
+                created = true;
+            } else {
+                throw new Error(
+                    'push_subscriptions service must support updateOne(...) or deleteByEndpoint(...) + create(...).',
+                );
+            }
+        } else {
+            if (typeof svc.create !== 'function') {
+                throw new Error('push_subscriptions service is missing create(...) method.');
+            }
+
+            storedRaw = await svc.create(persistPayload);
+            created = true;
+        }
+
+        const normalized =
+            this.normalizeStoredPushSubscription(storedRaw) ??
+            ({
+                id: null,
+                userId,
+                endpoint: subscription.endpoint,
+                p256dh: subscription.keys.p256dh,
+                auth: subscription.keys.auth,
+                contentEncoding: subscription.contentEncoding ?? 'aes128gcm',
+                raw: {
+                    endpoint: subscription.endpoint,
+                    keys: {
+                        p256dh: subscription.keys.p256dh,
+                        auth: subscription.keys.auth,
+                    },
+                    expirationTime:
+                        subscription.expirationTime === undefined
+                            ? null
+                            : subscription.expirationTime,
+                },
+            } satisfies StoredPushSubscription);
+
+        return {
+            item: {
+                id: normalized.id,
+                userId: normalized.userId,
+                endpoint: normalized.endpoint,
+                contentEncoding: normalized.contentEncoding,
+            },
+            created,
+            updated,
+        };
+    }
+
+    async unregisterPushSubscription(
+        input: Record<string, unknown>,
+    ): Promise<PushUnsubscribeResult> {
+        const svc = this.getPushSubscriptionsService();
+        if (!svc) {
+            throw new Error(
+                'push_subscriptions service is not configured in DatabaseServices.',
+            );
+        }
+
+        const userId = this.readUuid(input.userId ?? input.user_id);
+        const endpoint =
+            toTrimmedString(input.endpoint) ??
+            toTrimmedString(
+                (isRecord(input.subscription) ? input.subscription.endpoint : undefined),
+            );
+
+        if (!endpoint && !userId) {
+            throw new Error('Provide endpoint or userId to unsubscribe.');
+        }
+
+        let deleted = 0;
+
+        if (endpoint) {
+            deleted += await this.removeSubscriptionByEndpoint(endpoint, userId ?? undefined);
+            return { deleted };
+        }
+
+        // remove all subscriptions for the user
+        if (userId) {
+            const rows = await this.listPushSubscriptionsByUsers([userId]);
+            for (const row of rows) {
+                deleted += await this.removeSubscriptionByEndpoint(row.endpoint, userId);
+            }
+        }
+
+        return { deleted };
+    }
+
+    async sendPushToUsers(
+        userIds: UUID[],
+        payload: NotificationBroadcastPayload,
+    ): Promise<PushDispatchResult> {
+        const uniqueUserIds = unique(userIds);
+        if (uniqueUserIds.length === 0) {
+            return {
+                enabled: false,
+                reason: 'No userIds provided.',
+                totalSubscriptions: 0,
+                sent: 0,
+                failed: 0,
+                removed: 0,
+            };
+        }
+
+        const cfg = this.ensureWebPushConfigured();
+        if (!cfg.enabled) {
+            return {
+                enabled: false,
+                reason: cfg.reason ?? 'Push is not configured.',
+                totalSubscriptions: 0,
+                sent: 0,
+                failed: 0,
+                removed: 0,
+            };
+        }
+
+        const subscriptions = await this.listPushSubscriptionsByUsers(uniqueUserIds);
+        if (subscriptions.length === 0) {
+            return {
+                enabled: true,
+                totalSubscriptions: 0,
+                sent: 0,
+                failed: 0,
+                removed: 0,
+            };
+        }
+
+        const pushPayload = this.buildPushPayloadString(payload);
+        const options: Record<string, unknown> = {
+            TTL: cfg.ttl ?? 60,
+            urgency: cfg.urgency ?? 'normal',
+        };
+
+        const rawTopic = isRecord(payload.data)
+            ? toTrimmedString(payload.data.topic)
+            : null;
+        if (rawTopic && rawTopic.length <= 32) {
+            options.topic = rawTopic;
+        }
+
+        const results = await Promise.all(
+            subscriptions.map(async (sub) => {
+                try {
+                    const response = await webpush.sendNotification(
+                        {
+                            endpoint: sub.endpoint,
+                            keys: {
+                                p256dh: sub.p256dh,
+                                auth: sub.auth,
+                            },
+                            expirationTime: null,
+                            contentEncoding: sub.contentEncoding ?? 'aes128gcm',
+                        },
+                        pushPayload,
+                        options,
+                    );
+
+                    const statusCode =
+                        typeof response?.statusCode === 'number'
+                            ? response.statusCode
+                            : 200;
+
+                    // Non-2xx from provider still treated as failure and clean stale if needed.
+                    if (statusCode < 200 || statusCode >= 300) {
+                        if (statusCode === 404 || statusCode === 410) {
+                            const removed = await this.removeSubscriptionByEndpoint(
+                                sub.endpoint,
+                                sub.userId,
+                            );
+                            return { sent: 0, failed: 1, removed: removed > 0 ? 1 : 0 };
+                        }
+                        return { sent: 0, failed: 1, removed: 0 };
+                    }
+
+                    return { sent: 1, failed: 0, removed: 0 };
+                } catch (error) {
+                    const statusCode =
+                        isRecord(error) && typeof error.statusCode === 'number'
+                            ? error.statusCode
+                            : null;
+
+                    if (statusCode === 404 || statusCode === 410) {
+                        const removed = await this.removeSubscriptionByEndpoint(
+                            sub.endpoint,
+                            sub.userId,
+                        );
+                        return { sent: 0, failed: 1, removed: removed > 0 ? 1 : 0 };
+                    }
+
+                    return { sent: 0, failed: 1, removed: 0 };
+                }
+            }),
+        );
+
+        return results.reduce<PushDispatchResult>(
+            (acc, r) => {
+                acc.sent += r.sent;
+                acc.failed += r.failed;
+                acc.removed += r.removed;
+                return acc;
+            },
+            {
+                enabled: true,
+                totalSubscriptions: subscriptions.length,
+                sent: 0,
+                failed: 0,
+                removed: 0,
+            },
+        );
+    }
+
     /* --------------------------------- CREATE -------------------------------- */
 
     async create(payload: NotificationInsert): Promise<NotificationRow> {
-        return this.services.notifications.create(payload);
+        const item = await this.services.notifications.create(payload);
+
+        const userId = toTrimmedString(
+            (item as unknown as Record<string, unknown>).user_id ??
+            (payload as unknown as Record<string, unknown>).user_id,
+        );
+
+        if (userId && UUID_RE.test(userId)) {
+            await this.trySendPush([userId as UUID], {
+                type: item.type,
+                title: item.title,
+                body: item.body,
+                data: isRecord(item.data) ? (item.data as JsonObject) : {},
+            });
+        }
+
+        return item;
     }
 
     async broadcast(
@@ -370,7 +1121,10 @@ export class NotificationController {
         payload: NotificationBroadcastPayload,
     ): Promise<NotificationRow[]> {
         if (userIds.length === 0) return [];
-        return this.services.notifications.createForUsers(userIds, payload);
+        const items = await this.services.notifications.createForUsers(userIds, payload);
+
+        await this.trySendPush(userIds, payload);
+        return items;
     }
 
     /* ---------------------------------- READ --------------------------------- */
@@ -1078,12 +1832,6 @@ export class NotificationController {
             body,
             data,
         };
-    }
-
-    private readUuid(value: unknown): UUID | null {
-        const str = toTrimmedString(value);
-        if (!str || !UUID_RE.test(str)) return null;
-        return str as UUID;
     }
 
     private toAutoTemplate(value: unknown): AutoNotificationTemplate | null {
