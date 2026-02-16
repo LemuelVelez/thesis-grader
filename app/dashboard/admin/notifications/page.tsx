@@ -1,10 +1,26 @@
 "use client"
 
 import * as React from "react"
+import { toast } from "sonner"
+import { Check, ChevronDown, RefreshCw, Send } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import {
+    DropdownMenu,
+    DropdownMenuCheckboxItem,
+    DropdownMenuContent,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -14,12 +30,10 @@ import {
     TableRow,
 } from "@/components/ui/table"
 
-type NotificationType = "general" | "evaluation_submitted" | "evaluation_locked"
-
 type NotificationRecord = {
     id: string
     user_id: string
-    type: NotificationType
+    type: string
     title: string
     body: string
     data: Record<string, unknown>
@@ -32,18 +46,105 @@ type NotificationsResponse = {
     item?: NotificationRecord
     updated?: number
     count?: number
+    resolved?: {
+        recipientCount: number
+        recipientIds: string[]
+        template: string
+        targetMode: string
+    }
     error?: string
     message?: string
 }
 
-const TYPE_FILTERS: Array<"all" | NotificationType> = [
-    "all",
-    "general",
-    "evaluation_submitted",
-    "evaluation_locked",
-]
+type AutoNotificationTemplate =
+    | "evaluation_submitted"
+    | "evaluation_locked"
+    | "defense_schedule_updated"
+    | "general_update"
 
-const READ_FILTERS: Array<"all" | "unread" | "read"> = ["all", "unread", "read"]
+type AutoNotificationIncludeField =
+    | "group_title"
+    | "schedule_datetime"
+    | "schedule_room"
+    | "evaluator_name"
+    | "evaluation_status"
+    | "student_count"
+    | "program"
+    | "term"
+
+type AutoNotificationContextKey = "evaluationId" | "scheduleId" | "groupId"
+
+type TargetMode = "users" | "role" | "group" | "schedule"
+
+type ThesisRole = string
+type NotificationType = string
+
+type NotificationAutomationOptions = {
+    templates: Array<{
+        value: AutoNotificationTemplate
+        label: string
+        description: string
+        defaultType: NotificationType
+        requiredContext: AutoNotificationContextKey[]
+        allowedIncludes: AutoNotificationIncludeField[]
+        defaultIncludes: AutoNotificationIncludeField[]
+    }>
+    targetModes: Array<{
+        value: TargetMode
+        label: string
+        description: string
+    }>
+    includeOptions: Array<{
+        value: AutoNotificationIncludeField
+        label: string
+        description: string
+    }>
+    notificationTypes: NotificationType[]
+    context: {
+        roles: ThesisRole[]
+        users: Array<{
+            value: string
+            label: string
+            role: ThesisRole
+        }>
+        groups: Array<{
+            value: string
+            label: string
+            program: string | null
+            term: string | null
+        }>
+        schedules: Array<{
+            value: string
+            label: string
+            scheduledAt: string
+            room: string | null
+            groupId: string
+            groupTitle: string | null
+        }>
+        evaluations: Array<{
+            value: string
+            label: string
+            status: string
+            scheduleId: string
+            evaluatorId: string
+            evaluatorName: string | null
+        }>
+    }
+}
+
+type AutomationOptionsResponse = {
+    item?: NotificationAutomationOptions
+    error?: string
+    message?: string
+}
+
+const NONE_VALUE = "__none__"
+
+const READ_FILTERS = [
+    { value: "all", label: "All" },
+    { value: "unread", label: "Unread" },
+    { value: "read", label: "Read" },
+] as const
 
 function formatDate(value: string) {
     const d = new Date(value)
@@ -58,28 +159,6 @@ function toLabel(value: string) {
         .join(" ")
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
-function parseJsonObject(input: string): Record<string, unknown> {
-    const trimmed = input.trim()
-    if (!trimmed) return {}
-
-    let parsed: unknown
-    try {
-        parsed = JSON.parse(trimmed)
-    } catch {
-        throw new Error("Data JSON must be a valid JSON object.")
-    }
-
-    if (!isRecord(parsed)) {
-        throw new Error("Data JSON must be an object (example: {\"key\":\"value\"}).")
-    }
-
-    return parsed
-}
-
 async function readErrorMessage(res: Response): Promise<string> {
     try {
         const data = (await res.json()) as { error?: string; message?: string }
@@ -89,48 +168,198 @@ async function readErrorMessage(res: Response): Promise<string> {
     }
 }
 
+function boolToSelectValue(value: boolean) {
+    return value ? "yes" : "no"
+}
+
+function selectValueToBool(value: string) {
+    return value === "yes"
+}
+
 export default function AdminNotificationsPage() {
-    const [userId, setUserId] = React.useState("")
+    const [options, setOptions] = React.useState<NotificationAutomationOptions | null>(null)
+    const [optionsLoading, setOptionsLoading] = React.useState(false)
+
     const [notifications, setNotifications] = React.useState<NotificationRecord[]>([])
-
-    const [typeFilter, setTypeFilter] = React.useState<"all" | NotificationType>("all")
-    const [readFilter, setReadFilter] = React.useState<"all" | "unread" | "read">("all")
-
-    const [loading, setLoading] = React.useState(false)
-    const [error, setError] = React.useState<string | null>(null)
-    const [success, setSuccess] = React.useState<string | null>(null)
+    const [listLoading, setListLoading] = React.useState(false)
     const [actionKey, setActionKey] = React.useState<string | null>(null)
 
-    // Single notification form
-    const [singleTitle, setSingleTitle] = React.useState("")
-    const [singleBody, setSingleBody] = React.useState("")
-    const [singleType, setSingleType] = React.useState<NotificationType>("general")
-    const [singleDataJson, setSingleDataJson] = React.useState("{}")
+    // Automatic dispatch selections
+    const [template, setTemplate] = React.useState<AutoNotificationTemplate | "">("")
+    const [notificationType, setNotificationType] = React.useState<NotificationType>("general")
+    const [targetMode, setTargetMode] = React.useState<TargetMode>("users")
+    const [includeFields, setIncludeFields] = React.useState<AutoNotificationIncludeField[]>([])
 
-    // Broadcast form
-    const [broadcastUserIds, setBroadcastUserIds] = React.useState("")
-    const [broadcastTitle, setBroadcastTitle] = React.useState("")
-    const [broadcastBody, setBroadcastBody] = React.useState("")
-    const [broadcastType, setBroadcastType] = React.useState<NotificationType>("general")
-    const [broadcastDataJson, setBroadcastDataJson] = React.useState("{}")
+    // target detail selections
+    const [targetUserIds, setTargetUserIds] = React.useState<string[]>([])
+    const [targetRole, setTargetRole] = React.useState<string>(NONE_VALUE)
+    const [targetGroupId, setTargetGroupId] = React.useState<string>(NONE_VALUE)
+    const [targetScheduleId, setTargetScheduleId] = React.useState<string>(NONE_VALUE)
+    const [includeAdviser, setIncludeAdviser] = React.useState(false)
+    const [includeStudents, setIncludeStudents] = React.useState(true)
+    const [includePanelists, setIncludePanelists] = React.useState(false)
+    const [includeCreator, setIncludeCreator] = React.useState(false)
+
+    // context selections
+    const [contextEvaluationId, setContextEvaluationId] = React.useState<string>(NONE_VALUE)
+    const [contextScheduleId, setContextScheduleId] = React.useState<string>(NONE_VALUE)
+    const [contextGroupId, setContextGroupId] = React.useState<string>(NONE_VALUE)
+
+    // viewer/filter selections
+    const [viewerUserId, setViewerUserId] = React.useState<string>(NONE_VALUE)
+    const [typeFilter, setTypeFilter] = React.useState<string>("all")
+    const [readFilter, setReadFilter] = React.useState<"all" | "unread" | "read">("all")
+
+    const selectedTemplateDef = React.useMemo(() => {
+        if (!options || !template) return null
+        return options.templates.find((t) => t.value === template) ?? null
+    }, [options, template])
+
+    const includeChoices = React.useMemo(() => {
+        if (!options || !selectedTemplateDef) return []
+        const allowed = new Set(selectedTemplateDef.allowedIncludes)
+        return options.includeOptions.filter((opt) => allowed.has(opt.value))
+    }, [options, selectedTemplateDef])
 
     const unreadCount = React.useMemo(
         () => notifications.filter((n) => !n.read_at).length,
         [notifications],
     )
 
-    const loadNotifications = React.useCallback(async () => {
-        const uid = userId.trim()
-        setError(null)
-        setSuccess(null)
+    const needsEvaluationSelector = React.useMemo(() => {
+        if (!selectedTemplateDef) return false
+        if (selectedTemplateDef.requiredContext.includes("evaluationId")) return true
+        return includeFields.includes("evaluator_name") || includeFields.includes("evaluation_status")
+    }, [includeFields, selectedTemplateDef])
 
-        if (!uid) {
+    const needsScheduleSelector = React.useMemo(() => {
+        if (!selectedTemplateDef) return false
+        if (selectedTemplateDef.requiredContext.includes("scheduleId")) return true
+        return includeFields.includes("schedule_datetime") || includeFields.includes("schedule_room")
+    }, [includeFields, selectedTemplateDef])
+
+    const needsGroupSelector = React.useMemo(() => {
+        if (!selectedTemplateDef) return false
+        if (selectedTemplateDef.requiredContext.includes("groupId")) return true
+        return (
+            includeFields.includes("group_title") ||
+            includeFields.includes("student_count") ||
+            includeFields.includes("program") ||
+            includeFields.includes("term")
+        )
+    }, [includeFields, selectedTemplateDef])
+
+    const loadAutomationOptions = React.useCallback(async () => {
+        setOptionsLoading(true)
+        try {
+            const res = await fetch("/api/notifications/auto/options?limit=100", {
+                cache: "no-store",
+            })
+            if (!res.ok) throw new Error(await readErrorMessage(res))
+
+            const data = (await res.json()) as AutomationOptionsResponse
+            const item = data.item
+            if (!item) throw new Error("Automation options response is empty.")
+
+            setOptions(item)
+
+            const firstTemplate = item.templates[0]
+            if (firstTemplate) {
+                setTemplate(firstTemplate.value)
+                setNotificationType(firstTemplate.defaultType)
+                setIncludeFields([...firstTemplate.defaultIncludes])
+            }
+
+            const firstTargetMode = item.targetModes[0]?.value ?? "users"
+            setTargetMode(firstTargetMode)
+
+            const firstUser = item.context.users[0]?.value ?? NONE_VALUE
+            const firstRole = item.context.roles[0] ?? NONE_VALUE
+            const firstGroup = item.context.groups[0]?.value ?? NONE_VALUE
+            const firstSchedule = item.context.schedules[0]?.value ?? NONE_VALUE
+            const firstEvaluation = item.context.evaluations[0]?.value ?? NONE_VALUE
+
+            setTargetUserIds(firstUser === NONE_VALUE ? [] : [firstUser])
+            setTargetRole(firstRole)
+            setTargetGroupId(firstGroup)
+            setTargetScheduleId(firstSchedule)
+
+            setContextEvaluationId(firstEvaluation)
+            setContextScheduleId(firstSchedule)
+            setContextGroupId(firstGroup)
+
+            setViewerUserId(firstUser)
+            setTypeFilter("all")
+            setReadFilter("all")
+
+            toast.success("Notification automation options loaded.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to load notification automation options."
+            toast.error(message)
+        } finally {
+            setOptionsLoading(false)
+        }
+    }, [])
+
+    React.useEffect(() => {
+        void loadAutomationOptions()
+    }, [loadAutomationOptions])
+
+    React.useEffect(() => {
+        if (!selectedTemplateDef) return
+
+        setNotificationType(selectedTemplateDef.defaultType)
+
+        const allowed = new Set(selectedTemplateDef.allowedIncludes)
+        setIncludeFields((prev) => {
+            const filtered = prev.filter((field) => allowed.has(field))
+            if (filtered.length > 0) return filtered
+            return [...selectedTemplateDef.defaultIncludes]
+        })
+
+        if (selectedTemplateDef.requiredContext.includes("evaluationId")) {
+            if (contextEvaluationId === NONE_VALUE) {
+                setContextEvaluationId(options?.context.evaluations[0]?.value ?? NONE_VALUE)
+            }
+        }
+        if (selectedTemplateDef.requiredContext.includes("scheduleId")) {
+            if (contextScheduleId === NONE_VALUE) {
+                setContextScheduleId(options?.context.schedules[0]?.value ?? NONE_VALUE)
+            }
+        }
+        if (selectedTemplateDef.requiredContext.includes("groupId")) {
+            if (contextGroupId === NONE_VALUE) {
+                setContextGroupId(options?.context.groups[0]?.value ?? NONE_VALUE)
+            }
+        }
+    }, [contextEvaluationId, contextGroupId, contextScheduleId, options, selectedTemplateDef])
+
+    React.useEffect(() => {
+        if (!options) return
+        if (targetMode === "users" && targetUserIds.length === 0) {
+            const first = options.context.users[0]?.value
+            if (first) setTargetUserIds([first])
+        }
+        if (targetMode === "role" && targetRole === NONE_VALUE) {
+            setTargetRole(options.context.roles[0] ?? NONE_VALUE)
+        }
+        if (targetMode === "group" && targetGroupId === NONE_VALUE) {
+            setTargetGroupId(options.context.groups[0]?.value ?? NONE_VALUE)
+        }
+        if (targetMode === "schedule" && targetScheduleId === NONE_VALUE) {
+            setTargetScheduleId(options.context.schedules[0]?.value ?? NONE_VALUE)
+        }
+    }, [options, targetGroupId, targetMode, targetRole, targetScheduleId, targetUserIds.length])
+
+    const loadNotifications = React.useCallback(async () => {
+        const uid = viewerUserId
+        if (!uid || uid === NONE_VALUE) {
             setNotifications([])
-            setError("Enter a User ID to load notifications.")
             return
         }
 
-        setLoading(true)
+        setListLoading(true)
         try {
             const encodedUid = encodeURIComponent(uid)
 
@@ -152,8 +381,6 @@ export default function AdminNotificationsPage() {
             const filtered = rawItems.filter((item) => {
                 if (readFilter === "read" && !item.read_at) return false
                 if (readFilter === "unread" && item.read_at) return false
-
-                // When unread route is used, type filtering can still be applied client-side.
                 if (typeFilter !== "all" && item.type !== typeFilter) return false
                 return true
             })
@@ -166,17 +393,171 @@ export default function AdminNotificationsPage() {
             })
 
             setNotifications(filtered)
-        } catch (err) {
+        } catch (error) {
             setNotifications([])
-            setError(err instanceof Error ? err.message : "Failed to load notifications.")
+            const message =
+                error instanceof Error ? error.message : "Failed to load notifications."
+            toast.error(message)
         } finally {
-            setLoading(false)
+            setListLoading(false)
         }
-    }, [readFilter, typeFilter, userId])
+    }, [readFilter, typeFilter, viewerUserId])
+
+    React.useEffect(() => {
+        if (!options || viewerUserId === NONE_VALUE) return
+        void loadNotifications()
+    }, [loadNotifications, options, viewerUserId])
+
+    const toggleTargetUser = React.useCallback((userId: string, checked: boolean) => {
+        setTargetUserIds((prev) => {
+            const next = new Set(prev)
+            if (checked) next.add(userId)
+            else next.delete(userId)
+            return Array.from(next)
+        })
+    }, [])
+
+    const toggleIncludeField = React.useCallback((field: AutoNotificationIncludeField, checked: boolean) => {
+        setIncludeFields((prev) => {
+            const next = new Set(prev)
+            if (checked) next.add(field)
+            else next.delete(field)
+            return Array.from(next)
+        })
+    }, [])
+
+    const sendAutomaticNotification = React.useCallback(async () => {
+        if (!options || !template || !selectedTemplateDef) {
+            toast.error("Automation options are not ready yet.")
+            return
+        }
+
+        if (includeFields.length === 0) {
+            toast.error("Select at least one information field to include.")
+            return
+        }
+
+        const target: Record<string, unknown> = { mode: targetMode }
+
+        if (targetMode === "users") {
+            if (targetUserIds.length === 0) {
+                toast.error("Select at least one recipient user.")
+                return
+            }
+            target.userIds = targetUserIds
+        } else if (targetMode === "role") {
+            if (targetRole === NONE_VALUE) {
+                toast.error("Select a role.")
+                return
+            }
+            target.role = targetRole
+        } else if (targetMode === "group") {
+            if (targetGroupId === NONE_VALUE) {
+                toast.error("Select a group.")
+                return
+            }
+            target.groupId = targetGroupId
+            target.includeAdviser = includeAdviser
+        } else if (targetMode === "schedule") {
+            if (targetScheduleId === NONE_VALUE) {
+                toast.error("Select a schedule.")
+                return
+            }
+            target.scheduleId = targetScheduleId
+            target.includeStudents = includeStudents
+            target.includePanelists = includePanelists
+            target.includeCreator = includeCreator
+        }
+
+        if (
+            selectedTemplateDef.requiredContext.includes("evaluationId") &&
+            contextEvaluationId === NONE_VALUE
+        ) {
+            toast.error("This template requires an evaluation context.")
+            return
+        }
+
+        if (
+            selectedTemplateDef.requiredContext.includes("scheduleId") &&
+            contextScheduleId === NONE_VALUE
+        ) {
+            toast.error("This template requires a schedule context.")
+            return
+        }
+
+        if (
+            selectedTemplateDef.requiredContext.includes("groupId") &&
+            contextGroupId === NONE_VALUE
+        ) {
+            toast.error("This template requires a group context.")
+            return
+        }
+
+        const context: Record<string, string> = {}
+        if (contextEvaluationId !== NONE_VALUE) context.evaluationId = contextEvaluationId
+        if (contextScheduleId !== NONE_VALUE) context.scheduleId = contextScheduleId
+        if (contextGroupId !== NONE_VALUE) context.groupId = contextGroupId
+
+        const payload: Record<string, unknown> = {
+            template,
+            type: notificationType,
+            target,
+            include: includeFields,
+        }
+
+        if (Object.keys(context).length > 0) {
+            payload.context = context
+        }
+
+        setActionKey("send-auto")
+        try {
+            const res = await fetch("/api/notifications/auto/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            })
+
+            if (!res.ok) {
+                throw new Error(await readErrorMessage(res))
+            }
+
+            const data = (await res.json()) as NotificationsResponse
+            const createdCount = typeof data.count === "number" ? data.count : 0
+            toast.success(`Automatic notification sent to ${createdCount} recipient(s).`)
+
+            if (viewerUserId !== NONE_VALUE) {
+                void loadNotifications()
+            }
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to send automatic notification."
+            toast.error(message)
+        } finally {
+            setActionKey(null)
+        }
+    }, [
+        contextEvaluationId,
+        contextGroupId,
+        contextScheduleId,
+        includeAdviser,
+        includeCreator,
+        includeFields,
+        includePanelists,
+        includeStudents,
+        loadNotifications,
+        notificationType,
+        options,
+        selectedTemplateDef,
+        targetGroupId,
+        targetMode,
+        targetRole,
+        targetScheduleId,
+        targetUserIds,
+        template,
+        viewerUserId,
+    ])
 
     const markAsRead = React.useCallback(async (id: string) => {
-        setError(null)
-        setSuccess(null)
         setActionKey(`read:${id}`)
 
         try {
@@ -203,17 +584,17 @@ export default function AdminNotificationsPage() {
                 )
             }
 
-            setSuccess("Notification marked as read.")
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to mark notification as read.")
+            toast.success("Notification marked as read.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to mark notification as read."
+            toast.error(message)
         } finally {
             setActionKey(null)
         }
     }, [])
 
     const deleteNotification = React.useCallback(async (id: string) => {
-        setError(null)
-        setSuccess(null)
         setActionKey(`delete:${id}`)
 
         try {
@@ -226,27 +607,25 @@ export default function AdminNotificationsPage() {
             }
 
             setNotifications((prev) => prev.filter((n) => n.id !== id))
-            setSuccess("Notification deleted.")
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to delete notification.")
+            toast.success("Notification deleted.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to delete notification."
+            toast.error(message)
         } finally {
             setActionKey(null)
         }
     }, [])
 
     const markAllAsRead = React.useCallback(async () => {
-        const uid = userId.trim()
-        setError(null)
-        setSuccess(null)
-
-        if (!uid) {
-            setError("Enter a User ID first.")
+        if (!viewerUserId || viewerUserId === NONE_VALUE) {
+            toast.error("Select a user first.")
             return
         }
 
         setActionKey("read-all")
         try {
-            const res = await fetch(`/api/notifications/user/${encodeURIComponent(uid)}/read-all`, {
+            const res = await fetch(`/api/notifications/user/${encodeURIComponent(viewerUserId)}/read-all`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({}),
@@ -258,332 +637,468 @@ export default function AdminNotificationsPage() {
 
             const data = (await res.json()) as NotificationsResponse
             const updated = typeof data.updated === "number" ? data.updated : 0
-            setSuccess(`Marked ${updated} notification(s) as read.`)
+            toast.success(`Marked ${updated} notification(s) as read.`)
             await loadNotifications()
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to mark all as read.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to mark all as read."
+            toast.error(message)
         } finally {
             setActionKey(null)
         }
-    }, [loadNotifications, userId])
+    }, [loadNotifications, viewerUserId])
 
-    const createSingleNotification = React.useCallback(async () => {
-        const uid = userId.trim()
-        setError(null)
-        setSuccess(null)
+    const includeButtonText =
+        includeFields.length === 0
+            ? "Choose included details"
+            : `${includeFields.length} field(s) selected`
 
-        if (!uid) {
-            setError("User ID is required for creating a notification.")
-            return
-        }
-
-        if (!singleTitle.trim() || !singleBody.trim()) {
-            setError("Title and body are required.")
-            return
-        }
-
-        let dataPayload: Record<string, unknown>
-        try {
-            dataPayload = parseJsonObject(singleDataJson)
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Invalid JSON data.")
-            return
-        }
-
-        setActionKey("create-single")
-        try {
-            const res = await fetch("/api/notifications", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    user_id: uid,
-                    type: singleType,
-                    title: singleTitle.trim(),
-                    body: singleBody.trim(),
-                    data: dataPayload,
-                }),
-            })
-
-            if (!res.ok) {
-                throw new Error(await readErrorMessage(res))
-            }
-
-            setSuccess("Notification created.")
-            setSingleTitle("")
-            setSingleBody("")
-            await loadNotifications()
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to create notification.")
-        } finally {
-            setActionKey(null)
-        }
-    }, [loadNotifications, singleBody, singleDataJson, singleTitle, singleType, userId])
-
-    const broadcastNotifications = React.useCallback(async () => {
-        setError(null)
-        setSuccess(null)
-
-        if (!broadcastTitle.trim() || !broadcastBody.trim()) {
-            setError("Broadcast title and body are required.")
-            return
-        }
-
-        const userIds = broadcastUserIds
-            .split(/[\n,]+/g)
-            .map((v) => v.trim())
-            .filter(Boolean)
-
-        if (userIds.length === 0) {
-            setError("Provide at least one user ID for broadcast.")
-            return
-        }
-
-        let dataPayload: Record<string, unknown>
-        try {
-            dataPayload = parseJsonObject(broadcastDataJson)
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Invalid JSON data.")
-            return
-        }
-
-        setActionKey("broadcast")
-        try {
-            const res = await fetch("/api/notifications/broadcast", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    userIds,
-                    payload: {
-                        type: broadcastType,
-                        title: broadcastTitle.trim(),
-                        body: broadcastBody.trim(),
-                        data: dataPayload,
-                    },
-                }),
-            })
-
-            if (!res.ok) {
-                throw new Error(await readErrorMessage(res))
-            }
-
-            const data = (await res.json()) as NotificationsResponse
-            const createdCount = typeof data.count === "number" ? data.count : userIds.length
-            setSuccess(`Broadcast sent to ${createdCount} user(s).`)
-
-            setBroadcastUserIds("")
-            setBroadcastTitle("")
-            setBroadcastBody("")
-
-            if (userId.trim() && userIds.includes(userId.trim())) {
-                await loadNotifications()
-            }
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to broadcast notifications.")
-        } finally {
-            setActionKey(null)
-        }
-    }, [
-        broadcastBody,
-        broadcastDataJson,
-        broadcastTitle,
-        broadcastType,
-        broadcastUserIds,
-        loadNotifications,
-        userId,
-    ])
+    const targetUsersButtonText =
+        targetUserIds.length === 0
+            ? "Choose recipient users"
+            : `${targetUserIds.length} user(s) selected`
 
     return (
         <DashboardLayout
-            title="Notifications"
-            description="Create, broadcast, review, and manage user notifications."
+            title="Automatic Notifications"
+            description="Select template, audience, and included details. No manual message input."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
-                    <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                            <Input
-                                placeholder="Enter User ID"
-                                value={userId}
-                                onChange={(e) => setUserId(e.target.value)}
-                                className="w-full md:max-w-xl"
-                            />
-                            <div className="flex items-center gap-2">
-                                <Button onClick={() => void loadNotifications()} disabled={loading || !!actionKey}>
-                                    {loading ? "Loading..." : "Load"}
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    onClick={() => void markAllAsRead()}
-                                    disabled={!userId.trim() || loading || !!actionKey}
-                                >
-                                    {actionKey === "read-all" ? "Updating..." : "Mark All Read"}
-                                </Button>
-                            </div>
+                    <div className="mb-4 flex items-center justify-between gap-2">
+                        <div>
+                            <h2 className="text-sm font-semibold">Notification Automation</h2>
+                            <p className="text-xs text-muted-foreground">
+                                Choose template, recipients, and relevant fields to send automatically.
+                            </p>
                         </div>
-
-                        <p className="text-sm text-muted-foreground">
-                            Total: <span className="font-semibold text-foreground">{notifications.length}</span>{" "}
-                            • Unread: <span className="font-semibold text-foreground">{unreadCount}</span>
-                        </p>
-
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by type</p>
-                            <div className="flex flex-wrap gap-2">
-                                {TYPE_FILTERS.map((type) => {
-                                    const active = typeFilter === type
-                                    return (
-                                        <Button
-                                            key={type}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setTypeFilter(type)}
-                                        >
-                                            {toLabel(type)}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by read status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {READ_FILTERS.map((rf) => {
-                                    const active = readFilter === rf
-                                    return (
-                                        <Button
-                                            key={rf}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setReadFilter(rf)}
-                                        >
-                                            {toLabel(rf)}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
-                        </div>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void loadAutomationOptions()}
+                            disabled={optionsLoading || !!actionKey}
+                        >
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            Refresh Options
+                        </Button>
                     </div>
+
+                    {optionsLoading && !options ? (
+                        <div className="space-y-2">
+                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                            <div className="h-10 animate-pulse rounded-md bg-muted/40" />
+                        </div>
+                    ) : !options ? (
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                            Failed to load automation options.
+                        </div>
+                    ) : (
+                        <div className="grid gap-4">
+                            <div className="grid gap-3 md:grid-cols-3">
+                                <div className="space-y-2">
+                                    <p className="text-xs font-medium text-muted-foreground">Template</p>
+                                    <Select
+                                        value={template || options.templates[0]?.value}
+                                        onValueChange={(value) =>
+                                            setTemplate(value as AutoNotificationTemplate)
+                                        }
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select template" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {options.templates.map((t) => (
+                                                <SelectItem key={t.value} value={t.value}>
+                                                    {t.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {selectedTemplateDef ? (
+                                        <p className="text-[11px] text-muted-foreground">
+                                            {selectedTemplateDef.description}
+                                        </p>
+                                    ) : null}
+                                </div>
+
+                                <div className="space-y-2">
+                                    <p className="text-xs font-medium text-muted-foreground">Notification type</p>
+                                    <Select
+                                        value={notificationType}
+                                        onValueChange={(value) => setNotificationType(value)}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {options.notificationTypes.map((nt) => (
+                                                <SelectItem key={nt} value={nt}>
+                                                    {toLabel(nt)}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <p className="text-xs font-medium text-muted-foreground">Target mode</p>
+                                    <Select
+                                        value={targetMode}
+                                        onValueChange={(value) => setTargetMode(value as TargetMode)}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select target mode" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {options.targetModes.map((tm) => (
+                                                <SelectItem key={tm.value} value={tm.value}>
+                                                    {tm.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border bg-muted/20 p-3">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">Target selection</p>
+
+                                {targetMode === "users" ? (
+                                    <div className="space-y-2">
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button variant="outline" className="w-full justify-between">
+                                                    {targetUsersButtonText}
+                                                    <ChevronDown className="ml-2 h-4 w-4" />
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent className="w-90">
+                                                <DropdownMenuLabel>Recipients (users)</DropdownMenuLabel>
+                                                <DropdownMenuSeparator />
+                                                {options.context.users.map((u) => (
+                                                    <DropdownMenuCheckboxItem
+                                                        key={u.value}
+                                                        checked={targetUserIds.includes(u.value)}
+                                                        onCheckedChange={(checked) =>
+                                                            toggleTargetUser(u.value, checked === true)
+                                                        }
+                                                    >
+                                                        {u.label} • {toLabel(u.role)}
+                                                    </DropdownMenuCheckboxItem>
+                                                ))}
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                    </div>
+                                ) : null}
+
+                                {targetMode === "role" ? (
+                                    <div className="space-y-2">
+                                        <Select value={targetRole} onValueChange={setTargetRole}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select role" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {options.context.roles.map((role) => (
+                                                    <SelectItem key={role} value={role}>
+                                                        {toLabel(role)}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                ) : null}
+
+                                {targetMode === "group" ? (
+                                    <div className="grid gap-2 md:grid-cols-2">
+                                        <Select value={targetGroupId} onValueChange={setTargetGroupId}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select thesis group" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {options.context.groups.map((g) => (
+                                                    <SelectItem key={g.value} value={g.value}>
+                                                        {g.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        <Select
+                                            value={boolToSelectValue(includeAdviser)}
+                                            onValueChange={(v) => setIncludeAdviser(selectValueToBool(v))}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Include adviser?" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="yes">Include adviser</SelectItem>
+                                                <SelectItem value="no">Students only</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                ) : null}
+
+                                {targetMode === "schedule" ? (
+                                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                                        <Select value={targetScheduleId} onValueChange={setTargetScheduleId}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select schedule" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {options.context.schedules.map((s) => (
+                                                    <SelectItem key={s.value} value={s.value}>
+                                                        {s.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+
+                                        <Select
+                                            value={boolToSelectValue(includeStudents)}
+                                            onValueChange={(v) => setIncludeStudents(selectValueToBool(v))}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Include students" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="yes">Include students</SelectItem>
+                                                <SelectItem value="no">Skip students</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+
+                                        <Select
+                                            value={boolToSelectValue(includePanelists)}
+                                            onValueChange={(v) => setIncludePanelists(selectValueToBool(v))}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Include panelists" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="yes">Include panelists</SelectItem>
+                                                <SelectItem value="no">Skip panelists</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+
+                                        <Select
+                                            value={boolToSelectValue(includeCreator)}
+                                            onValueChange={(v) => setIncludeCreator(selectValueToBool(v))}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Include creator" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="yes">Include creator</SelectItem>
+                                                <SelectItem value="no">Skip creator</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            <div className="rounded-md border bg-muted/20 p-3">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">Context selection</p>
+
+                                <div className="grid gap-2 md:grid-cols-3">
+                                    {needsEvaluationSelector ? (
+                                        <Select value={contextEvaluationId} onValueChange={setContextEvaluationId}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select evaluation context" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {!selectedTemplateDef?.requiredContext.includes("evaluationId") ? (
+                                                    <SelectItem value={NONE_VALUE}>No evaluation context</SelectItem>
+                                                ) : null}
+                                                {options.context.evaluations.map((e) => (
+                                                    <SelectItem key={e.value} value={e.value}>
+                                                        {e.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    ) : null}
+
+                                    {needsScheduleSelector ? (
+                                        <Select value={contextScheduleId} onValueChange={setContextScheduleId}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select schedule context" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {!selectedTemplateDef?.requiredContext.includes("scheduleId") ? (
+                                                    <SelectItem value={NONE_VALUE}>No schedule context</SelectItem>
+                                                ) : null}
+                                                {options.context.schedules.map((s) => (
+                                                    <SelectItem key={s.value} value={s.value}>
+                                                        {s.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    ) : null}
+
+                                    {needsGroupSelector ? (
+                                        <Select value={contextGroupId} onValueChange={setContextGroupId}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select group context" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {!selectedTemplateDef?.requiredContext.includes("groupId") ? (
+                                                    <SelectItem value={NONE_VALUE}>No group context</SelectItem>
+                                                ) : null}
+                                                {options.context.groups.map((g) => (
+                                                    <SelectItem key={g.value} value={g.value}>
+                                                        {g.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    ) : null}
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border bg-muted/20 p-3">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">Included information</p>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                            <Button variant="outline" className="justify-between">
+                                                {includeButtonText}
+                                                <ChevronDown className="ml-2 h-4 w-4" />
+                                            </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent className="w-[320px]">
+                                            <DropdownMenuLabel>Information fields</DropdownMenuLabel>
+                                            <DropdownMenuSeparator />
+                                            {includeChoices.map((field) => (
+                                                <DropdownMenuCheckboxItem
+                                                    key={field.value}
+                                                    checked={includeFields.includes(field.value)}
+                                                    onCheckedChange={(checked) =>
+                                                        toggleIncludeField(field.value, checked === true)
+                                                    }
+                                                >
+                                                    <div className="flex flex-col">
+                                                        <span>{field.label}</span>
+                                                        <span className="text-[11px] text-muted-foreground">
+                                                            {field.description}
+                                                        </span>
+                                                    </div>
+                                                </DropdownMenuCheckboxItem>
+                                            ))}
+                                        </DropdownMenuContent>
+                                    </DropdownMenu>
+
+                                    {includeFields.map((field) => (
+                                        <span
+                                            key={field}
+                                            className="inline-flex items-center rounded-md border px-2 py-1 text-xs"
+                                        >
+                                            <Check className="mr-1 h-3 w-3" />
+                                            {toLabel(field)}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end">
+                                <Button
+                                    onClick={() => void sendAutomaticNotification()}
+                                    disabled={optionsLoading || !!actionKey || !options}
+                                >
+                                    <Send className="mr-2 h-4 w-4" />
+                                    {actionKey === "send-auto" ? "Sending..." : "Send Automatic Notification"}
+                                </Button>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
-                {error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                        {error}
-                    </div>
-                ) : null}
+                <div className="rounded-lg border bg-card p-4">
+                    <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                        <div>
+                            <h2 className="text-sm font-semibold">Notification Viewer</h2>
+                            <p className="text-xs text-muted-foreground">
+                                Review sent notifications for a selected user.
+                            </p>
+                        </div>
 
-                {success ? (
-                    <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm text-foreground">
-                        {success}
-                    </div>
-                ) : null}
-
-                <div className="grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-lg border bg-card p-4">
-                        <div className="space-y-3">
-                            <h2 className="text-sm font-semibold">Create Single Notification</h2>
-
-                            <div className="space-y-2">
-                                <p className="text-xs font-medium text-muted-foreground">Type</p>
-                                <div className="flex flex-wrap gap-2">
-                                    {TYPE_FILTERS.filter((v): v is NotificationType => v !== "all").map((type) => {
-                                        const active = singleType === type
-                                        return (
-                                            <Button
-                                                key={type}
-                                                size="sm"
-                                                variant={active ? "default" : "outline"}
-                                                onClick={() => setSingleType(type)}
-                                            >
-                                                {toLabel(type)}
-                                            </Button>
-                                        )
-                                    })}
-                                </div>
-                            </div>
-
-                            <Input
-                                placeholder="Title"
-                                value={singleTitle}
-                                onChange={(e) => setSingleTitle(e.target.value)}
-                            />
-
-                            <Input
-                                placeholder="Body"
-                                value={singleBody}
-                                onChange={(e) => setSingleBody(e.target.value)}
-                            />
-
-                            <Input
-                                placeholder='Data JSON (example: {"scheduleId":"abc123"})'
-                                value={singleDataJson}
-                                onChange={(e) => setSingleDataJson(e.target.value)}
-                            />
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={() => void loadNotifications()}
+                                disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
+                            >
+                                {listLoading ? "Loading..." : "Load"}
+                            </Button>
 
                             <Button
-                                onClick={() => void createSingleNotification()}
-                                disabled={loading || !!actionKey}
+                                variant="outline"
+                                onClick={() => void markAllAsRead()}
+                                disabled={listLoading || !!actionKey || viewerUserId === NONE_VALUE}
                             >
-                                {actionKey === "create-single" ? "Creating..." : "Create Notification"}
+                                {actionKey === "read-all" ? "Updating..." : "Mark All Read"}
                             </Button>
                         </div>
                     </div>
 
-                    <div className="rounded-lg border bg-card p-4">
-                        <div className="space-y-3">
-                            <h2 className="text-sm font-semibold">Broadcast Notifications</h2>
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <div className="space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">User</p>
+                            <Select value={viewerUserId} onValueChange={setViewerUserId}>
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select user" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {options?.context.users.map((u) => (
+                                        <SelectItem key={u.value} value={u.value}>
+                                            {u.label} • {toLabel(u.role)}
+                                        </SelectItem>
+                                    )) ?? null}
+                                </SelectContent>
+                            </Select>
+                        </div>
 
-                            <div className="space-y-2">
-                                <p className="text-xs font-medium text-muted-foreground">Type</p>
-                                <div className="flex flex-wrap gap-2">
-                                    {TYPE_FILTERS.filter((v): v is NotificationType => v !== "all").map((type) => {
-                                        const active = broadcastType === type
-                                        return (
-                                            <Button
-                                                key={type}
-                                                size="sm"
-                                                variant={active ? "default" : "outline"}
-                                                onClick={() => setBroadcastType(type)}
-                                            >
-                                                {toLabel(type)}
-                                            </Button>
-                                        )
-                                    })}
-                                </div>
-                            </div>
+                        <div className="space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">Type filter</p>
+                            <Select value={typeFilter} onValueChange={setTypeFilter}>
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Filter by type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All</SelectItem>
+                                    {(options?.notificationTypes ?? []).map((nt) => (
+                                        <SelectItem key={nt} value={nt}>
+                                            {toLabel(nt)}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
 
-                            <Input
-                                placeholder="User IDs (comma-separated)"
-                                value={broadcastUserIds}
-                                onChange={(e) => setBroadcastUserIds(e.target.value)}
-                            />
-
-                            <Input
-                                placeholder="Broadcast title"
-                                value={broadcastTitle}
-                                onChange={(e) => setBroadcastTitle(e.target.value)}
-                            />
-
-                            <Input
-                                placeholder="Broadcast body"
-                                value={broadcastBody}
-                                onChange={(e) => setBroadcastBody(e.target.value)}
-                            />
-
-                            <Input
-                                placeholder='Data JSON (example: {"from":"admin"})'
-                                value={broadcastDataJson}
-                                onChange={(e) => setBroadcastDataJson(e.target.value)}
-                            />
-
-                            <Button
-                                onClick={() => void broadcastNotifications()}
-                                disabled={loading || !!actionKey}
+                        <div className="space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">Read filter</p>
+                            <Select
+                                value={readFilter}
+                                onValueChange={(v) => setReadFilter(v as "all" | "unread" | "read")}
                             >
-                                {actionKey === "broadcast" ? "Sending..." : "Send Broadcast"}
-                            </Button>
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Filter by read status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {READ_FILTERS.map((rf) => (
+                                        <SelectItem key={rf.value} value={rf.value}>
+                                            {rf.label}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     </div>
+
+                    <p className="mt-3 text-sm text-muted-foreground">
+                        Total: <span className="font-semibold text-foreground">{notifications.length}</span> •
+                        Unread: <span className="font-semibold text-foreground">{unreadCount}</span>
+                    </p>
                 </div>
 
                 <div className="overflow-x-auto rounded-lg border bg-card">
@@ -591,14 +1106,14 @@ export default function AdminNotificationsPage() {
                         <TableHeader>
                             <TableRow>
                                 <TableHead className="min-w-72">Notification</TableHead>
-                                <TableHead className="min-w-48">Type</TableHead>
-                                <TableHead className="min-w-32">Status</TableHead>
+                                <TableHead className="min-w-40">Type</TableHead>
+                                <TableHead className="min-w-28">Status</TableHead>
                                 <TableHead className="min-w-44">Created</TableHead>
                                 <TableHead className="min-w-44 text-right">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {loading ? (
+                            {listLoading ? (
                                 Array.from({ length: 6 }).map((_, i) => (
                                     <TableRow key={`skeleton-${i}`}>
                                         <TableCell colSpan={5}>
@@ -609,9 +1124,7 @@ export default function AdminNotificationsPage() {
                             ) : notifications.length === 0 ? (
                                 <TableRow>
                                     <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                                        {userId.trim()
-                                            ? "No notifications found for this user and filter set."
-                                            : "Enter a user ID, then click Load."}
+                                        Select a user and click Load to view notifications.
                                     </TableCell>
                                 </TableRow>
                             ) : (

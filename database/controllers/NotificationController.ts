@@ -154,6 +154,7 @@ export interface NotificationAutomationOptions {
         defaultType: NotificationType;
         requiredContext: AutoNotificationContextKey[];
         allowedIncludes: AutoNotificationIncludeField[];
+        defaultIncludes: AutoNotificationIncludeField[];
     }>;
     targetModes: Array<{
         value: AutoNotificationTarget['mode'];
@@ -204,6 +205,7 @@ interface AutoTemplateDefinition {
     title: string;
     defaultType: NotificationType;
     requiredContext: AutoNotificationContextKey[];
+    allowedIncludes: AutoNotificationIncludeField[];
     defaultIncludes: AutoNotificationIncludeField[];
 }
 
@@ -218,6 +220,13 @@ const AUTO_TEMPLATE_DEFINITIONS: Record<
         title: 'Evaluation submitted',
         defaultType: 'evaluation_submitted',
         requiredContext: ['evaluationId'],
+        allowedIncludes: [
+            'group_title',
+            'schedule_datetime',
+            'schedule_room',
+            'evaluator_name',
+            'evaluation_status',
+        ],
         defaultIncludes: [
             'group_title',
             'evaluator_name',
@@ -232,6 +241,13 @@ const AUTO_TEMPLATE_DEFINITIONS: Record<
         title: 'Evaluation locked',
         defaultType: 'evaluation_locked',
         requiredContext: ['evaluationId'],
+        allowedIncludes: [
+            'group_title',
+            'schedule_datetime',
+            'schedule_room',
+            'evaluator_name',
+            'evaluation_status',
+        ],
         defaultIncludes: [
             'group_title',
             'evaluator_name',
@@ -246,6 +262,14 @@ const AUTO_TEMPLATE_DEFINITIONS: Record<
         title: 'Defense schedule updated',
         defaultType: 'general',
         requiredContext: ['scheduleId'],
+        allowedIncludes: [
+            'group_title',
+            'schedule_datetime',
+            'schedule_room',
+            'student_count',
+            'program',
+            'term',
+        ],
         defaultIncludes: ['group_title', 'schedule_datetime', 'schedule_room'],
     },
     general_update: {
@@ -255,6 +279,14 @@ const AUTO_TEMPLATE_DEFINITIONS: Record<
         title: 'New update',
         defaultType: 'general',
         requiredContext: [],
+        allowedIncludes: [
+            'group_title',
+            'schedule_datetime',
+            'schedule_room',
+            'student_count',
+            'program',
+            'term',
+        ],
         defaultIncludes: ['group_title', 'schedule_datetime'],
     },
 };
@@ -481,7 +513,8 @@ export class NotificationController {
                 description: def.description,
                 defaultType: def.defaultType,
                 requiredContext: def.requiredContext,
-                allowedIncludes: [...AUTO_NOTIFICATION_INCLUDE_FIELDS],
+                allowedIncludes: [...def.allowedIncludes],
+                defaultIncludes: [...def.defaultIncludes],
             };
         });
 
@@ -533,7 +566,9 @@ export class NotificationController {
                 })),
                 schedules: schedules.map((schedule) => ({
                     value: schedule.id,
-                    label: `Schedule ${schedule.id.slice(0, 8)} • ${schedule.scheduled_at}`,
+                    label:
+                        `Schedule ${schedule.id.slice(0, 8)} • ${schedule.scheduled_at}` +
+                        (schedule.room ? ` • ${schedule.room}` : ''),
                     scheduledAt: schedule.scheduled_at,
                     room: schedule.room,
                     groupId: schedule.group_id,
@@ -546,7 +581,10 @@ export class NotificationController {
 
                     return {
                         value: evaluation.id,
-                        label: `Evaluation ${evaluation.id.slice(0, 8)} • ${evaluation.status}`,
+                        label:
+                            `Evaluation ${evaluation.id.slice(0, 8)} • ${evaluation.status}` +
+                            (evaluatorName ? ` • ${evaluatorName}` : '') +
+                            (schedule?.scheduled_at ? ` • ${schedule.scheduled_at}` : ''),
                         status: evaluation.status,
                         scheduleId: evaluation.schedule_id,
                         evaluatorId: evaluation.evaluator_id,
@@ -673,11 +711,11 @@ export class NotificationController {
         }
 
         if (mode === 'users') {
-            const userIds =
-                toUuidArray(targetNode.userIds ?? targetNode.user_ids) ??
-                toUuidArray(input.userIds);
+            const targetNodeIds = toUuidArray(targetNode.userIds ?? targetNode.user_ids);
+            const rootIds = toUuidArray(input.userIds);
+            const userIds = targetNodeIds.length > 0 ? targetNodeIds : rootIds;
 
-            if (!userIds || userIds.length === 0) {
+            if (userIds.length === 0) {
                 throw new Error('For targetMode "users", userIds must be a non-empty UUID array.');
             }
 
@@ -756,18 +794,22 @@ export class NotificationController {
         value: unknown,
         template: AutoNotificationTemplate,
     ): AutoNotificationIncludeField[] {
+        const definition = AUTO_TEMPLATE_DEFINITIONS[template];
+        const allowed = new Set<AutoNotificationIncludeField>(definition.allowedIncludes);
+
         if (!Array.isArray(value) || value.length === 0) {
-            return [...AUTO_TEMPLATE_DEFINITIONS[template].defaultIncludes];
+            return [...definition.defaultIncludes];
         }
 
         const include = unique(
             value
                 .map((item) => this.toIncludeField(item))
-                .filter((item): item is AutoNotificationIncludeField => !!item),
+                .filter((item): item is AutoNotificationIncludeField => !!item)
+                .filter((item) => allowed.has(item)),
         );
 
         if (include.length === 0) {
-            return [...AUTO_TEMPLATE_DEFINITIONS[template].defaultIncludes];
+            return [...definition.defaultIncludes];
         }
 
         return include;
