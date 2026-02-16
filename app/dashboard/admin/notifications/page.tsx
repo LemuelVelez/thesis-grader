@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Check, ChevronDown, RefreshCw, Send } from "lucide-react"
+import { Bell, Check, ChevronDown, RefreshCw, Send } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
@@ -138,7 +138,37 @@ type AutomationOptionsResponse = {
     message?: string
 }
 
+/* ------------------------------- Push Types -------------------------------- */
+
+type PushPublicKeyInfo = {
+    enabled: boolean
+    publicKey: string | null
+    reason?: string
+}
+
+type PushPublicKeyResponse = {
+    item?: PushPublicKeyInfo
+    error?: string
+    message?: string
+}
+
+type PushDispatchResult = {
+    enabled: boolean
+    totalSubscriptions: number
+    sent: number
+    failed: number
+    removed: number
+    reason?: string
+}
+
+type PushSendResponse = {
+    item?: PushDispatchResult
+    error?: string
+    message?: string
+}
+
 const NONE_VALUE = "__none__"
+const PUSH_SW_PATH = "/push-sw.js"
 
 const READ_FILTERS = [
     { value: "all", label: "All" },
@@ -222,6 +252,46 @@ function selectValueToBool(value: string) {
     return value === "yes"
 }
 
+function isPushSupportedInBrowser() {
+    if (typeof window === "undefined") return false
+    return (
+        "Notification" in window &&
+        "serviceWorker" in navigator &&
+        "PushManager" in window
+    )
+}
+
+function urlBase64ToUint8Array(base64String: string) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
+    const base64 = (base64String + padding)
+        .replace(/-/g, "+")
+        .replace(/_/g, "/")
+
+    const rawData = typeof window !== "undefined" ? window.atob(base64) : ""
+    const outputArray = new Uint8Array(rawData.length)
+
+    for (let i = 0; i < rawData.length; i += 1) {
+        outputArray[i] = rawData.charCodeAt(i)
+    }
+
+    return outputArray
+}
+
+function pushPermissionLabel(
+    permission: NotificationPermission | "unsupported",
+): string {
+    if (permission === "granted") return "Granted"
+    if (permission === "denied") return "Denied"
+    if (permission === "default") return "Prompt"
+    return "Unsupported"
+}
+
+function truncateMiddle(value: string, head = 30, tail = 18) {
+    if (!value) return ""
+    if (value.length <= head + tail + 3) return value
+    return `${value.slice(0, head)}...${value.slice(-tail)}`
+}
+
 export default function AdminNotificationsPage() {
     const [options, setOptions] = React.useState<NotificationAutomationOptions | null>(null)
     const [optionsLoading, setOptionsLoading] = React.useState(false)
@@ -255,6 +325,16 @@ export default function AdminNotificationsPage() {
     const [viewerUserId, setViewerUserId] = React.useState<string>(NONE_VALUE)
     const [typeFilter, setTypeFilter] = React.useState<string>("all")
     const [readFilter, setReadFilter] = React.useState<"all" | "unread" | "read">("all")
+
+    /* ------------------------------- Push State ------------------------------- */
+
+    const swRegistrationRef = React.useRef<ServiceWorkerRegistration | null>(null)
+    const [pushSupported, setPushSupported] = React.useState(false)
+    const [pushPermission, setPushPermission] = React.useState<NotificationPermission | "unsupported">("unsupported")
+    const [pushConfigured, setPushConfigured] = React.useState(false)
+    const [pushPublicKey, setPushPublicKey] = React.useState<string | null>(null)
+    const [pushConfigReason, setPushConfigReason] = React.useState<string | null>(null)
+    const [localPushEndpoint, setLocalPushEndpoint] = React.useState<string | null>(null)
 
     const selectedTemplateDef = React.useMemo(() => {
         if (!options || !template) return null
@@ -344,6 +424,69 @@ export default function AdminNotificationsPage() {
         selectedTemplateDef,
     ])
 
+    const loadPushEnvironment = React.useCallback(
+        async (showToast = false): Promise<PushPublicKeyInfo | null> => {
+            try {
+                const res = await fetch("/api/notifications/push/public-key", {
+                    cache: "no-store",
+                })
+                if (!res.ok) throw new Error(await readErrorMessage(res))
+
+                const data = (await res.json()) as PushPublicKeyResponse
+                const info = data.item
+                if (!info) throw new Error("Push configuration response is empty.")
+
+                setPushConfigured(info.enabled)
+                setPushPublicKey(info.publicKey ?? null)
+                setPushConfigReason(info.reason ?? null)
+
+                if (showToast) {
+                    if (info.enabled) {
+                        toast.success("Push server configuration is ready.")
+                    } else {
+                        toast.error(info.reason || "Push server configuration is incomplete.")
+                    }
+                }
+
+                return info
+            } catch (error) {
+                setPushConfigured(false)
+                setPushPublicKey(null)
+
+                const message =
+                    error instanceof Error ? error.message : "Failed to load push configuration."
+                setPushConfigReason(message)
+                if (showToast) toast.error(message)
+                return null
+            }
+        },
+        [],
+    )
+
+    const syncBrowserPushState = React.useCallback(async () => {
+        if (!isPushSupportedInBrowser()) {
+            setPushSupported(false)
+            setPushPermission("unsupported")
+            setLocalPushEndpoint(null)
+            return
+        }
+
+        setPushSupported(true)
+        setPushPermission(Notification.permission)
+
+        try {
+            const registration =
+                swRegistrationRef.current ??
+                (await navigator.serviceWorker.register(PUSH_SW_PATH))
+            swRegistrationRef.current = registration
+
+            const subscription = await registration.pushManager.getSubscription()
+            setLocalPushEndpoint(subscription?.endpoint ?? null)
+        } catch {
+            setLocalPushEndpoint(null)
+        }
+    }, [])
+
     const loadAutomationOptions = React.useCallback(async () => {
         setOptionsLoading(true)
         try {
@@ -400,6 +543,26 @@ export default function AdminNotificationsPage() {
     React.useEffect(() => {
         void loadAutomationOptions()
     }, [loadAutomationOptions])
+
+    React.useEffect(() => {
+        void loadPushEnvironment(false)
+        void syncBrowserPushState()
+    }, [loadPushEnvironment, syncBrowserPushState])
+
+    React.useEffect(() => {
+        if (typeof window === "undefined") return
+        const handleFocus = () => {
+            void syncBrowserPushState()
+        }
+
+        window.addEventListener("focus", handleFocus)
+        document.addEventListener("visibilitychange", handleFocus)
+
+        return () => {
+            window.removeEventListener("focus", handleFocus)
+            document.removeEventListener("visibilitychange", handleFocus)
+        }
+    }, [syncBrowserPushState])
 
     React.useEffect(() => {
         if (!selectedTemplateDef) return
@@ -801,6 +964,184 @@ export default function AdminNotificationsPage() {
         }
     }, [loadNotifications, viewerUserId])
 
+    /* ----------------------------- Push Handlers ----------------------------- */
+
+    const enablePushForSelectedUser = React.useCallback(async () => {
+        if (viewerUserId === NONE_VALUE) {
+            toast.error("Select a user in Notification Viewer first.")
+            return
+        }
+
+        if (!isPushSupportedInBrowser()) {
+            toast.error("This browser does not support web push notifications.")
+            return
+        }
+
+        setActionKey("push:enable")
+        try {
+            let permission: NotificationPermission = Notification.permission
+            if (permission !== "granted") {
+                permission = await Notification.requestPermission()
+            }
+            setPushPermission(permission)
+
+            if (permission !== "granted") {
+                throw new Error("Push permission is required. Please allow notifications in your browser.")
+            }
+
+            let serverPublicKey = pushPublicKey
+            if (!pushConfigured || !serverPublicKey) {
+                const info = await loadPushEnvironment(false)
+                if (!info?.enabled || !info.publicKey) {
+                    throw new Error(info?.reason || "Push is not configured on the server.")
+                }
+                serverPublicKey = info.publicKey
+            }
+
+            const registration =
+                swRegistrationRef.current ??
+                (await navigator.serviceWorker.register(PUSH_SW_PATH))
+            swRegistrationRef.current = registration
+
+            let subscription = await registration.pushManager.getSubscription()
+            if (!subscription) {
+                subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(serverPublicKey),
+                })
+            }
+
+            const res = await fetch("/api/notifications/push/subscriptions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userId: viewerUserId,
+                    subscription,
+                }),
+            })
+
+            if (!res.ok) {
+                throw new Error(await readErrorMessage(res))
+            }
+
+            setLocalPushEndpoint(subscription.endpoint)
+            toast.success("Push notification is enabled for this browser device.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to enable browser push."
+            toast.error(message)
+        } finally {
+            setActionKey(null)
+            void syncBrowserPushState()
+        }
+    }, [
+        loadPushEnvironment,
+        pushConfigured,
+        pushPublicKey,
+        syncBrowserPushState,
+        viewerUserId,
+    ])
+
+    const disablePushForCurrentBrowser = React.useCallback(async () => {
+        if (!isPushSupportedInBrowser()) {
+            toast.error("This browser does not support web push notifications.")
+            return
+        }
+
+        setActionKey("push:disable")
+        try {
+            const registration =
+                swRegistrationRef.current ??
+                (await navigator.serviceWorker.register(PUSH_SW_PATH))
+            swRegistrationRef.current = registration
+
+            const subscription = await registration.pushManager.getSubscription()
+            const endpoint = subscription?.endpoint ?? localPushEndpoint
+
+            if (!endpoint) {
+                throw new Error("This browser has no active push subscription.")
+            }
+
+            const payload: Record<string, unknown> = { endpoint }
+            if (viewerUserId !== NONE_VALUE) {
+                payload.userId = viewerUserId
+            }
+
+            const res = await fetch("/api/notifications/push/subscriptions", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            })
+
+            if (!res.ok) {
+                throw new Error(await readErrorMessage(res))
+            }
+
+            if (subscription) {
+                await subscription.unsubscribe()
+            }
+
+            setLocalPushEndpoint(null)
+            toast.success("Push notification is disabled for this browser device.")
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to disable browser push."
+            toast.error(message)
+        } finally {
+            setActionKey(null)
+            void syncBrowserPushState()
+        }
+    }, [localPushEndpoint, syncBrowserPushState, viewerUserId])
+
+    const sendPushTestToSelectedUser = React.useCallback(async () => {
+        if (viewerUserId === NONE_VALUE) {
+            toast.error("Select a user in Notification Viewer first.")
+            return
+        }
+
+        setActionKey("push:test")
+        try {
+            const res = await fetch("/api/notifications/push/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userIds: [viewerUserId],
+                    payload: {
+                        type: "general",
+                        title: "Test Push Notification",
+                        body: "If you can see this alert, browser push is working.",
+                        data: {
+                            url: "/dashboard/admin/notifications",
+                            topic: "admin-notification-test",
+                        },
+                    },
+                }),
+            })
+
+            if (!res.ok) {
+                throw new Error(await readErrorMessage(res))
+            }
+
+            const data = (await res.json()) as PushSendResponse
+            const result = data.item
+
+            if (result && result.enabled === false) {
+                throw new Error(result.reason || "Push is disabled on the server.")
+            }
+
+            toast.success(
+                `Test push dispatched. Sent: ${result?.sent ?? 0}, Failed: ${result?.failed ?? 0}.`,
+            )
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Failed to send test push."
+            toast.error(message)
+        } finally {
+            setActionKey(null)
+            void syncBrowserPushState()
+        }
+    }, [syncBrowserPushState, viewerUserId])
+
     const includeButtonText =
         includeFields.length === 0
             ? "Choose included details"
@@ -813,6 +1154,9 @@ export default function AdminNotificationsPage() {
 
     const sendDisabled =
         optionsLoading || !!actionKey || !options || !!requiredContextIssue
+
+    const pushActionsBusy = actionKey?.startsWith("push:") ?? false
+    const canManagePush = pushSupported && viewerUserId !== NONE_VALUE
 
     return (
         <DashboardLayout
@@ -1389,6 +1733,129 @@ export default function AdminNotificationsPage() {
                                 </SelectContent>
                             </Select>
                         </div>
+                    </div>
+
+                    {/* Push Notification Device Controls */}
+                    <div className="mt-4 rounded-md border bg-muted/20 p-3">
+                        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                            <div className="min-w-0">
+                                <p className="text-xs font-medium text-muted-foreground">Browser Push Device</p>
+                                <p className="text-xs text-muted-foreground">
+                                    Connect this browser to the selected user, then send a test push.
+                                </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void loadPushEnvironment(true)}
+                                    disabled={!!actionKey}
+                                >
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Refresh Push Config
+                                </Button>
+
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void enablePushForSelectedUser()}
+                                    disabled={!!actionKey || !canManagePush}
+                                >
+                                    <Bell className="mr-2 h-4 w-4" />
+                                    {actionKey === "push:enable" ? "Enabling..." : "Enable Push"}
+                                </Button>
+
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void disablePushForCurrentBrowser()}
+                                    disabled={!!actionKey || !pushSupported}
+                                >
+                                    {actionKey === "push:disable" ? "Disabling..." : "Disable Push"}
+                                </Button>
+
+                                <Button
+                                    size="sm"
+                                    onClick={() => void sendPushTestToSelectedUser()}
+                                    disabled={!!actionKey || viewerUserId === NONE_VALUE}
+                                >
+                                    <Send className="mr-2 h-4 w-4" />
+                                    {actionKey === "push:test" ? "Sending..." : "Send Test Push"}
+                                </Button>
+                            </div>
+                        </div>
+
+                        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                            <div className="rounded-md border bg-background px-3 py-2">
+                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Browser Support
+                                </p>
+                                <p className="text-sm font-medium">
+                                    {pushSupported ? "Supported" : "Not Supported"}
+                                </p>
+                            </div>
+
+                            <div className="rounded-md border bg-background px-3 py-2">
+                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Permission
+                                </p>
+                                <p className="text-sm font-medium">
+                                    {pushPermissionLabel(pushPermission)}
+                                </p>
+                            </div>
+
+                            <div className="rounded-md border bg-background px-3 py-2">
+                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Server Push Config
+                                </p>
+                                <p className="text-sm font-medium">
+                                    {pushConfigured ? "Configured" : "Not Configured"}
+                                </p>
+                            </div>
+
+                            <div className="rounded-md border bg-background px-3 py-2">
+                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    This Browser Device
+                                </p>
+                                <p className="text-sm font-medium">
+                                    {localPushEndpoint ? "Subscribed" : "Not Subscribed"}
+                                </p>
+                            </div>
+                        </div>
+
+                        {!pushConfigured && pushConfigReason ? (
+                            <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                                {pushConfigReason}
+                            </p>
+                        ) : null}
+
+                        {localPushEndpoint ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                                Endpoint:{" "}
+                                <span className="font-mono">
+                                    {truncateMiddle(localPushEndpoint)}
+                                </span>
+                            </p>
+                        ) : null}
+
+                        {!pushSupported ? (
+                            <p className="mt-2 text-xs text-destructive">
+                                This browser does not support service worker push.
+                            </p>
+                        ) : null}
+
+                        {viewerUserId === NONE_VALUE ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                                Select a user in the Notification Viewer to bind this browser subscription.
+                            </p>
+                        ) : null}
+
+                        {pushActionsBusy ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                                Updating push subscription...
+                            </p>
+                        ) : null}
                     </div>
 
                     <p className="mt-3 text-sm text-muted-foreground">
