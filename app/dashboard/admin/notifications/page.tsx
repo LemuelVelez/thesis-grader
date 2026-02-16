@@ -146,10 +146,32 @@ const READ_FILTERS = [
     { value: "read", label: "Read" },
 ] as const
 
+const SELECT_TRIGGER_CLASS =
+    "w-full min-w-0 max-w-full [&>span]:block [&>span]:truncate"
+
+const SELECT_CONTENT_CLASS = "max-w-3xl"
+
+function shortId(value: string, size = 8) {
+    if (!value) return ""
+    return value.length <= size ? value : value.slice(0, size)
+}
+
 function formatDate(value: string) {
     const d = new Date(value)
     if (Number.isNaN(d.getTime())) return value
     return d.toLocaleString()
+}
+
+function formatDateCompact(value: string) {
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return value
+    return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    })
 }
 
 function toLabel(value: string) {
@@ -157,6 +179,30 @@ function toLabel(value: string) {
         .split("_")
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ")
+}
+
+function buildScheduleDisplayLabel(
+    schedule: NotificationAutomationOptions["context"]["schedules"][number],
+) {
+    const when = formatDateCompact(schedule.scheduledAt)
+    const roomPart = schedule.room ? ` • ${schedule.room}` : ""
+    return `${when}${roomPart}`
+}
+
+function buildEvaluationDisplayLabel(
+    evaluation: NotificationAutomationOptions["context"]["evaluations"][number],
+) {
+    const status = toLabel(evaluation.status)
+    const evaluator = evaluation.evaluatorName ? ` • ${evaluation.evaluatorName}` : ""
+    return `${status}${evaluator}`
+}
+
+function buildGroupDisplayLabel(
+    group: NotificationAutomationOptions["context"]["groups"][number],
+) {
+    const program = group.program ? ` • ${group.program}` : ""
+    const term = group.term ? ` • ${group.term}` : ""
+    return `${group.label}${program}${term}`
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -249,6 +295,55 @@ export default function AdminNotificationsPage() {
         )
     }, [includeFields, selectedTemplateDef])
 
+    const contextSelectorCount = React.useMemo(
+        () =>
+            [needsEvaluationSelector, needsScheduleSelector, needsGroupSelector].filter(Boolean)
+                .length,
+        [needsEvaluationSelector, needsGroupSelector, needsScheduleSelector],
+    )
+
+    const hasEvaluationOptions = (options?.context.evaluations.length ?? 0) > 0
+    const hasScheduleOptions = (options?.context.schedules.length ?? 0) > 0
+    const hasGroupOptions = (options?.context.groups.length ?? 0) > 0
+
+    const requiredContextIssue = React.useMemo(() => {
+        if (!selectedTemplateDef) return null
+
+        const requiresEvaluation = selectedTemplateDef.requiredContext.includes("evaluationId")
+        const requiresSchedule = selectedTemplateDef.requiredContext.includes("scheduleId")
+        const requiresGroup = selectedTemplateDef.requiredContext.includes("groupId")
+
+        if (requiresEvaluation && !hasEvaluationOptions) {
+            return "This template requires an evaluation context, but no evaluations are available yet."
+        }
+        if (requiresSchedule && !hasScheduleOptions) {
+            return "This template requires a schedule context, but no schedules are available yet."
+        }
+        if (requiresGroup && !hasGroupOptions) {
+            return "This template requires a group context, but no groups are available yet."
+        }
+
+        if (requiresEvaluation && contextEvaluationId === NONE_VALUE) {
+            return "Please select an evaluation context."
+        }
+        if (requiresSchedule && contextScheduleId === NONE_VALUE) {
+            return "Please select a schedule context."
+        }
+        if (requiresGroup && contextGroupId === NONE_VALUE) {
+            return "Please select a group context."
+        }
+
+        return null
+    }, [
+        contextEvaluationId,
+        contextGroupId,
+        contextScheduleId,
+        hasEvaluationOptions,
+        hasGroupOptions,
+        hasScheduleOptions,
+        selectedTemplateDef,
+    ])
+
     const loadAutomationOptions = React.useCallback(async () => {
         setOptionsLoading(true)
         try {
@@ -334,6 +429,58 @@ export default function AdminNotificationsPage() {
             }
         }
     }, [contextEvaluationId, contextGroupId, contextScheduleId, options, selectedTemplateDef])
+
+    React.useEffect(() => {
+        if (!options) return
+
+        const userIds = new Set(options.context.users.map((u) => u.value))
+        const roleSet = new Set(options.context.roles)
+        const groupIds = new Set(options.context.groups.map((g) => g.value))
+        const scheduleIds = new Set(options.context.schedules.map((s) => s.value))
+        const evaluationIds = new Set(options.context.evaluations.map((e) => e.value))
+
+        setTargetUserIds((prev) => {
+            const filtered = prev.filter((id) => userIds.has(id))
+            return filtered.length === prev.length ? prev : filtered
+        })
+
+        if (viewerUserId !== NONE_VALUE && !userIds.has(viewerUserId)) {
+            setViewerUserId(options.context.users[0]?.value ?? NONE_VALUE)
+        }
+
+        if (targetRole !== NONE_VALUE && !roleSet.has(targetRole)) {
+            setTargetRole(options.context.roles[0] ?? NONE_VALUE)
+        }
+
+        if (targetGroupId !== NONE_VALUE && !groupIds.has(targetGroupId)) {
+            setTargetGroupId(options.context.groups[0]?.value ?? NONE_VALUE)
+        }
+
+        if (targetScheduleId !== NONE_VALUE && !scheduleIds.has(targetScheduleId)) {
+            setTargetScheduleId(options.context.schedules[0]?.value ?? NONE_VALUE)
+        }
+
+        if (contextEvaluationId !== NONE_VALUE && !evaluationIds.has(contextEvaluationId)) {
+            setContextEvaluationId(NONE_VALUE)
+        }
+
+        if (contextScheduleId !== NONE_VALUE && !scheduleIds.has(contextScheduleId)) {
+            setContextScheduleId(NONE_VALUE)
+        }
+
+        if (contextGroupId !== NONE_VALUE && !groupIds.has(contextGroupId)) {
+            setContextGroupId(NONE_VALUE)
+        }
+    }, [
+        contextEvaluationId,
+        contextGroupId,
+        contextScheduleId,
+        options,
+        targetGroupId,
+        targetRole,
+        targetScheduleId,
+        viewerUserId,
+    ])
 
     React.useEffect(() => {
         if (!options) return
@@ -429,6 +576,11 @@ export default function AdminNotificationsPage() {
     const sendAutomaticNotification = React.useCallback(async () => {
         if (!options || !template || !selectedTemplateDef) {
             toast.error("Automation options are not ready yet.")
+            return
+        }
+
+        if (requiredContextIssue) {
+            toast.error(requiredContextIssue)
             return
         }
 
@@ -547,6 +699,7 @@ export default function AdminNotificationsPage() {
         loadNotifications,
         notificationType,
         options,
+        requiredContextIssue,
         selectedTemplateDef,
         targetGroupId,
         targetMode,
@@ -658,6 +811,9 @@ export default function AdminNotificationsPage() {
             ? "Choose recipient users"
             : `${targetUserIds.length} user(s) selected`
 
+    const sendDisabled =
+        optionsLoading || !!actionKey || !options || !!requiredContextIssue
+
     return (
         <DashboardLayout
             title="Automatic Notifications"
@@ -696,7 +852,7 @@ export default function AdminNotificationsPage() {
                     ) : (
                         <div className="grid gap-4">
                             <div className="grid gap-3 md:grid-cols-3">
-                                <div className="space-y-2">
+                                <div className="space-y-2 min-w-0">
                                     <p className="text-xs font-medium text-muted-foreground">Template</p>
                                     <Select
                                         value={template || options.templates[0]?.value}
@@ -704,56 +860,62 @@ export default function AdminNotificationsPage() {
                                             setTemplate(value as AutoNotificationTemplate)
                                         }
                                     >
-                                        <SelectTrigger>
+                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                             <SelectValue placeholder="Select template" />
                                         </SelectTrigger>
-                                        <SelectContent>
+                                        <SelectContent className={SELECT_CONTENT_CLASS}>
                                             {options.templates.map((t) => (
-                                                <SelectItem key={t.value} value={t.value}>
-                                                    {t.label}
+                                                <SelectItem key={t.value} value={t.value} textValue={t.label}>
+                                                    <span className="block truncate" title={t.label}>
+                                                        {t.label}
+                                                    </span>
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
                                     {selectedTemplateDef ? (
-                                        <p className="text-[11px] text-muted-foreground">
+                                        <p className="text-xs text-muted-foreground">
                                             {selectedTemplateDef.description}
                                         </p>
                                     ) : null}
                                 </div>
 
-                                <div className="space-y-2">
+                                <div className="space-y-2 min-w-0">
                                     <p className="text-xs font-medium text-muted-foreground">Notification type</p>
                                     <Select
                                         value={notificationType}
                                         onValueChange={(value) => setNotificationType(value)}
                                     >
-                                        <SelectTrigger>
+                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                             <SelectValue placeholder="Select type" />
                                         </SelectTrigger>
-                                        <SelectContent>
+                                        <SelectContent className={SELECT_CONTENT_CLASS}>
                                             {options.notificationTypes.map((nt) => (
-                                                <SelectItem key={nt} value={nt}>
-                                                    {toLabel(nt)}
+                                                <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
+                                                    <span className="block truncate" title={toLabel(nt)}>
+                                                        {toLabel(nt)}
+                                                    </span>
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
                                 </div>
 
-                                <div className="space-y-2">
+                                <div className="space-y-2 min-w-0">
                                     <p className="text-xs font-medium text-muted-foreground">Target mode</p>
                                     <Select
                                         value={targetMode}
                                         onValueChange={(value) => setTargetMode(value as TargetMode)}
                                     >
-                                        <SelectTrigger>
+                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                             <SelectValue placeholder="Select target mode" />
                                         </SelectTrigger>
-                                        <SelectContent>
+                                        <SelectContent className={SELECT_CONTENT_CLASS}>
                                             {options.targetModes.map((tm) => (
-                                                <SelectItem key={tm.value} value={tm.value}>
-                                                    {tm.label}
+                                                <SelectItem key={tm.value} value={tm.value} textValue={tm.label}>
+                                                    <span className="block truncate" title={tm.description}>
+                                                        {tm.label}
+                                                    </span>
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
@@ -765,43 +927,55 @@ export default function AdminNotificationsPage() {
                                 <p className="mb-2 text-xs font-medium text-muted-foreground">Target selection</p>
 
                                 {targetMode === "users" ? (
-                                    <div className="space-y-2">
+                                    <div className="space-y-2 min-w-0">
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
-                                                <Button variant="outline" className="w-full justify-between">
-                                                    {targetUsersButtonText}
-                                                    <ChevronDown className="ml-2 h-4 w-4" />
+                                                <Button variant="outline" className="w-full justify-between min-w-0">
+                                                    <span className="truncate">{targetUsersButtonText}</span>
+                                                    <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
                                                 </Button>
                                             </DropdownMenuTrigger>
-                                            <DropdownMenuContent className="w-90">
+                                            <DropdownMenuContent className="w-96 max-w-full">
                                                 <DropdownMenuLabel>Recipients (users)</DropdownMenuLabel>
                                                 <DropdownMenuSeparator />
-                                                {options.context.users.map((u) => (
-                                                    <DropdownMenuCheckboxItem
-                                                        key={u.value}
-                                                        checked={targetUserIds.includes(u.value)}
-                                                        onCheckedChange={(checked) =>
-                                                            toggleTargetUser(u.value, checked === true)
-                                                        }
-                                                    >
-                                                        {u.label} • {toLabel(u.role)}
-                                                    </DropdownMenuCheckboxItem>
-                                                ))}
+                                                {options.context.users.length === 0 ? (
+                                                    <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                                                        No active users available.
+                                                    </div>
+                                                ) : (
+                                                    options.context.users.map((u) => {
+                                                        const label = `${u.label} • ${toLabel(u.role)}`
+                                                        return (
+                                                            <DropdownMenuCheckboxItem
+                                                                key={u.value}
+                                                                checked={targetUserIds.includes(u.value)}
+                                                                onCheckedChange={(checked) =>
+                                                                    toggleTargetUser(u.value, checked === true)
+                                                                }
+                                                            >
+                                                                <span className="block truncate" title={label}>
+                                                                    {label}
+                                                                </span>
+                                                            </DropdownMenuCheckboxItem>
+                                                        )
+                                                    })
+                                                )}
                                             </DropdownMenuContent>
                                         </DropdownMenu>
                                     </div>
                                 ) : null}
 
                                 {targetMode === "role" ? (
-                                    <div className="space-y-2">
+                                    <div className="space-y-2 min-w-0">
                                         <Select value={targetRole} onValueChange={setTargetRole}>
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Select role" />
                                             </SelectTrigger>
-                                            <SelectContent>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                <SelectItem value={NONE_VALUE}>Select role</SelectItem>
                                                 {options.context.roles.map((role) => (
-                                                    <SelectItem key={role} value={role}>
-                                                        {toLabel(role)}
+                                                    <SelectItem key={role} value={role} textValue={toLabel(role)}>
+                                                        <span className="block truncate">{toLabel(role)}</span>
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -812,15 +986,21 @@ export default function AdminNotificationsPage() {
                                 {targetMode === "group" ? (
                                     <div className="grid gap-2 md:grid-cols-2">
                                         <Select value={targetGroupId} onValueChange={setTargetGroupId}>
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Select thesis group" />
                                             </SelectTrigger>
-                                            <SelectContent>
-                                                {options.context.groups.map((g) => (
-                                                    <SelectItem key={g.value} value={g.value}>
-                                                        {g.label}
-                                                    </SelectItem>
-                                                ))}
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                <SelectItem value={NONE_VALUE}>Select thesis group</SelectItem>
+                                                {options.context.groups.map((g) => {
+                                                    const label = buildGroupDisplayLabel(g)
+                                                    return (
+                                                        <SelectItem key={g.value} value={g.value} textValue={label}>
+                                                            <span className="block truncate" title={label}>
+                                                                {label}
+                                                            </span>
+                                                        </SelectItem>
+                                                    )
+                                                })}
                                             </SelectContent>
                                         </Select>
 
@@ -828,10 +1008,10 @@ export default function AdminNotificationsPage() {
                                             value={boolToSelectValue(includeAdviser)}
                                             onValueChange={(v) => setIncludeAdviser(selectValueToBool(v))}
                                         >
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Include adviser?" />
                                             </SelectTrigger>
-                                            <SelectContent>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
                                                 <SelectItem value="yes">Include adviser</SelectItem>
                                                 <SelectItem value="no">Students only</SelectItem>
                                             </SelectContent>
@@ -842,15 +1022,33 @@ export default function AdminNotificationsPage() {
                                 {targetMode === "schedule" ? (
                                     <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
                                         <Select value={targetScheduleId} onValueChange={setTargetScheduleId}>
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Select schedule" />
                                             </SelectTrigger>
-                                            <SelectContent>
-                                                {options.context.schedules.map((s) => (
-                                                    <SelectItem key={s.value} value={s.value}>
-                                                        {s.label}
-                                                    </SelectItem>
-                                                ))}
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                <SelectItem value={NONE_VALUE}>Select schedule</SelectItem>
+                                                {options.context.schedules.map((s) => {
+                                                    const primary = buildScheduleDisplayLabel(s)
+                                                    const secondary = s.groupTitle
+                                                        ? `Group: ${s.groupTitle}`
+                                                        : `Group ID: ${shortId(s.groupId)}`
+                                                    const full = `${primary} • ${secondary}`
+                                                    return (
+                                                        <SelectItem key={s.value} value={s.value} textValue={full}>
+                                                            <div className="flex min-w-0 flex-col">
+                                                                <span className="truncate" title={primary}>
+                                                                    {primary}
+                                                                </span>
+                                                                <span
+                                                                    className="truncate text-xs text-muted-foreground"
+                                                                    title={secondary}
+                                                                >
+                                                                    {secondary}
+                                                                </span>
+                                                            </div>
+                                                        </SelectItem>
+                                                    )
+                                                })}
                                             </SelectContent>
                                         </Select>
 
@@ -858,10 +1056,10 @@ export default function AdminNotificationsPage() {
                                             value={boolToSelectValue(includeStudents)}
                                             onValueChange={(v) => setIncludeStudents(selectValueToBool(v))}
                                         >
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Include students" />
                                             </SelectTrigger>
-                                            <SelectContent>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
                                                 <SelectItem value="yes">Include students</SelectItem>
                                                 <SelectItem value="no">Skip students</SelectItem>
                                             </SelectContent>
@@ -871,10 +1069,10 @@ export default function AdminNotificationsPage() {
                                             value={boolToSelectValue(includePanelists)}
                                             onValueChange={(v) => setIncludePanelists(selectValueToBool(v))}
                                         >
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Include panelists" />
                                             </SelectTrigger>
-                                            <SelectContent>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
                                                 <SelectItem value="yes">Include panelists</SelectItem>
                                                 <SelectItem value="no">Skip panelists</SelectItem>
                                             </SelectContent>
@@ -884,10 +1082,10 @@ export default function AdminNotificationsPage() {
                                             value={boolToSelectValue(includeCreator)}
                                             onValueChange={(v) => setIncludeCreator(selectValueToBool(v))}
                                         >
-                                            <SelectTrigger>
+                                            <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                                 <SelectValue placeholder="Include creator" />
                                             </SelectTrigger>
-                                            <SelectContent>
+                                            <SelectContent className={SELECT_CONTENT_CLASS}>
                                                 <SelectItem value="yes">Include creator</SelectItem>
                                                 <SelectItem value="no">Skip creator</SelectItem>
                                             </SelectContent>
@@ -897,63 +1095,147 @@ export default function AdminNotificationsPage() {
                             </div>
 
                             <div className="rounded-md border bg-muted/20 p-3">
-                                <p className="mb-2 text-xs font-medium text-muted-foreground">Context selection</p>
-
-                                <div className="grid gap-2 md:grid-cols-3">
-                                    {needsEvaluationSelector ? (
-                                        <Select value={contextEvaluationId} onValueChange={setContextEvaluationId}>
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Select evaluation context" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {!selectedTemplateDef?.requiredContext.includes("evaluationId") ? (
-                                                    <SelectItem value={NONE_VALUE}>No evaluation context</SelectItem>
-                                                ) : null}
-                                                {options.context.evaluations.map((e) => (
-                                                    <SelectItem key={e.value} value={e.value}>
-                                                        {e.label}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    ) : null}
-
-                                    {needsScheduleSelector ? (
-                                        <Select value={contextScheduleId} onValueChange={setContextScheduleId}>
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Select schedule context" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {!selectedTemplateDef?.requiredContext.includes("scheduleId") ? (
-                                                    <SelectItem value={NONE_VALUE}>No schedule context</SelectItem>
-                                                ) : null}
-                                                {options.context.schedules.map((s) => (
-                                                    <SelectItem key={s.value} value={s.value}>
-                                                        {s.label}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    ) : null}
-
-                                    {needsGroupSelector ? (
-                                        <Select value={contextGroupId} onValueChange={setContextGroupId}>
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Select group context" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {!selectedTemplateDef?.requiredContext.includes("groupId") ? (
-                                                    <SelectItem value={NONE_VALUE}>No group context</SelectItem>
-                                                ) : null}
-                                                {options.context.groups.map((g) => (
-                                                    <SelectItem key={g.value} value={g.value}>
-                                                        {g.label}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <p className="text-xs font-medium text-muted-foreground">Context selection</p>
+                                    {contextSelectorCount > 0 ? (
+                                        <span className="text-xs text-muted-foreground">
+                                            {contextSelectorCount} selector{contextSelectorCount > 1 ? "s" : ""} active
+                                        </span>
                                     ) : null}
                                 </div>
+
+                                {contextSelectorCount === 0 ? (
+                                    <div className="rounded-md border border-dashed bg-background px-3 py-2 text-xs text-muted-foreground">
+                                        No context is required for the current template and included fields.
+                                        Add fields like schedule, group, or evaluation details to enable context selectors.
+                                    </div>
+                                ) : (
+                                    <div className="grid gap-2 md:grid-cols-3">
+                                        {needsEvaluationSelector ? (
+                                            <div className="space-y-1 min-w-0">
+                                                <p className="text-xs text-muted-foreground">Evaluation context</p>
+                                                {hasEvaluationOptions || !selectedTemplateDef?.requiredContext.includes("evaluationId") ? (
+                                                    <Select value={contextEvaluationId} onValueChange={setContextEvaluationId}>
+                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                            <SelectValue placeholder="Select evaluation context" />
+                                                        </SelectTrigger>
+                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                            <SelectItem value={NONE_VALUE}>
+                                                                {selectedTemplateDef?.requiredContext.includes("evaluationId")
+                                                                    ? "Select evaluation context"
+                                                                    : "No evaluation context"}
+                                                            </SelectItem>
+                                                            {options.context.evaluations.map((e) => {
+                                                                const primary = buildEvaluationDisplayLabel(e)
+                                                                const secondary = `Evaluation #${shortId(e.value)} • Schedule #${shortId(e.scheduleId)}`
+                                                                const full = `${primary} • ${secondary}`
+                                                                return (
+                                                                    <SelectItem key={e.value} value={e.value} textValue={full}>
+                                                                        <div className="flex min-w-0 flex-col">
+                                                                            <span className="truncate" title={primary}>
+                                                                                {primary}
+                                                                            </span>
+                                                                            <span
+                                                                                className="truncate text-xs text-muted-foreground"
+                                                                                title={secondary}
+                                                                            >
+                                                                                {secondary}
+                                                                            </span>
+                                                                        </div>
+                                                                    </SelectItem>
+                                                                )
+                                                            })}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                        No evaluation records are available yet.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : null}
+
+                                        {needsScheduleSelector ? (
+                                            <div className="space-y-1 min-w-0">
+                                                <p className="text-xs text-muted-foreground">Schedule context</p>
+                                                {hasScheduleOptions || !selectedTemplateDef?.requiredContext.includes("scheduleId") ? (
+                                                    <Select value={contextScheduleId} onValueChange={setContextScheduleId}>
+                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                            <SelectValue placeholder="Select schedule context" />
+                                                        </SelectTrigger>
+                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                            <SelectItem value={NONE_VALUE}>
+                                                                {selectedTemplateDef?.requiredContext.includes("scheduleId")
+                                                                    ? "Select schedule context"
+                                                                    : "No schedule context"}
+                                                            </SelectItem>
+                                                            {options.context.schedules.map((s) => {
+                                                                const primary = buildScheduleDisplayLabel(s)
+                                                                const secondary = s.groupTitle
+                                                                    ? `Group: ${s.groupTitle}`
+                                                                    : `Group ID: ${shortId(s.groupId)}`
+                                                                const full = `${primary} • ${secondary}`
+                                                                return (
+                                                                    <SelectItem key={s.value} value={s.value} textValue={full}>
+                                                                        <div className="flex min-w-0 flex-col">
+                                                                            <span className="truncate" title={primary}>
+                                                                                {primary}
+                                                                            </span>
+                                                                            <span
+                                                                                className="truncate text-xs text-muted-foreground"
+                                                                                title={secondary}
+                                                                            >
+                                                                                {secondary}
+                                                                            </span>
+                                                                        </div>
+                                                                    </SelectItem>
+                                                                )
+                                                            })}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                        No schedules are available yet.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : null}
+
+                                        {needsGroupSelector ? (
+                                            <div className="space-y-1 min-w-0">
+                                                <p className="text-xs text-muted-foreground">Group context</p>
+                                                {hasGroupOptions || !selectedTemplateDef?.requiredContext.includes("groupId") ? (
+                                                    <Select value={contextGroupId} onValueChange={setContextGroupId}>
+                                                        <SelectTrigger className={SELECT_TRIGGER_CLASS}>
+                                                            <SelectValue placeholder="Select group context" />
+                                                        </SelectTrigger>
+                                                        <SelectContent className={SELECT_CONTENT_CLASS}>
+                                                            <SelectItem value={NONE_VALUE}>
+                                                                {selectedTemplateDef?.requiredContext.includes("groupId")
+                                                                    ? "Select group context"
+                                                                    : "No group context"}
+                                                            </SelectItem>
+                                                            {options.context.groups.map((g) => {
+                                                                const label = buildGroupDisplayLabel(g)
+                                                                return (
+                                                                    <SelectItem key={g.value} value={g.value} textValue={label}>
+                                                                        <span className="block truncate" title={label}>
+                                                                            {label}
+                                                                        </span>
+                                                                    </SelectItem>
+                                                                )
+                                                            })}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                        No groups are available yet.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="rounded-md border bg-muted/20 p-3">
@@ -961,12 +1243,12 @@ export default function AdminNotificationsPage() {
                                 <div className="flex flex-wrap items-center gap-2">
                                     <DropdownMenu>
                                         <DropdownMenuTrigger asChild>
-                                            <Button variant="outline" className="justify-between">
-                                                {includeButtonText}
-                                                <ChevronDown className="ml-2 h-4 w-4" />
+                                            <Button variant="outline" className="justify-between min-w-0 max-w-full">
+                                                <span className="truncate">{includeButtonText}</span>
+                                                <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
                                             </Button>
                                         </DropdownMenuTrigger>
-                                        <DropdownMenuContent className="w-[320px]">
+                                        <DropdownMenuContent className="w-96 max-w-full">
                                             <DropdownMenuLabel>Information fields</DropdownMenuLabel>
                                             <DropdownMenuSeparator />
                                             {includeChoices.map((field) => (
@@ -977,9 +1259,11 @@ export default function AdminNotificationsPage() {
                                                         toggleIncludeField(field.value, checked === true)
                                                     }
                                                 >
-                                                    <div className="flex flex-col">
-                                                        <span>{field.label}</span>
-                                                        <span className="text-[11px] text-muted-foreground">
+                                                    <div className="flex min-w-0 flex-col">
+                                                        <span className="truncate" title={field.label}>
+                                                            {field.label}
+                                                        </span>
+                                                        <span className="text-xs text-muted-foreground truncate" title={field.description}>
                                                             {field.description}
                                                         </span>
                                                     </div>
@@ -991,19 +1275,25 @@ export default function AdminNotificationsPage() {
                                     {includeFields.map((field) => (
                                         <span
                                             key={field}
-                                            className="inline-flex items-center rounded-md border px-2 py-1 text-xs"
+                                            className="inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs"
+                                            title={toLabel(field)}
                                         >
-                                            <Check className="mr-1 h-3 w-3" />
-                                            {toLabel(field)}
+                                            <Check className="mr-1 h-3 w-3 shrink-0" />
+                                            <span className="truncate">{toLabel(field)}</span>
                                         </span>
                                     ))}
                                 </div>
                             </div>
 
-                            <div className="flex justify-end">
+                            <div className="flex flex-col items-end gap-2">
+                                {requiredContextIssue ? (
+                                    <p className="text-xs text-amber-600 dark:text-amber-300">
+                                        {requiredContextIssue}
+                                    </p>
+                                ) : null}
                                 <Button
                                     onClick={() => void sendAutomaticNotification()}
-                                    disabled={optionsLoading || !!actionKey || !options}
+                                    disabled={sendDisabled}
                                 >
                                     <Send className="mr-2 h-4 w-4" />
                                     {actionKey === "send-auto" ? "Sending..." : "Send Automatic Notification"}
@@ -1042,49 +1332,55 @@ export default function AdminNotificationsPage() {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-3">
-                        <div className="space-y-2">
+                        <div className="space-y-2 min-w-0">
                             <p className="text-xs font-medium text-muted-foreground">User</p>
                             <Select value={viewerUserId} onValueChange={setViewerUserId}>
-                                <SelectTrigger>
+                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                     <SelectValue placeholder="Select user" />
                                 </SelectTrigger>
-                                <SelectContent>
-                                    {options?.context.users.map((u) => (
-                                        <SelectItem key={u.value} value={u.value}>
-                                            {u.label} • {toLabel(u.role)}
-                                        </SelectItem>
-                                    )) ?? null}
+                                <SelectContent className={SELECT_CONTENT_CLASS}>
+                                    <SelectItem value={NONE_VALUE}>Select user</SelectItem>
+                                    {options?.context.users.map((u) => {
+                                        const label = `${u.label} • ${toLabel(u.role)}`
+                                        return (
+                                            <SelectItem key={u.value} value={u.value} textValue={label}>
+                                                <span className="block truncate" title={label}>
+                                                    {label}
+                                                </span>
+                                            </SelectItem>
+                                        )
+                                    }) ?? null}
                                 </SelectContent>
                             </Select>
                         </div>
 
-                        <div className="space-y-2">
+                        <div className="space-y-2 min-w-0">
                             <p className="text-xs font-medium text-muted-foreground">Type filter</p>
                             <Select value={typeFilter} onValueChange={setTypeFilter}>
-                                <SelectTrigger>
+                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                     <SelectValue placeholder="Filter by type" />
                                 </SelectTrigger>
-                                <SelectContent>
+                                <SelectContent className={SELECT_CONTENT_CLASS}>
                                     <SelectItem value="all">All</SelectItem>
                                     {(options?.notificationTypes ?? []).map((nt) => (
-                                        <SelectItem key={nt} value={nt}>
-                                            {toLabel(nt)}
+                                        <SelectItem key={nt} value={nt} textValue={toLabel(nt)}>
+                                            <span className="block truncate">{toLabel(nt)}</span>
                                         </SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
                         </div>
 
-                        <div className="space-y-2">
+                        <div className="space-y-2 min-w-0">
                             <p className="text-xs font-medium text-muted-foreground">Read filter</p>
                             <Select
                                 value={readFilter}
                                 onValueChange={(v) => setReadFilter(v as "all" | "unread" | "read")}
                             >
-                                <SelectTrigger>
+                                <SelectTrigger className={SELECT_TRIGGER_CLASS}>
                                     <SelectValue placeholder="Filter by read status" />
                                 </SelectTrigger>
-                                <SelectContent>
+                                <SelectContent className={SELECT_CONTENT_CLASS}>
                                     {READ_FILTERS.map((rf) => (
                                         <SelectItem key={rf.value} value={rf.value}>
                                             {rf.label}
@@ -1135,10 +1431,14 @@ export default function AdminNotificationsPage() {
                                     return (
                                         <TableRow key={n.id}>
                                             <TableCell>
-                                                <div className="flex flex-col">
-                                                    <span className="font-medium">{n.title}</span>
-                                                    <span className="text-xs text-muted-foreground">{n.body}</span>
-                                                    <span className="mt-1 text-[11px] text-muted-foreground">
+                                                <div className="flex min-w-0 flex-col">
+                                                    <span className="font-medium truncate" title={n.title}>
+                                                        {n.title}
+                                                    </span>
+                                                    <span className="text-xs text-muted-foreground truncate" title={n.body}>
+                                                        {n.body}
+                                                    </span>
+                                                    <span className="mt-1 text-xs text-muted-foreground">
                                                         ID: {n.id}
                                                     </span>
                                                 </div>
