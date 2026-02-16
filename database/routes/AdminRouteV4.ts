@@ -181,6 +181,10 @@ function hasOwnKey(obj: Record<string, unknown>, key: string): boolean {
     return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+function hasAnyOwnKey(obj: Record<string, unknown>, keys: readonly string[]): boolean {
+    return keys.some((key) => hasOwnKey(obj, key));
+}
+
 function readFirstDefined(
     obj: Record<string, unknown>,
     keys: readonly string[],
@@ -316,6 +320,30 @@ function parseRubricCriteriaInputsFromBody(body: Record<string, unknown>): Recor
     for (const candidate of arrayCandidates) {
         const parsed = normalizeCriteriaArrayEntries(candidate);
         if (parsed.length > 0) return parsed;
+    }
+
+    /**
+     * IMPORTANT:
+     * If request body is already a direct criterion payload, e.g.:
+     * { criterion, description, weight, min_score, max_score }
+     * do NOT reduce it to { criterion } via single-candidate shorthand parsing.
+     * That previously caused "weight/percentage is required..." even when weight
+     * was sent correctly by the client.
+     */
+    const directBodyCandidate: Record<string, unknown> = { ...body };
+    for (const key of ['data', 'payload', 'template', 'rubricTemplate', 'rubric_template', 'form']) {
+        delete directBodyCandidate[key];
+    }
+
+    const hasDirectCriterionShape =
+        hasAnyOwnKey(directBodyCandidate, RUBRIC_CRITERION_LABEL_CANDIDATE_KEYS) ||
+        hasAnyOwnKey(directBodyCandidate, RUBRIC_CRITERION_DESCRIPTION_CANDIDATE_KEYS) ||
+        hasAnyOwnKey(directBodyCandidate, RUBRIC_CRITERION_WEIGHT_CANDIDATE_KEYS) ||
+        hasAnyOwnKey(directBodyCandidate, RUBRIC_CRITERION_MIN_SCORE_CANDIDATE_KEYS) ||
+        hasAnyOwnKey(directBodyCandidate, RUBRIC_CRITERION_MAX_SCORE_CANDIDATE_KEYS);
+
+    if (hasDirectCriterionShape) {
+        return [directBodyCandidate];
     }
 
     const singleCandidates: unknown[] = [];
