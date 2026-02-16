@@ -30,6 +30,7 @@ import type {
     GroupMemberInsert,
     GroupMemberRow,
     ISODateTime,
+    JsonObject,
     NotificationInsert,
     NotificationPatch,
     NotificationRow,
@@ -134,6 +135,39 @@ export interface JoinTableService<Row extends object, Insert extends object>
 export type TableRowMap = Pick<DatabaseModels, TableName>;
 export type ViewRowMap = Pick<DatabaseModels, ViewName>;
 
+export interface PushSubscriptionRow {
+    id: UUID;
+    user_id: UUID;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    content_encoding: string | null;
+    subscription: JsonObject;
+    created_at: ISODateTime;
+    updated_at: ISODateTime;
+}
+
+export interface PushSubscriptionInsert {
+    user_id: UUID;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    content_encoding?: string | null;
+    subscription?: JsonObject;
+    created_at?: ISODateTime;
+    updated_at?: ISODateTime;
+}
+
+export interface PushSubscriptionPatch {
+    user_id?: UUID;
+    endpoint?: string;
+    p256dh?: string;
+    auth?: string;
+    content_encoding?: string | null;
+    subscription?: JsonObject;
+    updated_at?: ISODateTime;
+}
+
 export interface TableInsertMap {
     users: UserInsert;
     sessions: SessionInsert;
@@ -154,6 +188,7 @@ export interface TableInsertMap {
     panelist_profiles: PanelistProfileInsert;
     rubric_scale_levels: RubricScaleLevelInsert;
     notifications: NotificationInsert;
+    push_subscriptions: PushSubscriptionInsert;
 }
 
 export interface TablePatchMap {
@@ -176,6 +211,7 @@ export interface TablePatchMap {
     panelist_profiles: PanelistProfilePatch;
     rubric_scale_levels: RubricScaleLevelPatch;
     notifications: NotificationPatch;
+    push_subscriptions: PushSubscriptionPatch;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -324,6 +360,15 @@ export interface NotificationsService
     createForUsers(userIds: UUID[], payload: NotificationBroadcastPayload): Promise<NotificationRow[]>;
 }
 
+export interface PushSubscriptionsService
+    extends TableService<PushSubscriptionRow, PushSubscriptionInsert, PushSubscriptionPatch> {
+    findById(id: UUID): Promise<PushSubscriptionRow | null>;
+    findByEndpoint(endpoint: string): Promise<PushSubscriptionRow | null>;
+    listByUser(userId: UUID): Promise<PushSubscriptionRow[]>;
+    listByUsers(userIds: UUID[]): Promise<PushSubscriptionRow[]>;
+    deleteByEndpoint(endpoint: string): Promise<number>;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                               VIEW SERVICES                                */
 /* -------------------------------------------------------------------------- */
@@ -365,6 +410,7 @@ export interface TableServiceMap {
     panelist_profiles: PanelistProfilesService;
     rubric_scale_levels: RubricScaleLevelsService;
     notifications: NotificationsService;
+    push_subscriptions: PushSubscriptionsService;
 }
 
 export interface ViewServiceMap {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { db } from '../../lib/db';
 
@@ -75,6 +76,9 @@ import type {
     ListQuery,
     NotificationBroadcastPayload,
     PageResult,
+    PushSubscriptionInsert,
+    PushSubscriptionPatch,
+    PushSubscriptionRow,
 } from './Services';
 
 type Queryable = {
@@ -104,6 +108,10 @@ function quoteIdentifier(identifier: string): string {
 
 function toRecord(value: unknown): Record<string, unknown> {
     return (value ?? {}) as Record<string, unknown>;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {
@@ -1014,6 +1022,210 @@ class PgNotificationsService extends PgTableService<
     }
 }
 
+class PgPushSubscriptionsService extends PgTableService<
+    PushSubscriptionRow,
+    PushSubscriptionInsert,
+    PushSubscriptionPatch
+> {
+    private ensureTablePromise: Promise<void> | null = null;
+
+    constructor(executor: Queryable) {
+        super(executor, 'public.push_subscriptions');
+    }
+
+    private async ensureTableReady(): Promise<void> {
+        if (!this.ensureTablePromise) {
+            this.ensureTablePromise = (async () => {
+                const table = quoteIdentifier(this.relation);
+
+                await this.executor.query(`
+          CREATE TABLE IF NOT EXISTS ${table} (
+            ${quoteIdentifier('id')} UUID PRIMARY KEY,
+            ${quoteIdentifier('user_id')} UUID NOT NULL
+              REFERENCES ${quoteIdentifier('public.users')}(${quoteIdentifier('id')})
+              ON DELETE CASCADE,
+            ${quoteIdentifier('endpoint')} TEXT NOT NULL UNIQUE,
+            ${quoteIdentifier('p256dh')} TEXT NOT NULL,
+            ${quoteIdentifier('auth')} TEXT NOT NULL,
+            ${quoteIdentifier('content_encoding')} TEXT NULL,
+            ${quoteIdentifier('subscription')} JSONB NOT NULL DEFAULT '{}'::jsonb,
+            ${quoteIdentifier('created_at')} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ${quoteIdentifier('updated_at')} TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+                await this.executor.query(`
+          CREATE INDEX IF NOT EXISTS ${quoteIdentifier('idx_push_subscriptions_user_id')}
+          ON ${table} (${quoteIdentifier('user_id')})
+        `);
+
+                await this.executor.query(`
+          CREATE INDEX IF NOT EXISTS ${quoteIdentifier('idx_push_subscriptions_updated_at')}
+          ON ${table} (${quoteIdentifier('updated_at')} DESC)
+        `);
+            })().catch((error) => {
+                this.ensureTablePromise = null;
+                throw error;
+            });
+        }
+
+        return this.ensureTablePromise;
+    }
+
+    private async withReady<T>(work: () => Promise<T>): Promise<T> {
+        await this.ensureTableReady();
+        return work();
+    }
+
+    private normalizeCreatePayload(payload: PushSubscriptionInsert): PushSubscriptionInsert {
+        const record = stripUndefined(toRecord(payload));
+        const createdAtRaw = typeof record.created_at === 'string' ? record.created_at.trim() : '';
+        const updatedAtRaw = typeof record.updated_at === 'string' ? record.updated_at.trim() : '';
+        const now = nowIso();
+
+        const endpoint = typeof record.endpoint === 'string' ? record.endpoint : '';
+        const p256dh = typeof record.p256dh === 'string' ? record.p256dh : '';
+        const auth = typeof record.auth === 'string' ? record.auth : '';
+
+        const contentEncoding =
+            typeof record.content_encoding === 'string'
+                ? record.content_encoding.trim()
+                : record.content_encoding === null
+                    ? null
+                    : 'aes128gcm';
+
+        const rawSubscription = record.subscription;
+        const subscription = isPlainObject(rawSubscription)
+            ? rawSubscription
+            : {
+                endpoint,
+                keys: { p256dh, auth },
+                expirationTime: null,
+            };
+
+        return {
+            ...payload,
+            // id is intentionally injected so table creation does not require extension defaults.
+            ...(record.id ? { id: record.id } : { id: randomUUID() }),
+            content_encoding: contentEncoding,
+            subscription,
+            created_at: createdAtRaw.length > 0 ? (createdAtRaw as ISODateTime) : now,
+            updated_at: updatedAtRaw.length > 0 ? (updatedAtRaw as ISODateTime) : now,
+        } as unknown as PushSubscriptionInsert;
+    }
+
+    private normalizePatchPayload(patch: PushSubscriptionPatch): PushSubscriptionPatch {
+        const out = stripUndefined(toRecord(patch)) as PushSubscriptionPatch;
+        if (!out.updated_at) {
+            out.updated_at = nowIso();
+        }
+        return out;
+    }
+
+    async findOne(where: Partial<PushSubscriptionRow>): Promise<PushSubscriptionRow | null> {
+        return this.withReady(() => super.findOne(where));
+    }
+
+    async findMany(query: ListQuery<PushSubscriptionRow> = {}): Promise<PushSubscriptionRow[]> {
+        return this.withReady(() => super.findMany(query));
+    }
+
+    async count(where?: Partial<PushSubscriptionRow>): Promise<number> {
+        return this.withReady(() => super.count(where));
+    }
+
+    async exists(where: Partial<PushSubscriptionRow>): Promise<boolean> {
+        return this.withReady(() => super.exists(where));
+    }
+
+    async findPage(query: ListQuery<PushSubscriptionRow> = {}): Promise<PageResult<PushSubscriptionRow>> {
+        return this.withReady(() => super.findPage(query));
+    }
+
+    async create(payload: PushSubscriptionInsert): Promise<PushSubscriptionRow> {
+        return this.withReady(() => super.create(this.normalizeCreatePayload(payload)));
+    }
+
+    async createMany(payloads: PushSubscriptionInsert[]): Promise<PushSubscriptionRow[]> {
+        return this.withReady(async () => {
+            if (payloads.length === 0) return [];
+            const out: PushSubscriptionRow[] = [];
+            for (const payload of payloads) {
+                out.push(await super.create(this.normalizeCreatePayload(payload)));
+            }
+            return out;
+        });
+    }
+
+    async update(
+        where: Partial<PushSubscriptionRow>,
+        patch: PushSubscriptionPatch,
+    ): Promise<PushSubscriptionRow[]> {
+        return this.withReady(() => super.update(where, this.normalizePatchPayload(patch)));
+    }
+
+    async updateOne(
+        where: Partial<PushSubscriptionRow>,
+        patch: PushSubscriptionPatch,
+    ): Promise<PushSubscriptionRow | null> {
+        return this.withReady(() => super.updateOne(where, this.normalizePatchPayload(patch)));
+    }
+
+    async delete(where: Partial<PushSubscriptionRow>): Promise<number> {
+        return this.withReady(() => super.delete(where));
+    }
+
+    async upsert(
+        where: Partial<PushSubscriptionRow>,
+        create: PushSubscriptionInsert,
+        patch?: PushSubscriptionPatch,
+    ): Promise<PushSubscriptionRow> {
+        return this.withReady(() =>
+            super.upsert(
+                where,
+                this.normalizeCreatePayload(create),
+                patch ? this.normalizePatchPayload(patch) : undefined,
+            ),
+        );
+    }
+
+    findById(id: UUID): Promise<PushSubscriptionRow | null> {
+        return this.findOne({ id });
+    }
+
+    findByEndpoint(endpoint: string): Promise<PushSubscriptionRow | null> {
+        return this.findOne({ endpoint });
+    }
+
+    listByUser(userId: UUID): Promise<PushSubscriptionRow[]> {
+        return this.findMany({
+            where: { user_id: userId },
+            orderBy: 'updated_at',
+            orderDirection: 'desc',
+        });
+    }
+
+    async listByUsers(userIds: UUID[]): Promise<PushSubscriptionRow[]> {
+        return this.withReady(async () => {
+            const cleaned = [...new Set(userIds.map((id) => id.trim()).filter(Boolean))];
+            if (cleaned.length === 0) return [];
+
+            const sql = `
+        SELECT *
+        FROM ${quoteIdentifier(this.relation)}
+        WHERE ${quoteIdentifier('user_id')} = ANY($1::uuid[])
+        ORDER BY ${quoteIdentifier('updated_at')} DESC
+      `;
+            const result = await this.executor.query<PushSubscriptionRow>(sql, [cleaned]);
+            return result.rows;
+        });
+    }
+
+    deleteByEndpoint(endpoint: string): Promise<number> {
+        return this.delete({ endpoint });
+    }
+}
+
 class PgEvaluationOverallPercentagesViewService extends PgReadonlyService<EvaluationOverallPercentageRow> {
     constructor(executor: Queryable) {
         super(executor, 'v_evaluation_overall_percentages');
@@ -1091,6 +1303,7 @@ function buildEntityServices(executor: Queryable): EntityServiceMap {
         panelist_profiles: new PgPanelistProfilesService(executor),
         rubric_scale_levels: new PgRubricScaleLevelsService(executor),
         notifications: new PgNotificationsService(executor),
+        push_subscriptions: new PgPushSubscriptionsService(executor),
         v_evaluation_overall_percentages: new PgEvaluationOverallPercentagesViewService(executor),
         v_thesis_group_rankings: new PgThesisGroupRankingsViewService(executor),
     };
