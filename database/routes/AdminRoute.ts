@@ -22,11 +22,11 @@ import {
 import {
     dispatchDefenseSchedulesRequest,
     dispatchSchedulePanelistsRequest,
-} from './AdminRouteV3';
+} from './AdminRouteV2';
+import { dispatchThesisGroupsRequest } from './AdminRouteV3';
 import {
     dispatchAuditLogsRequest,
     dispatchRubricTemplatesRequest,
-    dispatchThesisGroupsRequest,
 } from './AdminRouteV4';
 
 async function dispatchAdminStudentProfileRequest(
