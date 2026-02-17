@@ -5,6 +5,12 @@ import Link from "next/link"
 import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import {
+    Accordion,
+    AccordionContent,
+    AccordionItem,
+    AccordionTrigger,
+} from "@/components/ui/accordion"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -91,6 +97,15 @@ type EvaluationFormState = {
     status: EvaluationStatus
 }
 
+type GroupedEvaluationBucket = {
+    key: string
+    groupName: string
+    items: EvaluationRecord[]
+    pending: number
+    submitted: number
+    locked: number
+}
+
 const STATUS_FILTERS: FilterStatus[] = ["all", "pending", "submitted", "locked"]
 const ASSIGNMENT_STATUSES: EvaluationStatus[] = ["pending", "submitted", "locked"]
 const GROUP_ENDPOINTS = ["/api/admin/thesis-groups", "/api/thesis-groups"] as const
@@ -133,7 +148,7 @@ const ASSIGNMENT_PRESET_META: Record<
     "particular-student": {
         role: "student",
         mode: "particular",
-        label: "Particular Student",
+        label: "Assign to one selected student",
         description: "Assign to one selected student",
         roleSingular: "student",
         rolePlural: "students",
@@ -427,15 +442,11 @@ export default function AdminEvaluationsPage() {
                     const normalized = rows
                         .map((row) => {
                             if (!isRecord(row)) return null
-                            const id = compactString(
-                                typeof row.id === "string" ? row.id : null,
-                            )
+                            const id = compactString(typeof row.id === "string" ? row.id : null)
                             if (!id) return null
 
                             const title =
-                                compactString(
-                                    typeof row.title === "string" ? row.title : null,
-                                ) ??
+                                compactString(typeof row.title === "string" ? row.title : null) ??
                                 compactString(typeof row.name === "string" ? row.name : null) ??
                                 id
 
@@ -527,6 +538,57 @@ export default function AdminEvaluationsPage() {
             )
         })
     }, [evaluations, evaluatorById, resolveGroupNameFromSchedule, scheduleById, search, statusFilter])
+
+    const groupedFiltered = React.useMemo<GroupedEvaluationBucket[]>(() => {
+        const map = new Map<string, GroupedEvaluationBucket>()
+
+        for (const item of filtered) {
+            const schedule = resolveScheduleById(item.schedule_id)
+            const groupName = resolveGroupNameFromSchedule(schedule)
+            const normalizedGroup = compactString(groupName)?.toLowerCase() ?? "unassigned-group"
+
+            const existing = map.get(normalizedGroup) ?? {
+                key: normalizedGroup,
+                groupName,
+                items: [],
+                pending: 0,
+                submitted: 0,
+                locked: 0,
+            }
+
+            existing.items.push(item)
+
+            const status = normalizeStatus(item.status)
+            if (status === "pending") existing.pending += 1
+            else if (status === "submitted") existing.submitted += 1
+            else if (status === "locked") existing.locked += 1
+
+            map.set(normalizedGroup, existing)
+        }
+
+        const buckets = Array.from(map.values()).map((bucket) => {
+            const sortedItems = [...bucket.items].sort((a, b) => {
+                const aSchedule = resolveScheduleById(a.schedule_id)
+                const bSchedule = resolveScheduleById(b.schedule_id)
+
+                const aTime = aSchedule
+                    ? new Date(aSchedule.scheduled_at).getTime()
+                    : new Date(a.created_at).getTime()
+                const bTime = bSchedule
+                    ? new Date(bSchedule.scheduled_at).getTime()
+                    : new Date(b.created_at).getTime()
+
+                return bTime - aTime
+            })
+
+            return {
+                ...bucket,
+                items: sortedItems,
+            }
+        })
+
+        return buckets.sort((a, b) => a.groupName.localeCompare(b.groupName))
+    }, [filtered, resolveGroupNameFromSchedule, resolveScheduleById])
 
     const stats = React.useMemo(() => {
         let pending = 0
@@ -1329,206 +1391,257 @@ export default function AdminEvaluationsPage() {
                     </div>
                 ) : null}
 
-                <div className="overflow-x-auto rounded-lg border bg-card">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead className="min-w-52">Group</TableHead>
-                                <TableHead className="min-w-56">Schedule</TableHead>
-                                <TableHead className="min-w-56">Evaluator</TableHead>
-                                <TableHead className="min-w-28">Status</TableHead>
-                                <TableHead className="min-w-44">Submitted</TableHead>
-                                <TableHead className="min-w-44">Locked</TableHead>
-                                <TableHead className="min-w-44">Created</TableHead>
-                                <TableHead className="min-w-80 text-right">Actions</TableHead>
-                            </TableRow>
-                        </TableHeader>
+                <div className="rounded-lg border bg-card">
+                    <div className="border-b px-4 py-3">
+                        <p className="text-sm font-medium">Evaluations by Group</p>
+                        <p className="text-xs text-muted-foreground">
+                            Evaluations are grouped by thesis group for faster review and action handling.
+                        </p>
+                    </div>
 
-                        <TableBody>
-                            {loadingTable ? (
-                                Array.from({ length: 6 }).map((_, i) => (
-                                    <TableRow key={`skeleton-${i}`}>
-                                        <TableCell colSpan={8}>
-                                            <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                        </TableCell>
-                                    </TableRow>
-                                ))
-                            ) : filtered.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
-                                        No evaluations found.
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                filtered.map((row) => {
-                                    const status = normalizeStatus(row.status)
-                                    const isSubmitBusy = busyKey === `${row.id}:submit`
-                                    const isLockBusy = busyKey === `${row.id}:lock`
-                                    const isPendingBusy = busyKey === `${row.id}:set-pending`
-                                    const isDeleteBusy = busyKey === `${row.id}:delete`
-                                    const confirmDelete = pendingDeleteId === row.id
+                    {loadingTable ? (
+                        <div className="space-y-3 p-4">
+                            {Array.from({ length: 4 }).map((_, i) => (
+                                <div
+                                    key={`group-skeleton-${i}`}
+                                    className="h-12 w-full animate-pulse rounded-md bg-muted/50"
+                                />
+                            ))}
+                        </div>
+                    ) : filtered.length === 0 ? (
+                        <div className="p-8 text-center text-sm text-muted-foreground">
+                            No evaluations found.
+                        </div>
+                    ) : (
+                        <Accordion type="multiple" className="w-full">
+                            {groupedFiltered.map((group) => (
+                                <AccordionItem key={group.key} value={group.key} className="border-b px-0">
+                                    <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                                        <div className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between">
+                                            <div className="min-w-0">
+                                                <p className="truncate font-semibold">{group.groupName}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {group.items.length} evaluation(s)
+                                                </p>
+                                            </div>
 
-                                    const schedule = scheduleById.get(row.schedule_id.toLowerCase()) ?? null
-                                    const groupName = resolveGroupNameFromSchedule(schedule)
-                                    const scheduleDate = schedule
-                                        ? formatDateTime(schedule.scheduled_at)
-                                        : "Schedule unavailable"
-                                    const scheduleRoom = compactString(schedule?.room)
+                                            <div className="flex flex-wrap items-center gap-2 pr-2">
+                                                {group.pending > 0 ? (
+                                                    <span className="inline-flex rounded-md border border-muted-foreground/30 bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                        Pending: {group.pending}
+                                                    </span>
+                                                ) : null}
+                                                {group.submitted > 0 ? (
+                                                    <span className="inline-flex rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-foreground">
+                                                        Submitted: {group.submitted}
+                                                    </span>
+                                                ) : null}
+                                                {group.locked > 0 ? (
+                                                    <span className="inline-flex rounded-md border border-foreground/30 bg-foreground/10 px-2 py-1 text-xs text-foreground">
+                                                        Locked: {group.locked}
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    </AccordionTrigger>
 
-                                    const evaluator = evaluatorById.get(row.evaluator_id.toLowerCase()) ?? null
-                                    const evaluatorName =
-                                        compactString(evaluator?.name) ??
-                                        compactString(evaluator?.email) ??
-                                        "Unknown Evaluator"
+                                    <AccordionContent className="px-4 pb-4">
+                                        <div className="overflow-x-auto rounded-md border">
+                                            <Table>
+                                                <TableHeader>
+                                                    <TableRow>
+                                                        <TableHead className="min-w-56">Schedule</TableHead>
+                                                        <TableHead className="min-w-56">Evaluator</TableHead>
+                                                        <TableHead className="min-w-28">Status</TableHead>
+                                                        <TableHead className="min-w-44">Submitted</TableHead>
+                                                        <TableHead className="min-w-44">Locked</TableHead>
+                                                        <TableHead className="min-w-44">Created</TableHead>
+                                                        <TableHead className="min-w-80 text-right">Actions</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
 
-                                    const evaluatorEmail = compactString(evaluator?.email)
-                                    const evaluatorRole = evaluator ? roleLabel(evaluator.role) : null
+                                                <TableBody>
+                                                    {group.items.map((row) => {
+                                                        const status = normalizeStatus(row.status)
+                                                        const isSubmitBusy = busyKey === `${row.id}:submit`
+                                                        const isLockBusy = busyKey === `${row.id}:lock`
+                                                        const isPendingBusy = busyKey === `${row.id}:set-pending`
+                                                        const isDeleteBusy = busyKey === `${row.id}:delete`
+                                                        const confirmDelete = pendingDeleteId === row.id
 
-                                    const evaluatorMeta = [evaluatorEmail, evaluatorRole]
-                                        .filter((part): part is string => !!part)
-                                        .join(" • ")
+                                                        const schedule =
+                                                            scheduleById.get(row.schedule_id.toLowerCase()) ?? null
+                                                        const scheduleDate = schedule
+                                                            ? formatDateTime(schedule.scheduled_at)
+                                                            : "Schedule unavailable"
+                                                        const scheduleRoom = compactString(schedule?.room)
 
-                                    return (
-                                        <TableRow key={row.id}>
-                                            <TableCell>
-                                                <div className="space-y-0.5">
-                                                    <p className="font-medium">{groupName}</p>
-                                                    {schedule?.status ? (
-                                                        <p className="text-xs text-muted-foreground">
-                                                            {toTitleCase(schedule.status)}
-                                                        </p>
-                                                    ) : null}
-                                                </div>
-                                            </TableCell>
+                                                        const evaluator =
+                                                            evaluatorById.get(row.evaluator_id.toLowerCase()) ?? null
+                                                        const evaluatorName =
+                                                            compactString(evaluator?.name) ??
+                                                            compactString(evaluator?.email) ??
+                                                            "Unknown Evaluator"
 
-                                            <TableCell>
-                                                <div className="space-y-0.5">
-                                                    <p className="text-sm">{scheduleDate}</p>
-                                                    <p className="text-xs text-muted-foreground">
-                                                        {scheduleRoom ?? "No room assigned"}
-                                                    </p>
-                                                </div>
-                                            </TableCell>
+                                                        const evaluatorEmail = compactString(evaluator?.email)
+                                                        const evaluatorRole = evaluator
+                                                            ? roleLabel(evaluator.role)
+                                                            : null
 
-                                            <TableCell>
-                                                <div className="space-y-0.5">
-                                                    <p className="text-sm font-medium">{evaluatorName}</p>
-                                                    <p className="text-xs text-muted-foreground">
-                                                        {evaluatorMeta || "—"}
-                                                    </p>
-                                                </div>
-                                            </TableCell>
+                                                        const evaluatorMeta = [evaluatorEmail, evaluatorRole]
+                                                            .filter((part): part is string => !!part)
+                                                            .join(" • ")
 
-                                            <TableCell>
-                                                <span
-                                                    className={[
-                                                        "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                        statusBadgeClass(status),
-                                                    ].join(" ")}
-                                                >
-                                                    {toTitleCase(status)}
-                                                </span>
-                                            </TableCell>
+                                                        return (
+                                                            <TableRow key={row.id}>
+                                                                <TableCell>
+                                                                    <div className="space-y-0.5">
+                                                                        <p className="text-sm">{scheduleDate}</p>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            {scheduleRoom ?? "No room assigned"}
+                                                                            {schedule?.status
+                                                                                ? ` • ${toTitleCase(schedule.status)}`
+                                                                                : ""}
+                                                                        </p>
+                                                                    </div>
+                                                                </TableCell>
 
-                                            <TableCell className="text-muted-foreground">
-                                                {formatDateTime(row.submitted_at)}
-                                            </TableCell>
+                                                                <TableCell>
+                                                                    <div className="space-y-0.5">
+                                                                        <p className="text-sm font-medium">{evaluatorName}</p>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            {evaluatorMeta || "—"}
+                                                                        </p>
+                                                                    </div>
+                                                                </TableCell>
 
-                                            <TableCell className="text-muted-foreground">
-                                                {formatDateTime(row.locked_at)}
-                                            </TableCell>
+                                                                <TableCell>
+                                                                    <span
+                                                                        className={[
+                                                                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                                            statusBadgeClass(status),
+                                                                        ].join(" ")}
+                                                                    >
+                                                                        {toTitleCase(status)}
+                                                                    </span>
+                                                                </TableCell>
 
-                                            <TableCell className="text-muted-foreground">
-                                                {formatDateTime(row.created_at)}
-                                            </TableCell>
+                                                                <TableCell className="text-muted-foreground">
+                                                                    {formatDateTime(row.submitted_at)}
+                                                                </TableCell>
 
-                                            <TableCell>
-                                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                                    <Button asChild variant="outline" size="sm">
-                                                        <Link href={`/dashboard/admin/evaluations/${row.id}`}>
-                                                            View
-                                                        </Link>
-                                                    </Button>
+                                                                <TableCell className="text-muted-foreground">
+                                                                    {formatDateTime(row.locked_at)}
+                                                                </TableCell>
 
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        onClick={() => openEditForm(row)}
-                                                        disabled={isDeleteBusy}
-                                                    >
-                                                        Edit
-                                                    </Button>
+                                                                <TableCell className="text-muted-foreground">
+                                                                    {formatDateTime(row.created_at)}
+                                                                </TableCell>
 
-                                                    {!confirmDelete ? (
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => setPendingDeleteId(row.id)}
-                                                            disabled={isDeleteBusy}
-                                                        >
-                                                            Delete
-                                                        </Button>
-                                                    ) : (
-                                                        <>
-                                                            <Button
-                                                                variant="outline"
-                                                                size="sm"
-                                                                onClick={() => void deleteEvaluation(row.id)}
-                                                                disabled={isDeleteBusy}
-                                                            >
-                                                                {isDeleteBusy ? "Deleting..." : "Confirm Delete"}
-                                                            </Button>
-                                                            <Button
-                                                                variant="outline"
-                                                                size="sm"
-                                                                onClick={() => setPendingDeleteId(null)}
-                                                                disabled={isDeleteBusy}
-                                                            >
-                                                                Cancel
-                                                            </Button>
-                                                        </>
-                                                    )}
+                                                                <TableCell>
+                                                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                                                        <Button asChild variant="outline" size="sm">
+                                                                            <Link
+                                                                                href={`/dashboard/admin/evaluations/${row.id}`}
+                                                                            >
+                                                                                View
+                                                                            </Link>
+                                                                        </Button>
 
-                                                    {status !== "pending" ? (
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => void runAction(row, "set-pending")}
-                                                            disabled={isPendingBusy || isDeleteBusy}
-                                                        >
-                                                            {isPendingBusy ? "Updating..." : "Set Pending"}
-                                                        </Button>
-                                                    ) : null}
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            size="sm"
+                                                                            onClick={() => openEditForm(row)}
+                                                                            disabled={isDeleteBusy}
+                                                                        >
+                                                                            Edit
+                                                                        </Button>
 
-                                                    {status === "pending" ? (
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => void runAction(row, "submit")}
-                                                            disabled={isSubmitBusy || isDeleteBusy}
-                                                        >
-                                                            {isSubmitBusy ? "Submitting..." : "Submit"}
-                                                        </Button>
-                                                    ) : null}
+                                                                        {!confirmDelete ? (
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                onClick={() => setPendingDeleteId(row.id)}
+                                                                                disabled={isDeleteBusy}
+                                                                            >
+                                                                                Delete
+                                                                            </Button>
+                                                                        ) : (
+                                                                            <>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    onClick={() =>
+                                                                                        void deleteEvaluation(row.id)
+                                                                                    }
+                                                                                    disabled={isDeleteBusy}
+                                                                                >
+                                                                                    {isDeleteBusy
+                                                                                        ? "Deleting..."
+                                                                                        : "Confirm Delete"}
+                                                                                </Button>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    onClick={() => setPendingDeleteId(null)}
+                                                                                    disabled={isDeleteBusy}
+                                                                                >
+                                                                                    Cancel
+                                                                                </Button>
+                                                                            </>
+                                                                        )}
 
-                                                    {status !== "locked" ? (
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => void runAction(row, "lock")}
-                                                            disabled={isLockBusy || isDeleteBusy}
-                                                        >
-                                                            {isLockBusy ? "Locking..." : "Lock"}
-                                                        </Button>
-                                                    ) : null}
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    )
-                                })
-                            )}
-                        </TableBody>
-                    </Table>
+                                                                        {status !== "pending" ? (
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                onClick={() =>
+                                                                                    void runAction(row, "set-pending")
+                                                                                }
+                                                                                disabled={isPendingBusy || isDeleteBusy}
+                                                                            >
+                                                                                {isPendingBusy
+                                                                                    ? "Updating..."
+                                                                                    : "Set Pending"}
+                                                                            </Button>
+                                                                        ) : null}
+
+                                                                        {status === "pending" ? (
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                onClick={() =>
+                                                                                    void runAction(row, "submit")
+                                                                                }
+                                                                                disabled={isSubmitBusy || isDeleteBusy}
+                                                                            >
+                                                                                {isSubmitBusy ? "Submitting..." : "Submit"}
+                                                                            </Button>
+                                                                        ) : null}
+
+                                                                        {status !== "locked" ? (
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                onClick={() => void runAction(row, "lock")}
+                                                                                disabled={isLockBusy || isDeleteBusy}
+                                                                            >
+                                                                                {isLockBusy ? "Locking..." : "Lock"}
+                                                                            </Button>
+                                                                        ) : null}
+                                                                    </div>
+                                                                </TableCell>
+                                                            </TableRow>
+                                                        )
+                                                    })}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    </AccordionContent>
+                                </AccordionItem>
+                            ))}
+                        </Accordion>
+                    )}
                 </div>
             </div>
         </DashboardLayout>
