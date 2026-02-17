@@ -36,9 +36,15 @@ type EvaluationRecord = {
 type DefenseScheduleOption = {
     id: string
     group_id: string
+    group_title: string | null
     scheduled_at: string
     room: string | null
     status: string
+}
+
+type ThesisGroupOption = {
+    id: string
+    title: string
 }
 
 type UserOption = {
@@ -82,6 +88,7 @@ type EvaluationFormState = {
 const STATUS_FILTERS: FilterStatus[] = ["all", "pending", "submitted", "locked"]
 const ASSIGNMENT_STATUSES: EvaluationStatus[] = ["pending", "submitted", "locked"]
 const EVALUATOR_SCOPES: EvaluatorScope[] = ["panelist", "student", "all"]
+const GROUP_ENDPOINTS = ["/api/admin/thesis-groups", "/api/thesis-groups"] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -137,6 +144,22 @@ async function parseJsonSafely<T>(res: Response): Promise<T> {
     return data as T
 }
 
+async function parseJsonLoose(res: Response): Promise<unknown> {
+    try {
+        return await res.json()
+    } catch {
+        return {}
+    }
+}
+
+function extractItems(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload
+    if (!isRecord(payload)) return []
+    if (Array.isArray(payload.items)) return payload.items
+    if (payload.item !== undefined) return [payload.item]
+    return []
+}
+
 function getEvaluationFormDefault(): EvaluationFormState {
     return {
         schedule_id: "",
@@ -164,9 +187,23 @@ function toEvaluatorScope(role: ThesisRole): EvaluatorScope {
     return "all"
 }
 
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+    const seen = new Set<string>()
+    const out: T[] = []
+
+    for (const item of items) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        out.push(item)
+    }
+
+    return out
+}
+
 export default function AdminEvaluationsPage() {
     const [evaluations, setEvaluations] = React.useState<EvaluationRecord[]>([])
     const [schedules, setSchedules] = React.useState<DefenseScheduleOption[]>([])
+    const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
     const [evaluators, setEvaluators] = React.useState<UserOption[]>([])
 
     const [loadingTable, setLoadingTable] = React.useState(true)
@@ -186,7 +223,67 @@ export default function AdminEvaluationsPage() {
     const [form, setForm] = React.useState<EvaluationFormState>(getEvaluationFormDefault())
     const [evaluatorScope, setEvaluatorScope] = React.useState<EvaluatorScope>("panelist")
 
+    const [scheduleQuery, setScheduleQuery] = React.useState("")
+    const [evaluatorQuery, setEvaluatorQuery] = React.useState("")
+
     const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null)
+
+    const groupNameById = React.useMemo(() => {
+        const map = new Map<string, string>()
+        for (const group of groups) {
+            map.set(group.id.toLowerCase(), group.title)
+        }
+        return map
+    }, [groups])
+
+    const scheduleById = React.useMemo(() => {
+        const map = new Map<string, DefenseScheduleOption>()
+        for (const schedule of schedules) {
+            map.set(schedule.id.toLowerCase(), schedule)
+        }
+        return map
+    }, [schedules])
+
+    const evaluatorById = React.useMemo(() => {
+        const map = new Map<string, UserOption>()
+        for (const evaluator of evaluators) {
+            map.set(evaluator.id.toLowerCase(), evaluator)
+        }
+        return map
+    }, [evaluators])
+
+    const resolveGroupNameFromSchedule = React.useCallback(
+        (schedule: DefenseScheduleOption | null | undefined): string => {
+            if (!schedule) return "Unknown Group"
+
+            const inlineTitle = compactString(schedule.group_title)
+            if (inlineTitle) return inlineTitle
+
+            const mappedTitle = groupNameById.get(schedule.group_id.toLowerCase())
+            if (mappedTitle) return mappedTitle
+
+            return "Unassigned Group"
+        },
+        [groupNameById],
+    )
+
+    const resolveScheduleById = React.useCallback(
+        (scheduleId: string): DefenseScheduleOption | null => {
+            const id = scheduleId.trim().toLowerCase()
+            if (!id) return null
+            return scheduleById.get(id) ?? null
+        },
+        [scheduleById],
+    )
+
+    const resolveEvaluatorById = React.useCallback(
+        (evaluatorId: string): UserOption | null => {
+            const id = evaluatorId.trim().toLowerCase()
+            if (!id) return null
+            return evaluatorById.get(id) ?? null
+        },
+        [evaluatorById],
+    )
 
     const loadEvaluations = React.useCallback(async () => {
         setLoadingTable(true)
@@ -234,8 +331,47 @@ export default function AdminEvaluationsPage() {
                 )
                 : []
 
+            const collectedGroups: ThesisGroupOption[] = []
+
+            for (const endpoint of GROUP_ENDPOINTS) {
+                try {
+                    const res = await fetch(endpoint, { cache: "no-store" })
+                    if (!res.ok) {
+                        if (res.status === 404 || res.status === 401 || res.status === 403) continue
+                        continue
+                    }
+
+                    const payload = await parseJsonLoose(res)
+                    const rows = extractItems(payload)
+
+                    const normalized = rows
+                        .map((row) => {
+                            if (!isRecord(row)) return null
+                            const id = compactString(
+                                typeof row.id === "string" ? row.id : null,
+                            )
+                            if (!id) return null
+
+                            const title =
+                                compactString(
+                                    typeof row.title === "string" ? row.title : null,
+                                ) ??
+                                compactString(typeof row.name === "string" ? row.name : null) ??
+                                id
+
+                            return { id, title }
+                        })
+                        .filter((row): row is ThesisGroupOption => !!row)
+
+                    collectedGroups.push(...normalized)
+                } catch {
+                    // proceed with other endpoint
+                }
+            }
+
             setSchedules(safeSchedules)
             setEvaluators(safeUsers)
+            setGroups(uniqueById(collectedGroups))
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to load assignment data."
             setError(message)
@@ -286,18 +422,31 @@ export default function AdminEvaluationsPage() {
 
         return evaluations.filter((item) => {
             const normalized = normalizeStatus(item.status)
-
             if (statusFilter !== "all" && normalized !== statusFilter) return false
             if (!q) return true
 
+            const schedule = scheduleById.get(item.schedule_id.toLowerCase()) ?? null
+            const groupName = resolveGroupNameFromSchedule(schedule)
+            const scheduleDate = schedule ? formatDateTime(schedule.scheduled_at) : "schedule unavailable"
+            const scheduleRoom = compactString(schedule?.room) ?? ""
+
+            const evaluator = evaluatorById.get(item.evaluator_id.toLowerCase()) ?? null
+            const evaluatorName =
+                compactString(evaluator?.name) ??
+                compactString(evaluator?.email) ??
+                "unknown evaluator"
+            const evaluatorRole = evaluator ? roleLabel(evaluator.role) : ""
+
             return (
-                matchAny(item.id, q) ||
-                matchAny(item.schedule_id, q) ||
-                matchAny(item.evaluator_id, q) ||
+                matchAny(groupName, q) ||
+                matchAny(scheduleDate, q) ||
+                matchAny(scheduleRoom, q) ||
+                matchAny(evaluatorName, q) ||
+                matchAny(evaluatorRole, q) ||
                 matchAny(normalized, q)
             )
         })
-    }, [evaluations, search, statusFilter])
+    }, [evaluations, evaluatorById, resolveGroupNameFromSchedule, scheduleById, search, statusFilter])
 
     const stats = React.useMemo(() => {
         let pending = 0
@@ -324,6 +473,8 @@ export default function AdminEvaluationsPage() {
         setEditingId(null)
         setForm(getEvaluationFormDefault())
         setEvaluatorScope("panelist")
+        setScheduleQuery("")
+        setEvaluatorQuery("")
         setFormOpen(true)
     }, [])
 
@@ -342,9 +493,21 @@ export default function AdminEvaluationsPage() {
             )
             setEvaluatorScope(user ? toEvaluatorScope(user.role) : "all")
 
+            const selectedSchedule = resolveScheduleById(row.schedule_id)
+            const selectedEvaluator = resolveEvaluatorById(row.evaluator_id)
+
+            setScheduleQuery(
+                selectedSchedule ? resolveGroupNameFromSchedule(selectedSchedule) : "",
+            )
+            setEvaluatorQuery(
+                compactString(selectedEvaluator?.name) ??
+                compactString(selectedEvaluator?.email) ??
+                "",
+            )
+
             setFormOpen(true)
         },
-        [evaluators],
+        [evaluators, resolveEvaluatorById, resolveGroupNameFromSchedule, resolveScheduleById],
     )
 
     const closeForm = React.useCallback(() => {
@@ -352,6 +515,8 @@ export default function AdminEvaluationsPage() {
         setFormBusy(false)
         setEditingId(null)
         setForm(getEvaluationFormDefault())
+        setScheduleQuery("")
+        setEvaluatorQuery("")
     }, [])
 
     const onFormFieldChange = React.useCallback(
@@ -369,12 +534,12 @@ export default function AdminEvaluationsPage() {
         const status = normalizeStatus(String(form.status)) as EvaluationStatus
 
         if (!schedule_id) {
-            toast.error("Schedule is required")
+            toast.error("Please select a schedule.")
             return
         }
 
         if (!evaluator_id) {
-            toast.error("Evaluator is required")
+            toast.error("Please select an evaluator.")
             return
         }
 
@@ -530,25 +695,31 @@ export default function AdminEvaluationsPage() {
     )
 
     const scheduleSuggestions = React.useMemo(() => {
-        const q = form.schedule_id.trim().toLowerCase()
+        const q = scheduleQuery.trim().toLowerCase()
 
-        const items = schedules.filter((item) => {
-            if (!q) return true
+        const items = [...schedules]
+            .sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
+            .filter((item) => {
+                if (!q) return true
 
-            return (
-                matchAny(item.id, q) ||
-                matchAny(item.group_id, q) ||
-                matchAny(item.status ?? "", q) ||
-                matchAny(item.room ?? "", q) ||
-                matchAny(item.scheduled_at, q)
-            )
-        })
+                const groupName = resolveGroupNameFromSchedule(item)
+                const scheduleDate = formatDateTime(item.scheduled_at)
+                const room = compactString(item.room) ?? ""
+                const status = item.status ?? ""
+
+                return (
+                    matchAny(groupName, q) ||
+                    matchAny(scheduleDate, q) ||
+                    matchAny(room, q) ||
+                    matchAny(status, q)
+                )
+            })
 
         return items.slice(0, 8)
-    }, [form.schedule_id, schedules])
+    }, [resolveGroupNameFromSchedule, scheduleQuery, schedules])
 
     const evaluatorSuggestions = React.useMemo(() => {
-        const q = form.evaluator_id.trim().toLowerCase()
+        const q = evaluatorQuery.trim().toLowerCase()
 
         const scoped = evaluators.filter((item) => {
             if (evaluatorScope === "all") return true
@@ -559,27 +730,55 @@ export default function AdminEvaluationsPage() {
             if (!q) return true
 
             return (
-                matchAny(item.id, q) ||
                 matchAny(compactString(item.name) ?? "", q) ||
                 matchAny(compactString(item.email) ?? "", q) ||
                 matchAny(String(item.role), q)
             )
         })
 
-        return matched.slice(0, 8)
-    }, [evaluatorScope, evaluators, form.evaluator_id])
+        return matched
+            .sort((a, b) =>
+                (compactString(a.name) ?? "").localeCompare(compactString(b.name) ?? ""),
+            )
+            .slice(0, 8)
+    }, [evaluatorQuery, evaluatorScope, evaluators])
 
     const selectedSchedule = React.useMemo(() => {
-        const id = form.schedule_id.trim().toLowerCase()
-        if (!id) return null
-        return schedules.find((item) => item.id.toLowerCase() === id) ?? null
-    }, [form.schedule_id, schedules])
+        return resolveScheduleById(form.schedule_id)
+    }, [form.schedule_id, resolveScheduleById])
 
     const selectedEvaluator = React.useMemo(() => {
-        const id = form.evaluator_id.trim().toLowerCase()
-        if (!id) return null
-        return evaluators.find((item) => item.id.toLowerCase() === id) ?? null
-    }, [form.evaluator_id, evaluators])
+        return resolveEvaluatorById(form.evaluator_id)
+    }, [form.evaluator_id, resolveEvaluatorById])
+
+    React.useEffect(() => {
+        if (!formOpen) return
+
+        if (form.schedule_id && !scheduleQuery.trim()) {
+            const picked = resolveScheduleById(form.schedule_id)
+            if (picked) {
+                setScheduleQuery(resolveGroupNameFromSchedule(picked))
+            }
+        }
+
+        if (form.evaluator_id && !evaluatorQuery.trim()) {
+            const picked = resolveEvaluatorById(form.evaluator_id)
+            if (picked) {
+                setEvaluatorQuery(
+                    compactString(picked.name) ?? compactString(picked.email) ?? "",
+                )
+            }
+        }
+    }, [
+        evaluatorQuery,
+        form.evaluator_id,
+        form.schedule_id,
+        formOpen,
+        resolveEvaluatorById,
+        resolveGroupNameFromSchedule,
+        resolveScheduleById,
+        scheduleQuery,
+    ])
 
     return (
         <DashboardLayout
@@ -591,7 +790,7 @@ export default function AdminEvaluationsPage() {
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                             <Input
-                                placeholder="Search by evaluation ID, schedule ID, evaluator ID, or status"
+                                placeholder="Search by group name, evaluator name, room, schedule, or status"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 className="w-full lg:max-w-xl"
@@ -648,7 +847,7 @@ export default function AdminEvaluationsPage() {
                                 <p className="text-sm text-muted-foreground">
                                     {formMode === "create"
                                         ? "Assign an evaluation to a panelist or student."
-                                        : `Update evaluation details${editingId ? ` (${editingId})` : ""}.`}
+                                        : "Update evaluation details and assignment."}
                                 </p>
                             </div>
 
@@ -670,20 +869,21 @@ export default function AdminEvaluationsPage() {
 
                         <div className="grid gap-4 lg:grid-cols-2">
                             <div className="space-y-2">
-                                <p className="text-xs font-medium text-muted-foreground">Schedule ID</p>
+                                <p className="text-xs font-medium text-muted-foreground">Schedule</p>
                                 <Input
-                                    placeholder="Enter schedule ID"
-                                    value={form.schedule_id}
-                                    onChange={(e) => onFormFieldChange("schedule_id", e.target.value)}
+                                    placeholder="Search by group name, room, or date"
+                                    value={scheduleQuery}
+                                    onChange={(e) => setScheduleQuery(e.target.value)}
                                     disabled={formBusy}
                                 />
 
                                 {selectedSchedule ? (
                                     <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
-                                        <span className="font-semibold text-foreground">Selected schedule:</span>{" "}
-                                        {selectedSchedule.id} • Group {selectedSchedule.group_id} •{" "}
+                                        <span className="font-semibold text-foreground">Selected:</span>{" "}
+                                        {resolveGroupNameFromSchedule(selectedSchedule)} •{" "}
                                         {formatDateTime(selectedSchedule.scheduled_at)} •{" "}
-                                        {compactString(selectedSchedule.room) ?? "No room"}
+                                        {compactString(selectedSchedule.room) ?? "No room"} •{" "}
+                                        {toTitleCase(selectedSchedule.status)}
                                     </div>
                                 ) : null}
 
@@ -704,13 +904,24 @@ export default function AdminEvaluationsPage() {
                                                     key={item.id}
                                                     type="button"
                                                     size="sm"
-                                                    variant="outline"
-                                                    onClick={() => onFormFieldChange("schedule_id", item.id)}
+                                                    variant={
+                                                        form.schedule_id.toLowerCase() === item.id.toLowerCase()
+                                                            ? "default"
+                                                            : "outline"
+                                                    }
+                                                    onClick={() => {
+                                                        onFormFieldChange("schedule_id", item.id)
+                                                        setScheduleQuery(resolveGroupNameFromSchedule(item))
+                                                    }}
                                                     className="h-auto px-2 py-1 text-left"
                                                     disabled={formBusy}
                                                 >
-                                                    <span className="block max-w-72 truncate text-xs">
-                                                        {item.id} • Group {item.group_id}
+                                                    <span className="block max-w-80 truncate text-xs">
+                                                        {resolveGroupNameFromSchedule(item)} •{" "}
+                                                        {formatDateTime(item.scheduled_at)}
+                                                        {compactString(item.room)
+                                                            ? ` • ${compactString(item.room)}`
+                                                            : ""}
                                                     </span>
                                                 </Button>
                                             ))
@@ -720,11 +931,11 @@ export default function AdminEvaluationsPage() {
                             </div>
 
                             <div className="space-y-2">
-                                <p className="text-xs font-medium text-muted-foreground">Evaluator ID</p>
+                                <p className="text-xs font-medium text-muted-foreground">Evaluator</p>
                                 <Input
-                                    placeholder="Enter evaluator user ID"
-                                    value={form.evaluator_id}
-                                    onChange={(e) => onFormFieldChange("evaluator_id", e.target.value)}
+                                    placeholder="Search evaluator name, email, or role"
+                                    value={evaluatorQuery}
+                                    onChange={(e) => setEvaluatorQuery(e.target.value)}
                                     disabled={formBusy}
                                 />
 
@@ -774,13 +985,28 @@ export default function AdminEvaluationsPage() {
                                                     key={item.id}
                                                     type="button"
                                                     size="sm"
-                                                    variant="outline"
-                                                    onClick={() => onFormFieldChange("evaluator_id", item.id)}
+                                                    variant={
+                                                        form.evaluator_id.toLowerCase() === item.id.toLowerCase()
+                                                            ? "default"
+                                                            : "outline"
+                                                    }
+                                                    onClick={() => {
+                                                        onFormFieldChange("evaluator_id", item.id)
+                                                        setEvaluatorQuery(
+                                                            compactString(item.name) ??
+                                                            compactString(item.email) ??
+                                                            "",
+                                                        )
+                                                    }}
                                                     className="h-auto px-2 py-1 text-left"
                                                     disabled={formBusy}
                                                 >
                                                     <span className="block max-w-80 truncate text-xs">
-                                                        {compactString(item.name) ?? "Unnamed"} •{" "}
+                                                        {compactString(item.name) ?? "Unnamed"}
+                                                        {compactString(item.email)
+                                                            ? ` • ${compactString(item.email)}`
+                                                            : ""}
+                                                        {" • "}
                                                         {roleLabel(item.role)}
                                                     </span>
                                                 </Button>
@@ -842,8 +1068,8 @@ export default function AdminEvaluationsPage() {
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead className="min-w-60">Evaluation ID</TableHead>
-                                <TableHead className="min-w-48">Schedule</TableHead>
+                                <TableHead className="min-w-52">Group</TableHead>
+                                <TableHead className="min-w-56">Schedule</TableHead>
                                 <TableHead className="min-w-56">Evaluator</TableHead>
                                 <TableHead className="min-w-28">Status</TableHead>
                                 <TableHead className="min-w-44">Submitted</TableHead>
@@ -877,18 +1103,55 @@ export default function AdminEvaluationsPage() {
                                     const isDeleteBusy = busyKey === `${row.id}:delete`
                                     const confirmDelete = pendingDeleteId === row.id
 
+                                    const schedule = scheduleById.get(row.schedule_id.toLowerCase()) ?? null
+                                    const groupName = resolveGroupNameFromSchedule(schedule)
+                                    const scheduleDate = schedule
+                                        ? formatDateTime(schedule.scheduled_at)
+                                        : "Schedule unavailable"
+                                    const scheduleRoom = compactString(schedule?.room)
+
+                                    const evaluator = evaluatorById.get(row.evaluator_id.toLowerCase()) ?? null
+                                    const evaluatorName =
+                                        compactString(evaluator?.name) ??
+                                        compactString(evaluator?.email) ??
+                                        "Unknown Evaluator"
+
+                                    const evaluatorEmail = compactString(evaluator?.email)
+                                    const evaluatorRole = evaluator ? roleLabel(evaluator.role) : null
+
+                                    const evaluatorMeta = [evaluatorEmail, evaluatorRole]
+                                        .filter((part): part is string => !!part)
+                                        .join(" • ")
+
                                     return (
                                         <TableRow key={row.id}>
                                             <TableCell>
-                                                <span className="font-medium">{row.id}</span>
+                                                <div className="space-y-0.5">
+                                                    <p className="font-medium">{groupName}</p>
+                                                    {schedule?.status ? (
+                                                        <p className="text-xs text-muted-foreground">
+                                                            {toTitleCase(schedule.status)}
+                                                        </p>
+                                                    ) : null}
+                                                </div>
                                             </TableCell>
 
                                             <TableCell>
-                                                <span className="text-sm">{row.schedule_id}</span>
+                                                <div className="space-y-0.5">
+                                                    <p className="text-sm">{scheduleDate}</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {scheduleRoom ?? "No room assigned"}
+                                                    </p>
+                                                </div>
                                             </TableCell>
 
                                             <TableCell>
-                                                <span className="text-sm">{row.evaluator_id}</span>
+                                                <div className="space-y-0.5">
+                                                    <p className="text-sm font-medium">{evaluatorName}</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {evaluatorMeta || "—"}
+                                                    </p>
+                                                </div>
                                             </TableCell>
 
                                             <TableCell>
