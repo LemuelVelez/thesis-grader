@@ -1798,6 +1798,8 @@ export async function dispatchApiRequest(
                 student: '/api/student/*',
                 staff: '/api/staff/*',
                 panelist: '/api/panelist/*',
+                panelistEvaluations: '/api/panelist/evaluations/*',
+                panelistStudentEvaluations: '/api/panelist/student-evaluations/*',
                 users: '/api/users/*',
                 notifications: '/api/notifications/*',
                 evaluations: '/api/evaluations/*',
@@ -1848,10 +1850,27 @@ export async function dispatchApiRequest(
             tail[0] === 'student-evaluation'
         );
 
+    // NEW: explicit panelist aliases so /api/panelist/evaluations does not 404.
+    const isPanelistEvaluationsAlias =
+        root === 'panelist' &&
+        (
+            tail[0] === 'evaluations' ||
+            tail[0] === 'evaluation'
+        );
+
+    // NEW: keep student-eval flow explicitly separate even under /panelist/* aliases.
+    const isPanelistStudentEvaluationsAlias =
+        root === 'panelist' &&
+        (
+            tail[0] === 'student-evaluations' ||
+            tail[0] === 'student-evaluation'
+        );
+
     if (
         root === 'student-evaluations' ||
         isAdminStudentEvaluationsAlias ||
-        isStudentScopedEvaluationsAlias
+        isStudentScopedEvaluationsAlias ||
+        isPanelistStudentEvaluationsAlias
     ) {
         let studentEvalTail = tail;
 
@@ -1868,11 +1887,17 @@ export async function dispatchApiRequest(
             } else {
                 studentEvalTail = tail.slice(1);
             }
-        } else if (root === 'student') {
+        } else if (root === 'student' || root === 'panelist') {
             studentEvalTail = tail.slice(1);
         }
 
         return dispatchStudentEvaluationsRequest(req, studentEvalTail, services);
+    }
+
+    // NEW: map /api/panelist/evaluations/* to panelist-evaluation service flow.
+    if (isPanelistEvaluationsAlias) {
+        const panelistEvalTail = tail.slice(1);
+        return dispatchEvaluationsRequest(req, panelistEvalTail, services);
     }
 
     switch (root) {
