@@ -23,6 +23,7 @@ import { NotificationController } from '../controllers/NotificationController';
 import { UserController } from '../controllers/UserController';
 import {
     NOTIFICATION_TYPES,
+    STUDENT_EVAL_STATUSES,
     USER_STATUSES,
     type EvaluationInsert,
     type EvaluationPatch,
@@ -32,6 +33,7 @@ import {
     type JsonObject,
     type JsonValue,
     type NotificationType,
+    type StudentEvalStatus,
     type StudentRow,
     type ThesisRole,
     type UserRow,
@@ -505,6 +507,14 @@ export function toEvaluationStatus(value: unknown): EvaluationStatus | null {
     const normalized = value.trim().toLowerCase();
     if (!normalized) return null;
     return normalized as EvaluationStatus;
+}
+
+export function toStudentEvalStatus(value: unknown): StudentEvalStatus | null {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().toLowerCase();
+    return (STUDENT_EVAL_STATUSES as readonly string[]).includes(normalized)
+        ? (normalized as StudentEvalStatus)
+        : null;
 }
 
 export function parseReadAt(body: Record<string, unknown>): string | undefined {
@@ -1447,7 +1457,7 @@ type StudentEvaluationsControllerLike = {
     delete?: (where: { id: UUID }) => Promise<number>;
     setStatus?: (
         id: UUID,
-        status: EvaluationStatus | string,
+        status: StudentEvalStatus | string,
     ) => Promise<unknown | null>;
     submit?: (id: UUID, submittedAt?: string) => Promise<unknown | null>;
     lock?: (id: UUID, lockedAt?: string) => Promise<unknown | null>;
@@ -1459,11 +1469,28 @@ type StudentEvaluationsControllerLike = {
 function resolveStudentEvaluationsController(
     services: DatabaseServices,
 ): StudentEvaluationsControllerLike | null {
-    const maybe = (
+    // Primary: canonical snake_case service key in DatabaseServices.
+    if (services.student_evaluations) {
+        return services.student_evaluations as unknown as StudentEvaluationsControllerLike;
+    }
+
+    // Backward-compat: older runtime may expose camelCase.
+    const maybeCamel = (
         services as unknown as { studentEvaluations?: StudentEvaluationsControllerLike }
     ).studentEvaluations;
+    if (maybeCamel) return maybeCamel;
 
-    return maybe ?? null;
+    // Last fallback via registry getter.
+    try {
+        const viaRegistry = services.get('student_evaluations');
+        if (viaRegistry) {
+            return viaRegistry as unknown as StudentEvaluationsControllerLike;
+        }
+    } catch {
+        // no-op
+    }
+
+    return null;
 }
 
 function normalizeStudentEvaluationPayload(
@@ -1471,11 +1498,10 @@ function normalizeStudentEvaluationPayload(
 ): Record<string, unknown> {
     const out: Record<string, unknown> = { ...body };
 
+    // Student-evaluation payload should resolve student_id only.
     const studentIdCandidates: unknown[] = [
         body.student_id,
         body.studentId,
-        body.evaluator_id,
-        body.evaluatorId,
         body.user_id,
         body.userId,
     ];
@@ -1492,6 +1518,7 @@ function normalizeStudentEvaluationPayload(
         out.status = 'pending';
     }
 
+    // Hard-strip panelist-like aliases from this flow.
     delete out.evaluator_id;
     delete out.evaluatorId;
 
@@ -1608,9 +1635,11 @@ async function dispatchStudentEvaluationsRequest(
         const body = await readJsonRecord(req);
         if (!body) return json400('Invalid JSON body.');
 
-        const status = toEvaluationStatus(body.status);
+        const status = toStudentEvalStatus(body.status);
         if (!status) {
-            return json400('Invalid status. Provide a non-empty status string.');
+            return json400(
+                `Invalid student evaluation status. Allowed: ${STUDENT_EVAL_STATUSES.join(', ')}`,
+            );
         }
 
         let item: unknown | null = null;
