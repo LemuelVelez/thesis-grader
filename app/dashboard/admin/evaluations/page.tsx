@@ -157,6 +157,13 @@ function roleLabel(role: ThesisRole) {
     return toTitleCase(String(role))
 }
 
+function toEvaluatorScope(role: ThesisRole): EvaluatorScope {
+    const normalized = normalizeStatus(String(role))
+    if (normalized === "panelist") return "panelist"
+    if (normalized === "student") return "student"
+    return "all"
+}
+
 export default function AdminEvaluationsPage() {
     const [evaluations, setEvaluations] = React.useState<EvaluationRecord[]>([])
     const [schedules, setSchedules] = React.useState<DefenseScheduleOption[]>([])
@@ -333,11 +340,7 @@ export default function AdminEvaluationsPage() {
             const user = evaluators.find(
                 (u) => u.id.toLowerCase() === row.evaluator_id.toLowerCase(),
             )
-            if (user?.role === "panelist" || user?.role === "student") {
-                setEvaluatorScope(user.role)
-            } else {
-                setEvaluatorScope("all")
-            }
+            setEvaluatorScope(user ? toEvaluatorScope(user.role) : "all")
 
             setFormOpen(true)
         },
@@ -439,34 +442,37 @@ export default function AdminEvaluationsPage() {
         }
     }, [closeForm, editingId, form, formBusy, formMode, loadEvaluations])
 
-    const deleteEvaluation = React.useCallback(async (evaluationId: string) => {
-        const key = `${evaluationId}:delete`
-        setBusyKey(key)
-        setError(null)
+    const deleteEvaluation = React.useCallback(
+        async (evaluationId: string) => {
+            const key = `${evaluationId}:delete`
+            setBusyKey(key)
+            setError(null)
 
-        try {
-            const res = await fetch(`/api/evaluations/${evaluationId}`, {
-                method: "DELETE",
-            })
+            try {
+                const res = await fetch(`/api/evaluations/${evaluationId}`, {
+                    method: "DELETE",
+                })
 
-            await parseJsonSafely<{ deleted?: number; error?: string; message?: string }>(res)
+                await parseJsonSafely<{ deleted?: number; error?: string; message?: string }>(res)
 
-            setEvaluations((prev) => prev.filter((row) => row.id !== evaluationId))
-            setPendingDeleteId(null)
+                setEvaluations((prev) => prev.filter((row) => row.id !== evaluationId))
+                setPendingDeleteId(null)
 
-            if (editingId === evaluationId) {
-                closeForm()
+                if (editingId === evaluationId) {
+                    closeForm()
+                }
+
+                toast.success("Evaluation deleted")
+            } catch (err) {
+                const message = err instanceof Error ? err.message : "Failed to delete evaluation."
+                setError(message)
+                toast.error("Delete failed", { description: message })
+            } finally {
+                setBusyKey(null)
             }
-
-            toast.success("Evaluation deleted")
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to delete evaluation."
-            setError(message)
-            toast.error("Delete failed", { description: message })
-        } finally {
-            setBusyKey(null)
-        }
-    }, [closeForm, editingId])
+        },
+        [closeForm, editingId],
+    )
 
     const runAction = React.useCallback(
         async (evaluation: EvaluationRecord, action: EvaluationAction) => {
@@ -647,11 +653,7 @@ export default function AdminEvaluationsPage() {
                             </div>
 
                             <div className="flex items-center gap-2">
-                                <Button
-                                    variant="outline"
-                                    onClick={closeForm}
-                                    disabled={formBusy}
-                                >
+                                <Button variant="outline" onClick={closeForm} disabled={formBusy}>
                                     Cancel
                                 </Button>
                                 <Button onClick={() => void submitForm()} disabled={formBusy}>
@@ -678,9 +680,7 @@ export default function AdminEvaluationsPage() {
 
                                 {selectedSchedule ? (
                                     <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
-                                        <span className="font-semibold text-foreground">
-                                            Selected schedule:
-                                        </span>{" "}
+                                        <span className="font-semibold text-foreground">Selected schedule:</span>{" "}
                                         {selectedSchedule.id} • Group {selectedSchedule.group_id} •{" "}
                                         {formatDateTime(selectedSchedule.scheduled_at)} •{" "}
                                         {compactString(selectedSchedule.room) ?? "No room"}
@@ -688,9 +688,7 @@ export default function AdminEvaluationsPage() {
                                 ) : null}
 
                                 <div className="space-y-2">
-                                    <p className="text-xs text-muted-foreground">
-                                        Quick pick from schedules
-                                    </p>
+                                    <p className="text-xs text-muted-foreground">Quick pick from schedules</p>
                                     <div className="flex max-h-36 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
                                         {loadingMeta ? (
                                             <span className="text-xs text-muted-foreground">
@@ -732,9 +730,7 @@ export default function AdminEvaluationsPage() {
 
                                 {selectedEvaluator ? (
                                     <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
-                                        <span className="font-semibold text-foreground">
-                                            Selected evaluator:
-                                        </span>{" "}
+                                        <span className="font-semibold text-foreground">Selected evaluator:</span>{" "}
                                         {compactString(selectedEvaluator.name) ?? "Unnamed"} •{" "}
                                         {compactString(selectedEvaluator.email) ?? "No email"} •{" "}
                                         {roleLabel(selectedEvaluator.role)}
@@ -762,9 +758,7 @@ export default function AdminEvaluationsPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <p className="text-xs text-muted-foreground">
-                                        Quick pick from users
-                                    </p>
+                                    <p className="text-xs text-muted-foreground">Quick pick from users</p>
                                     <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
                                         {loadingMeta ? (
                                             <span className="text-xs text-muted-foreground">
