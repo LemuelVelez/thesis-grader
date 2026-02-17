@@ -9,26 +9,8 @@ import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog"
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -36,16 +18,6 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -55,567 +27,52 @@ import {
     TableRow,
 } from "@/components/ui/table"
 
-type ThesisGroupDetail = {
-    id: string
-    title: string
-    program: string | null
-    term: string | null
-    adviserId: string | null
-    manualAdviserInfo: string | null
-    createdAt: string | null
-    updatedAt: string | null
-}
-
-type StaffUserItem = {
-    id: string
-    name: string
-    email: string | null
-    status: string | null
-}
-
-type StudentUserItem = {
-    id: string
-    name: string
-    email: string | null
-    status: string | null
-    program: string | null
-    section: string | null
-}
-
-type GroupMemberItem = {
-    id: string
-    memberId: string | null
-    linkedUserId: string | null
-    studentId: string | null
-    name: string | null
-    program: string | null
-    section: string | null
-}
-
-type DefenseScheduleItem = {
-    id: string
-    scheduledAt: string | null
-    room: string | null
-    status: string | null
-    rubricTemplateId: string | null
-}
-
-type FetchResult = {
-    endpoint: string
-    payload: unknown | null
-    status: number
-}
-
-type MemberDialogMode = "create" | "edit"
-
-type MemberFormState = {
-    studentUserId: string
-    program: string
-    section: string
-}
-
-type UserStatus = "active" | "disabled"
-
-const STUDENT_NONE_VALUE = "__none_student__"
-const CREATE_USER_STATUSES: UserStatus[] = ["active", "disabled"]
-
-const STAFF_LIST_ENDPOINTS = [
-    "/api/staff",
-    `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
-    "/api/users?role=staff",
-    "/api/users",
-] as const
-
-const STUDENT_LIST_ENDPOINTS = [
-    "/api/student",
-    `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "student" }))}`,
-    "/api/users?role=student",
-    "/api/users",
-] as const
-
-function detailEndpoints(id: string): string[] {
-    return [
-        `/api/admin/thesis-groups/${id}`,
-        `/api/admin/thesis/groups/${id}`,
-        `/api/thesis-groups/${id}`,
-        `/api/thesis/groups/${id}`,
-    ]
-}
-
-function memberEndpoints(id: string): string[] {
-    return [
-        `/api/admin/thesis-groups/${id}/members`,
-        `/api/admin/thesis/groups/${id}/members`,
-        `/api/thesis-groups/${id}/members`,
-        `/api/thesis/groups/${id}/members`,
-    ]
-}
-
-function scheduleEndpoints(id: string): string[] {
-    return [
-        `/api/admin/thesis-groups/${id}/schedules`,
-        `/api/admin/thesis/groups/${id}/schedules`,
-        `/api/thesis-groups/${id}/schedules`,
-        `/api/thesis/groups/${id}/schedules`,
-    ]
-}
-
-/**
- * Preferred dedicated endpoints for creating/updating student profile rows.
- */
-function studentProfileEndpoints(userId: string): string[] {
-    const encoded = encodeURIComponent(userId)
-    return [
-        `/api/student/${encoded}/profile`,
-        `/api/students/${encoded}/profile`,
-        `/api/admin/student/${encoded}/profile`,
-        `/api/admin/students/${encoded}/profile`,
-    ]
-}
-
-/**
- * Compatibility fallback endpoints if dedicated /profile routes are unavailable.
- * Some backends wire student profile upsert through PATCH /student/:id.
- */
-function studentProfileFallbackEndpoints(userId: string): string[] {
-    const encoded = encodeURIComponent(userId)
-    return [
-        `/api/student/${encoded}`,
-        `/api/students/${encoded}`,
-        `/api/admin/student/${encoded}`,
-        `/api/admin/students/${encoded}`,
-        `/api/users/${encoded}`,
-    ]
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null
-    return value as Record<string, unknown>
-}
-
-function toStringOrNull(value: unknown): string | null {
-    if (typeof value !== "string") return null
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-}
-
-function toNullableTrimmed(value: string): string | null {
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-}
-
-function toTitleCase(value: string): string {
-    const trimmed = value.trim()
-    if (!trimmed) return value
-    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
-}
-
-function isValidEmail(value: string): boolean {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-}
-
-function isMissingStudentProfileMessage(value: string): boolean {
-    const normalized = value.trim().toLowerCase()
-    return (
-        normalized.includes("does not have a student profile record") ||
-        normalized.includes("create the student profile first")
-    )
-}
-
-/**
- * Guarantees non-empty values for Radix/Shadcn Select components.
- * Empty string is invalid for <SelectItem value="...">.
- */
-function sanitizeStudentSelectValue(value: string | null | undefined): string {
-    const trimmed = (value ?? "").trim()
-    return trimmed.length > 0 ? trimmed : STUDENT_NONE_VALUE
-}
-
-function unwrapItems(payload: unknown): unknown[] {
-    if (Array.isArray(payload)) return payload
-
-    const rec = asRecord(payload)
-    if (!rec) return []
-
-    const items = rec.items
-    if (Array.isArray(items)) return items
-
-    const data = rec.data
-    if (Array.isArray(data)) return data
-
-    const members = rec.members
-    if (Array.isArray(members)) return members
-
-    const schedules = rec.schedules
-    if (Array.isArray(schedules)) return schedules
-
-    return []
-}
-
-function unwrapDetail(payload: unknown): unknown {
-    const rec = asRecord(payload)
-    if (!rec) return payload
-
-    if (asRecord(rec.item)) return rec.item
-    if (asRecord(rec.data)) return rec.data
-
-    return rec
-}
-
-function extractRoleLower(rec: Record<string, unknown>): string | null {
-    const direct = toStringOrNull(rec.role ?? rec.user_role ?? rec.userRole)
-    if (direct) return direct.toLowerCase()
-
-    const userRec = asRecord(rec.user)
-    const nested = userRec ? toStringOrNull(userRec.role ?? userRec.user_role) : null
-    if (nested) return nested.toLowerCase()
-
-    return null
-}
-
-function extractRoleLowerFromPayload(payload: unknown): string | null {
-    const detailRec = asRecord(unwrapDetail(payload))
-    if (!detailRec) return null
-    return extractRoleLower(detailRec)
-}
-
-function normalizeGroup(raw: unknown): ThesisGroupDetail | null {
-    const rec = asRecord(raw)
-    if (!rec) return null
-
-    const id = toStringOrNull(rec.id ?? rec.group_id)
-    if (!id) return null
-
-    const title = toStringOrNull(rec.title ?? rec.group_title) ?? `Group ${id.slice(0, 8)}`
-    const program = toStringOrNull(rec.program)
-    const term = toStringOrNull(rec.term)
-    const adviserId = toStringOrNull(rec.adviser_id ?? rec.adviserId)
-    const manualAdviserInfo = toStringOrNull(
-        rec.manual_adviser_info ??
-        rec.manualAdviserInfo ??
-        rec.adviser_name ??
-        rec.adviserName ??
-        rec.adviser
-    )
-    const createdAt = toStringOrNull(rec.created_at ?? rec.createdAt)
-    const updatedAt = toStringOrNull(rec.updated_at ?? rec.updatedAt)
-
-    return {
-        id,
-        title,
-        program,
-        term,
-        adviserId,
-        manualAdviserInfo,
-        createdAt,
-        updatedAt,
-    }
-}
-
-function normalizeStaffUser(raw: unknown): StaffUserItem | null {
-    const rec = asRecord(raw)
-    if (!rec) return null
-
-    const id = toStringOrNull(rec.id ?? rec.user_id)
-    if (!id) return null
-
-    const role = extractRoleLower(rec)
-    if (role && role !== "staff") return null
-
-    const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Staff"
-
-    return {
-        id,
-        name,
-        email: toStringOrNull(rec.email),
-        status: toStringOrNull(rec.status),
-    }
-}
-
-function normalizeStudentUser(raw: unknown): StudentUserItem | null {
-    const rec = asRecord(raw)
-    if (!rec) return null
-
-    const explicitUserId = toStringOrNull(
-        rec.user_id ??
-        rec.userId ??
-        rec.student_user_id ??
-        rec.studentUserId ??
-        rec.linked_user_id ??
-        rec.linkedUserId
-    )
-    const fallbackId = toStringOrNull(rec.id ?? rec.auth_user_id ?? rec.authUserId)
-    const id = explicitUserId ?? fallbackId
-    if (!id) return null
-
-    const role = extractRoleLower(rec)
-    if (role && role !== "student") return null
-    if (!role && !explicitUserId) return null
-
-    const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Student"
-
-    return {
-        id,
-        name,
-        email: toStringOrNull(rec.email),
-        status: toStringOrNull(rec.status),
-        program: toStringOrNull(rec.program ?? rec.course),
-        section: toStringOrNull(rec.section),
-    }
-}
-
-function normalizeMember(raw: unknown): GroupMemberItem | null {
-    const rec = asRecord(raw)
-    if (!rec) return null
-
-    const memberId = toStringOrNull(rec.member_id ?? rec.memberId ?? rec.id)
-    const linkedUserId = toStringOrNull(rec.user_id ?? rec.userId ?? rec.student_user_id ?? rec.studentUserId)
-    const studentId = toStringOrNull(
-        rec.student_no ?? rec.studentNo ?? rec.student_id ?? rec.studentId ?? linkedUserId
-    )
-
-    const id = memberId ?? linkedUserId ?? studentId
-    if (!id) return null
-
-    return {
-        id,
-        memberId,
-        linkedUserId,
-        studentId,
-        name: toStringOrNull(rec.name ?? rec.student_name ?? rec.full_name),
-        program: toStringOrNull(rec.program),
-        section: toStringOrNull(rec.section),
-    }
-}
-
-function normalizeSchedule(raw: unknown): DefenseScheduleItem | null {
-    const rec = asRecord(raw)
-    if (!rec) return null
-
-    const id = toStringOrNull(rec.id ?? rec.schedule_id)
-    if (!id) return null
-
-    return {
-        id,
-        scheduledAt: toStringOrNull(rec.scheduled_at ?? rec.scheduledAt),
-        room: toStringOrNull(rec.room),
-        status: toStringOrNull(rec.status),
-        rubricTemplateId: toStringOrNull(rec.rubric_template_id ?? rec.rubricTemplateId),
-    }
-}
-
-function sortMembers(items: GroupMemberItem[]): GroupMemberItem[] {
-    return [...items].sort((a, b) => {
-        const nameA = (a.name ?? "").trim()
-        const nameB = (b.name ?? "").trim()
-
-        if (nameA && nameB) {
-            const byName = nameA.localeCompare(nameB, "en", { sensitivity: "base" })
-            if (byName !== 0) return byName
-        }
-
-        const sidA = (a.studentId ?? a.id).toLowerCase()
-        const sidB = (b.studentId ?? b.id).toLowerCase()
-        return sidA.localeCompare(sidB)
-    })
-}
-
-function dedupeById<T extends { id: string }>(items: T[]): T[] {
-    const map = new Map<string, T>()
-    for (const item of items) {
-        if (!map.has(item.id)) {
-            map.set(item.id, item)
-            continue
-        }
-
-        const prev = map.get(item.id)!
-        map.set(item.id, { ...prev, ...item })
-    }
-    return [...map.values()]
-}
-
-function isDisabledStatus(status: string | null): boolean {
-    return (status ?? "").trim().toLowerCase() === "disabled"
-}
-
-function formatDateTime(value: string | null): string {
-    if (!value) return "—"
-    const d = new Date(value)
-    if (Number.isNaN(d.getTime())) return value
-    return new Intl.DateTimeFormat("en-PH", {
-        dateStyle: "medium",
-        timeStyle: "short",
-    }).format(d)
-}
-
-function parseResponseBodySafe(res: Response): Promise<unknown | null> {
-    return res.text().then((text) => {
-        if (!text) return null
-        try {
-            return JSON.parse(text) as unknown
-        } catch {
-            return { message: text }
-        }
-    })
-}
-
-function isGenericFailureMessage(value: string): boolean {
-    const normalized = value.trim().toLowerCase()
-    if (!normalized) return false
-    if (normalized === "internal server error.") return true
-    return /^failed to [a-z0-9\s-]+\.$/.test(normalized)
-}
-
-function extractErrorMessage(payload: unknown, fallback: string, status?: number): string {
-    const rec = asRecord(payload)
-    if (!rec) return fallback
-
-    const error = toStringOrNull(rec.error)
-    const message = toStringOrNull(rec.message)
-
-    if (
-        message &&
-        (status === 500 || status === 502 || status === 503 || status === 504 || !error || isGenericFailureMessage(error))
-    ) {
-        return message
-    }
-
-    if (error) return error
-    if (message) return message
-    return fallback
-}
-
-async function fetchFirstAvailableJson(endpoints: readonly string[], signal: AbortSignal): Promise<unknown | null> {
-    let lastError: Error | null = null
-
-    for (const endpoint of endpoints) {
-        try {
-            const res = await fetch(endpoint, {
-                method: "GET",
-                credentials: "include",
-                cache: "no-store",
-                headers: {
-                    Accept: "application/json",
-                },
-                signal,
-            })
-
-            if (res.status === 404 || res.status === 405) {
-                continue
-            }
-
-            const payload = await parseResponseBodySafe(res)
-
-            if (!res.ok) {
-                const message = extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status)
-                lastError = new Error(message)
-                continue
-            }
-
-            return payload
-        } catch (error) {
-            if (error instanceof Error && error.name === "AbortError") {
-                throw error
-            }
-            lastError = error instanceof Error ? error : new Error("Request failed")
-        }
-    }
-
-    if (lastError) throw lastError
-    return null
-}
-
-async function fetchAllSuccessfulJson(endpoints: readonly string[], signal: AbortSignal): Promise<FetchResult[]> {
-    const results: FetchResult[] = []
-    let lastError: Error | null = null
-
-    for (const endpoint of endpoints) {
-        try {
-            const res = await fetch(endpoint, {
-                method: "GET",
-                credentials: "include",
-                cache: "no-store",
-                headers: {
-                    Accept: "application/json",
-                },
-                signal,
-            })
-
-            if (res.status === 404 || res.status === 405) continue
-
-            const payload = await parseResponseBodySafe(res)
-
-            if (!res.ok) {
-                lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status))
-                continue
-            }
-
-            results.push({
-                endpoint,
-                payload,
-                status: res.status,
-            })
-        } catch (error) {
-            if (error instanceof Error && error.name === "AbortError") throw error
-            lastError = error instanceof Error ? error : new Error("Request failed")
-        }
-    }
-
-    if (results.length === 0 && lastError) throw lastError
-    return results
-}
-
-/**
- * IMPORTANT for UX:
- * - We only fallback on route-shape incompatibility (404/405).
- * - For validation/auth/server errors on a compatible route, stop immediately
- *   so we don't spam multiple POST/PATCH/DELETE attempts.
- */
-async function requestFirstAvailable(endpoints: readonly string[], init: RequestInit): Promise<FetchResult> {
-    let lastError: Error | null = null
-
-    for (const endpoint of endpoints) {
-        try {
-            const res = await fetch(endpoint, {
-                ...init,
-                credentials: "include",
-                cache: "no-store",
-                headers: {
-                    Accept: "application/json",
-                    ...(init.headers ?? {}),
-                },
-            })
-
-            if (res.status === 404 || res.status === 405) continue
-
-            const payload = await parseResponseBodySafe(res)
-
-            if (!res.ok) {
-                throw new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`, res.status))
-            }
-
-            return {
-                endpoint,
-                payload,
-                status: res.status,
-            }
-        } catch (error) {
-            lastError = error instanceof Error ? error : new Error("Request failed")
-            break
-        }
-    }
-
-    if (lastError) throw lastError
-    throw new Error("No compatible thesis group member endpoint found for this action.")
-}
-
-function defaultMemberForm(selectedStudentId: string): MemberFormState {
-    return {
-        studentUserId: sanitizeStudentSelectValue(selectedStudentId),
-        program: "",
-        section: "",
-    }
-}
+import ThesisGroupDetailsDialogs from "@/components/thesis-groups/thesis-group-details-dialogs"
+import {
+    asRecord,
+    dedupeById,
+    defaultMemberForm,
+    extractErrorMessage,
+    formatDateTime,
+    isDisabledStatus,
+    isMissingStudentProfileMessage,
+    normalizeGroup,
+    normalizeMember,
+    normalizeSchedule,
+    normalizeStaffUser,
+    normalizeStudentUser,
+    sanitizeStudentSelectValue,
+    toNullableTrimmed,
+    toStringOrNull,
+    sortMembers,
+    unwrapDetail,
+    unwrapItems,
+} from "@/components/thesis-groups/thesis-group-details-helpers"
+import {
+    ensureUserRoleIsStudent,
+    fetchAllSuccessfulJson,
+    fetchFirstAvailableJson,
+    parseResponseBodySafe,
+    requestFirstAvailable,
+    upsertStudentProfile,
+} from "@/components/thesis-groups/thesis-group-details-service"
+import {
+    CREATE_USER_STATUSES,
+    STAFF_LIST_ENDPOINTS,
+    STUDENT_LIST_ENDPOINTS,
+    STUDENT_NONE_VALUE,
+    detailEndpoints,
+    memberEndpoints,
+    scheduleEndpoints,
+    type DefenseScheduleItem,
+    type GroupMemberItem,
+    type MemberDialogMode,
+    type MemberFormState,
+    type StaffUserItem,
+    type StudentUserItem,
+    type ThesisGroupDetail,
+    type UserStatus,
+} from "@/components/thesis-groups/thesis-group-details-types"
 
 export default function AdminThesisGroupDetailsPage() {
     const params = useParams<{ id: string | string[] }>()
@@ -866,7 +323,9 @@ export default function AdminThesisGroupDetailsPage() {
                 .map(normalizeStaffUser)
                 .filter((item): item is StaffUserItem => item !== null)
 
-            const merged = dedupeById(items).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
+            const merged = dedupeById(items).sort((a, b) =>
+                a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+            )
 
             setStaffUsers(merged)
 
@@ -902,12 +361,16 @@ export default function AdminThesisGroupDetailsPage() {
                 .map(normalizeStudentUser)
                 .filter((item): item is StudentUserItem => item !== null)
 
-            const merged = dedupeById(items).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
+            const merged = dedupeById(items).sort((a, b) =>
+                a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+            )
 
             setStudentUsers(merged)
 
             if (merged.length === 0) {
-                setStudentsError("No student users were returned from available endpoints. Create a Student user to continue.")
+                setStudentsError(
+                    "No student users were returned from available endpoints. Create a Student user to continue."
+                )
             }
         } catch (e) {
             if (e instanceof Error && e.name === "AbortError") return
@@ -1028,9 +491,7 @@ export default function AdminThesisGroupDetailsPage() {
                 ""
             )
             setStudentProfileSection(
-                toNullableTrimmed(memberForm.section) ??
-                toNullableTrimmed(target.section ?? "") ??
-                ""
+                toNullableTrimmed(memberForm.section) ?? toNullableTrimmed(target.section ?? "") ?? ""
             )
             setStudentProfileError(null)
             setStudentProfileDialogOpen(true)
@@ -1039,52 +500,7 @@ export default function AdminThesisGroupDetailsPage() {
     )
 
     const syncStudentProfileState = React.useCallback((userId: string, program: string | null, section: string | null) => {
-        setStudentUsers((prev) =>
-            prev.map((item) => (item.id === userId ? { ...item, program, section } : item))
-        )
-    }, [])
-
-    const upsertStudentProfile = React.useCallback(async (userId: string, input: { program: string; section: string }) => {
-        const payload = {
-            program: toNullableTrimmed(input.program),
-            section: toNullableTrimmed(input.section),
-        }
-
-        const createEndpoints = studentProfileEndpoints(userId)
-        const fallbackEndpoints = studentProfileFallbackEndpoints(userId)
-
-        try {
-            return await requestFirstAvailable(createEndpoints, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            })
-        } catch (firstError) {
-            const message = firstError instanceof Error ? firstError.message.toLowerCase() : ""
-            const mayNeedPatch =
-                message.includes("already exists") ||
-                message.includes("duplicate") ||
-                message.includes("unique") ||
-                message.includes("method not allowed")
-
-            if (mayNeedPatch) {
-                try {
-                    return await requestFirstAvailable(createEndpoints, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload),
-                    })
-                } catch {
-                    // continue to fallback strategy
-                }
-            }
-        }
-
-        return await requestFirstAvailable(fallbackEndpoints, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        })
+        setStudentUsers((prev) => prev.map((item) => (item.id === userId ? { ...item, program, section } : item)))
     }, [])
 
     const handleCreateStudentProfile = React.useCallback(async () => {
@@ -1149,68 +565,7 @@ export default function AdminThesisGroupDetailsPage() {
         studentProfileSubmitting,
         studentProfileTarget,
         syncStudentProfileState,
-        upsertStudentProfile,
     ])
-
-    /**
-     * Defensive guard:
-     * - Ensure selected user has role "student" before member save.
-     */
-    const ensureUserRoleIsStudent = React.useCallback(async (candidateUserId: string) => {
-        const normalizedId = candidateUserId.trim()
-        if (!normalizedId) {
-            return { existed: false, updated: false, roleBefore: null as string | null }
-        }
-
-        const endpoint = `/api/users/${encodeURIComponent(normalizedId)}`
-        const getRes = await fetch(endpoint, {
-            method: "GET",
-            credentials: "include",
-            cache: "no-store",
-            headers: { Accept: "application/json" },
-        })
-
-        const getPayload = await parseResponseBodySafe(getRes)
-
-        if (getRes.status === 404) {
-            return { existed: false, updated: false, roleBefore: null as string | null }
-        }
-
-        if (!getRes.ok) {
-            throw new Error(extractErrorMessage(getPayload, "Unable to verify student role.", getRes.status))
-        }
-
-        const roleBefore = extractRoleLowerFromPayload(getPayload)
-
-        if (roleBefore === "student") {
-            return { existed: true, updated: false, roleBefore }
-        }
-
-        const patchRes = await fetch(endpoint, {
-            method: "PATCH",
-            credentials: "include",
-            cache: "no-store",
-            headers: {
-                Accept: "application/json",
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ role: "student" }),
-        })
-
-        const patchPayload = await parseResponseBodySafe(patchRes)
-
-        if (!patchRes.ok) {
-            throw new Error(
-                extractErrorMessage(
-                    patchPayload,
-                    'Failed to automatically set role to "student" before member save.',
-                    patchRes.status
-                )
-            )
-        }
-
-        return { existed: true, updated: true, roleBefore }
-    }, [])
 
     const handleCreateStudentUser = React.useCallback(async () => {
         if (creatingStudentUser) return
@@ -1234,7 +589,7 @@ export default function AdminThesisGroupDetailsPage() {
             return
         }
 
-        if (!isValidEmail(email)) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             const msg = "Please provide a valid email address."
             setCreateStudentError(msg)
             toast.error(msg)
@@ -1334,7 +689,8 @@ export default function AdminThesisGroupDetailsPage() {
     const openEditMemberDialog = React.useCallback(
         (member: GroupMemberItem) => {
             const linkedId =
-                member.linkedUserId ?? (member.studentId && studentsById.has(member.studentId) ? member.studentId : null)
+                member.linkedUserId ??
+                (member.studentId && studentsById.has(member.studentId) ? member.studentId : null)
 
             const fallbackStudentId = availableStudentsForEdit[0]?.id ?? STUDENT_NONE_VALUE
             const selectedStudentId = sanitizeStudentSelectValue(linkedId ?? fallbackStudentId)
@@ -1375,7 +731,8 @@ export default function AdminThesisGroupDetailsPage() {
             let selectedStudentSnapshot: StudentUserItem | null = null
 
             try {
-                const selectedId = normalizedMemberSelectValue === STUDENT_NONE_VALUE ? null : normalizedMemberSelectValue
+                const selectedId =
+                    normalizedMemberSelectValue === STUDENT_NONE_VALUE ? null : normalizedMemberSelectValue
                 if (!selectedId) {
                     throw new Error("Please select a student user. If none is available, create one first.")
                 }
@@ -1415,8 +772,14 @@ export default function AdminThesisGroupDetailsPage() {
                     student_id: selected.id,
                     studentId: selected.id,
                     name: selected.name,
-                    program: toNullableTrimmed(memberForm.program) ?? toNullableTrimmed(selected.program ?? "") ?? null,
-                    section: toNullableTrimmed(memberForm.section) ?? toNullableTrimmed(selected.section ?? "") ?? null,
+                    program:
+                        toNullableTrimmed(memberForm.program) ??
+                        toNullableTrimmed(selected.program ?? "") ??
+                        null,
+                    section:
+                        toNullableTrimmed(memberForm.section) ??
+                        toNullableTrimmed(selected.section ?? "") ??
+                        null,
                 }
 
                 if (memberDialogMode === "create") {
@@ -1447,7 +810,10 @@ export default function AdminThesisGroupDetailsPage() {
                     if (!memberTarget) throw new Error("No member selected for editing.")
 
                     const identifier =
-                        memberTarget.memberId ?? memberTarget.linkedUserId ?? memberTarget.studentId ?? memberTarget.id
+                        memberTarget.memberId ??
+                        memberTarget.linkedUserId ??
+                        memberTarget.studentId ??
+                        memberTarget.id
 
                     if (!identifier) throw new Error("Unable to resolve member identifier for update.")
 
@@ -1508,7 +874,6 @@ export default function AdminThesisGroupDetailsPage() {
             clearStudentProfileMissing,
             currentEditStudentUserId,
             editableStudentIds,
-            ensureUserRoleIsStudent,
             groupId,
             markStudentProfileMissing,
             memberDialogMode,
@@ -1558,12 +923,6 @@ export default function AdminThesisGroupDetailsPage() {
         }
     }, [deleteMemberTarget, groupId])
 
-    const memberDialogTitle = memberDialogMode === "create" ? "Add Thesis Group Member" : "Edit Thesis Group Member"
-    const memberDialogDescription =
-        memberDialogMode === "create"
-            ? "Select an existing Student user. If the user has no student profile yet, create it directly from this dialog."
-            : "Update member assignment and optional profile details."
-
     return (
         <DashboardLayout
             title={group ? `Thesis Group: ${group.title}` : "Thesis Group Details"}
@@ -1575,7 +934,10 @@ export default function AdminThesisGroupDetailsPage() {
                         <Link href="/dashboard/admin/thesis-groups">Back to Thesis Groups</Link>
                     </Button>
 
-                    <Button onClick={() => setRefreshKey((v) => v + 1)} disabled={loading || staffLoading || studentsLoading}>
+                    <Button
+                        onClick={() => setRefreshKey((v) => v + 1)}
+                        disabled={loading || staffLoading || studentsLoading}
+                    >
                         {loading || staffLoading || studentsLoading ? "Refreshing..." : "Refresh"}
                     </Button>
                 </div>
@@ -1599,11 +961,15 @@ export default function AdminThesisGroupDetailsPage() {
                 ) : null}
 
                 {!group && loading ? (
-                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">Loading thesis group details...</div>
+                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+                        Loading thesis group details...
+                    </div>
                 ) : null}
 
                 {!group && !loading ? (
-                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">No group data found for this record.</div>
+                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+                        No group data found for this record.
+                    </div>
                 ) : null}
 
                 {group ? (
@@ -1693,12 +1059,18 @@ export default function AdminThesisGroupDetailsPage() {
                                                     <TableCell className="text-right">
                                                         <DropdownMenu>
                                                             <DropdownMenuTrigger asChild>
-                                                                <Button variant="ghost" size="icon" aria-label="Member actions">
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    aria-label="Member actions"
+                                                                >
                                                                     <MoreHorizontal className="size-4" />
                                                                 </Button>
                                                             </DropdownMenuTrigger>
                                                             <DropdownMenuContent align="end" className="w-40">
-                                                                <DropdownMenuItem onClick={() => openEditMemberDialog(member)}>
+                                                                <DropdownMenuItem
+                                                                    onClick={() => openEditMemberDialog(member)}
+                                                                >
                                                                     Edit
                                                                 </DropdownMenuItem>
                                                                 <DropdownMenuSeparator />
@@ -1764,381 +1136,80 @@ export default function AdminThesisGroupDetailsPage() {
                 ) : null}
             </div>
 
-            <Dialog
-                open={memberDialogOpen}
-                onOpenChange={(open) => {
-                    if (!memberSubmitting) setMemberDialogOpen(open)
-                    if (!open) {
-                        setMemberTarget(null)
-                        setMemberActionError(null)
-                    }
+            <ThesisGroupDetailsDialogs
+                memberDialog={{
+                    open: memberDialogOpen,
+                    onOpenChange: (open) => {
+                        if (!memberSubmitting) setMemberDialogOpen(open)
+                        if (!open) {
+                            setMemberTarget(null)
+                            setMemberActionError(null)
+                        }
+                    },
+                    mode: memberDialogMode,
+                    submitting: memberSubmitting,
+                    actionError: memberActionError,
+                    onSubmit: onMemberSubmit,
+                    memberForm,
+                    setMemberForm,
+                    normalizedMemberSelectValue,
+                    availableStudentsForDialog,
+                    selectedStudentMissing,
+                    studentsLoading,
+                    selectedStudentForMember,
+                    selectedStudentNeedsProfile,
+                    onOpenCreateStudentDialog: openCreateStudentDialog,
+                    onOpenCreateStudentProfileDialog: openCreateStudentProfileDialog,
                 }}
-            >
-                <DialogContent className="sm:max-w-xl max-h-[82vh] p-0">
-                    <ScrollArea className="max-h-[82vh]">
-                        <div className="p-6">
-                            <DialogHeader>
-                                <DialogTitle>{memberDialogTitle}</DialogTitle>
-                                <DialogDescription>{memberDialogDescription}</DialogDescription>
-                            </DialogHeader>
-
-                            <form onSubmit={onMemberSubmit} className="mt-4 space-y-4">
-                                {memberActionError ? (
-                                    <Alert variant="destructive">
-                                        <AlertDescription>
-                                            <div className="space-y-3">
-                                                <p>{memberActionError}</p>
-
-                                                {isMissingStudentProfileMessage(memberActionError) && selectedStudentForMember ? (
-                                                    <Button
-                                                        type="button"
-                                                        size="sm"
-                                                        variant="secondary"
-                                                        onClick={() => openCreateStudentProfileDialog(selectedStudentForMember)}
-                                                    >
-                                                        Create Student Profile
-                                                    </Button>
-                                                ) : null}
-                                            </div>
-                                        </AlertDescription>
-                                    </Alert>
-                                ) : null}
-
-                                {availableStudentsForDialog.length === 0 ? (
-                                    <Alert>
-                                        <AlertDescription>
-                                            <div className="space-y-3">
-                                                <p>No available student users right now. Create a Student user first.</p>
-                                                <Button type="button" size="sm" variant="secondary" onClick={openCreateStudentDialog}>
-                                                    <Plus className="mr-2 size-4" />
-                                                    Create Student User
-                                                </Button>
-                                            </div>
-                                        </AlertDescription>
-                                    </Alert>
-                                ) : null}
-
-                                <div className="space-y-2">
-                                    <Label>Student User</Label>
-                                    <Select
-                                        value={normalizedMemberSelectValue}
-                                        onValueChange={(value) =>
-                                            setMemberForm((prev) => ({
-                                                ...prev,
-                                                studentUserId: sanitizeStudentSelectValue(value),
-                                            }))
-                                        }
-                                        disabled={studentsLoading || availableStudentsForDialog.length === 0}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue
-                                                placeholder={studentsLoading ? "Loading student users..." : "Select a student user"}
-                                            />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value={STUDENT_NONE_VALUE} disabled>
-                                                No student selected
-                                            </SelectItem>
-
-                                            {selectedStudentMissing ? (
-                                                <SelectItem value={normalizedMemberSelectValue}>
-                                                    Current linked student (profile unavailable)
-                                                </SelectItem>
-                                            ) : null}
-
-                                            {availableStudentsForDialog.map((student) => {
-                                                const label = student.email ? `${student.name} (${student.email})` : student.name
-
-                                                return (
-                                                    <SelectItem key={`student-option-${student.id}`} value={student.id}>
-                                                        {label}
-                                                    </SelectItem>
-                                                )
-                                            })}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-
-                                {selectedStudentNeedsProfile && selectedStudentForMember ? (
-                                    <Alert>
-                                        <AlertDescription>
-                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                                <p>
-                                                    Selected student has no profile yet. Create the student profile to proceed.
-                                                </p>
-                                                <Button
-                                                    type="button"
-                                                    size="sm"
-                                                    variant="secondary"
-                                                    onClick={() => openCreateStudentProfileDialog(selectedStudentForMember)}
-                                                >
-                                                    Create Student Profile
-                                                </Button>
-                                            </div>
-                                        </AlertDescription>
-                                    </Alert>
-                                ) : null}
-
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label htmlFor="member-program">Program (Optional)</Label>
-                                        <Input
-                                            id="member-program"
-                                            value={memberForm.program}
-                                            onChange={(event) => setMemberForm((prev) => ({ ...prev, program: event.target.value }))}
-                                            placeholder="e.g., BSIT"
-                                            autoComplete="off"
-                                        />
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label htmlFor="member-section">Section (Optional)</Label>
-                                        <Input
-                                            id="member-section"
-                                            value={memberForm.section}
-                                            onChange={(event) => setMemberForm((prev) => ({ ...prev, section: event.target.value }))}
-                                            placeholder="e.g., 4A"
-                                            autoComplete="off"
-                                        />
-                                    </div>
-                                </div>
-
-                                <DialogFooter>
-                                    <Button type="button" variant="outline" onClick={() => setMemberDialogOpen(false)} disabled={memberSubmitting}>
-                                        Cancel
-                                    </Button>
-                                    <Button type="submit" disabled={memberSubmitting}>
-                                        {memberSubmitting
-                                            ? memberDialogMode === "create"
-                                                ? "Adding..."
-                                                : "Saving..."
-                                            : memberDialogMode === "create"
-                                                ? "Add Member"
-                                                : "Save Changes"}
-                                    </Button>
-                                </DialogFooter>
-                            </form>
-                        </div>
-                    </ScrollArea>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog
-                open={createStudentOpen}
-                onOpenChange={(open) => {
-                    if (!creatingStudentUser) setCreateStudentOpen(open)
-                    if (!open) resetCreateStudentForm()
+                createStudentDialog={{
+                    open: createStudentOpen,
+                    onOpenChange: (open) => {
+                        if (!creatingStudentUser) setCreateStudentOpen(open)
+                        if (!open) resetCreateStudentForm()
+                    },
+                    submitting: creatingStudentUser,
+                    error: createStudentError,
+                    name: createStudentName,
+                    email: createStudentEmail,
+                    status: createStudentStatus,
+                    statusOptions: CREATE_USER_STATUSES,
+                    setName: setCreateStudentName,
+                    setEmail: setCreateStudentEmail,
+                    setStatus: setCreateStudentStatus,
+                    onSubmit: handleCreateStudentUser,
                 }}
-            >
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>Create Student User</DialogTitle>
-                        <DialogDescription>
-                            A login credential email will be sent automatically after user creation.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <form
-                        className="space-y-4"
-                        onSubmit={(event) => {
-                            event.preventDefault()
-                            void handleCreateStudentUser()
-                        }}
-                    >
-                        {createStudentError ? (
-                            <Alert variant="destructive">
-                                <AlertDescription>{createStudentError}</AlertDescription>
-                            </Alert>
-                        ) : null}
-
-                        <div className="space-y-2">
-                            <Label htmlFor="create-student-name">Name</Label>
-                            <Input
-                                id="create-student-name"
-                                value={createStudentName}
-                                onChange={(e) => setCreateStudentName(e.target.value)}
-                                placeholder="e.g., Juan Dela Cruz"
-                                autoComplete="off"
-                            />
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="create-student-email">Email</Label>
-                            <Input
-                                id="create-student-email"
-                                type="email"
-                                value={createStudentEmail}
-                                onChange={(e) => setCreateStudentEmail(e.target.value)}
-                                placeholder="e.g., juan.delacruz@example.edu"
-                                autoComplete="off"
-                            />
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label>Status</Label>
-                            <Select
-                                value={createStudentStatus}
-                                onValueChange={(value) =>
-                                    setCreateStudentStatus(value === "disabled" ? "disabled" : "active")
-                                }
-                            >
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Select status" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {CREATE_USER_STATUSES.map((status) => (
-                                        <SelectItem key={`student-status-${status}`} value={status}>
-                                            {toTitleCase(status)}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <DialogFooter>
-                            <Button type="button" variant="outline" onClick={() => setCreateStudentOpen(false)} disabled={creatingStudentUser}>
-                                Cancel
-                            </Button>
-                            <Button type="submit" disabled={creatingStudentUser}>
-                                {creatingStudentUser ? "Creating..." : "Create Student User"}
-                            </Button>
-                        </DialogFooter>
-                    </form>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog
-                open={studentProfileDialogOpen}
-                onOpenChange={(open) => {
-                    if (!studentProfileSubmitting) setStudentProfileDialogOpen(open)
-                    if (!open && !studentProfileSubmitting) {
-                        resetStudentProfileDialog()
-                    }
+                studentProfileDialog={{
+                    open: studentProfileDialogOpen,
+                    onOpenChange: (open) => {
+                        if (!studentProfileSubmitting) setStudentProfileDialogOpen(open)
+                        if (!open && !studentProfileSubmitting) {
+                            resetStudentProfileDialog()
+                        }
+                    },
+                    submitting: studentProfileSubmitting,
+                    error: studentProfileError,
+                    target: studentProfileTarget,
+                    program: studentProfileProgram,
+                    section: studentProfileSection,
+                    setProgram: setStudentProfileProgram,
+                    setSection: setStudentProfileSection,
+                    onSubmit: handleCreateStudentProfile,
                 }}
-            >
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>Create Student Profile</DialogTitle>
-                        <DialogDescription>
-                            This creates the required student profile record so the user can be added as a thesis-group member.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <form
-                        className="space-y-4"
-                        onSubmit={(event) => {
-                            event.preventDefault()
-                            void handleCreateStudentProfile()
-                        }}
-                    >
-                        {studentProfileError ? (
-                            <Alert variant="destructive">
-                                <AlertDescription>{studentProfileError}</AlertDescription>
-                            </Alert>
-                        ) : null}
-
-                        <div className="space-y-2">
-                            <Label>Student User</Label>
-                            <div className="rounded-md border bg-muted/40 p-3 text-sm">
-                                <p className="font-medium">{studentProfileTarget?.name ?? "—"}</p>
-                                {studentProfileTarget?.email ? (
-                                    <p className="text-xs text-muted-foreground">{studentProfileTarget.email}</p>
-                                ) : null}
-                                {studentProfileTarget?.id ? (
-                                    <p className="text-xs text-muted-foreground">User ID: {studentProfileTarget.id}</p>
-                                ) : null}
-                            </div>
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                            <div className="space-y-2">
-                                <Label htmlFor="create-profile-program">Program</Label>
-                                <Input
-                                    id="create-profile-program"
-                                    value={studentProfileProgram}
-                                    onChange={(e) => setStudentProfileProgram(e.target.value)}
-                                    placeholder="e.g., BSIT"
-                                    autoComplete="off"
-                                />
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label htmlFor="create-profile-section">Section</Label>
-                                <Input
-                                    id="create-profile-section"
-                                    value={studentProfileSection}
-                                    onChange={(e) => setStudentProfileSection(e.target.value)}
-                                    placeholder="e.g., 4A"
-                                    autoComplete="off"
-                                />
-                            </div>
-                        </div>
-
-                        <DialogFooter>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => setStudentProfileDialogOpen(false)}
-                                disabled={studentProfileSubmitting}
-                            >
-                                Cancel
-                            </Button>
-                            <Button type="submit" disabled={studentProfileSubmitting}>
-                                {studentProfileSubmitting ? "Creating..." : "Create Student Profile"}
-                            </Button>
-                        </DialogFooter>
-                    </form>
-                </DialogContent>
-            </Dialog>
-
-            <AlertDialog
-                open={deleteMemberOpen}
-                onOpenChange={(open) => {
-                    if (!memberSubmitting) setDeleteMemberOpen(open)
-                    if (!open) {
-                        setDeleteMemberTarget(null)
-                        setMemberActionError(null)
-                    }
+                deleteMemberDialog={{
+                    open: deleteMemberOpen,
+                    onOpenChange: (open) => {
+                        if (!memberSubmitting) setDeleteMemberOpen(open)
+                        if (!open) {
+                            setDeleteMemberTarget(null)
+                            setMemberActionError(null)
+                        }
+                    },
+                    submitting: memberSubmitting,
+                    error: memberActionError,
+                    target: deleteMemberTarget,
+                    onConfirm: onDeleteMemberConfirm,
                 }}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Delete thesis group member?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            This action cannot be undone.{" "}
-                            {deleteMemberTarget ? (
-                                <>
-                                    You are deleting{" "}
-                                    <span className="font-medium">
-                                        {deleteMemberTarget.name ?? deleteMemberTarget.studentId ?? "this member"}
-                                    </span>
-                                    .
-                                </>
-                            ) : null}
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-
-                    {memberActionError ? (
-                        <Alert variant="destructive">
-                            <AlertDescription>{memberActionError}</AlertDescription>
-                        </Alert>
-                    ) : null}
-
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={memberSubmitting}>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                            onClick={(event) => {
-                                event.preventDefault()
-                                void onDeleteMemberConfirm()
-                            }}
-                            disabled={memberSubmitting}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                            {memberSubmitting ? "Deleting..." : "Delete Member"}
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
+            />
         </DashboardLayout>
     )
 }
