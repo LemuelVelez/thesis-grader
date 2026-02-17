@@ -55,7 +55,19 @@ type Viewer = {
     role: string | null
 }
 
+type RubricTemplateLite = {
+    id: string
+    name: string
+}
+
 const ME_ENDPOINTS = ["/api/auth/me", "/api/me", "/api/users/me", "/api/user/me"] as const
+
+const RUBRIC_TEMPLATE_ENDPOINTS = [
+    "/api/staff/rubric-templates",
+    "/api/rubric-templates?scope=staff",
+    "/api/rubric-templates",
+    "/api/admin/rubric-templates",
+] as const
 
 function parseViewer(payload: unknown): Viewer | null {
     const detail = unwrapDetail(payload)
@@ -113,6 +125,41 @@ function sortSchedules(items: DefenseScheduleItem[]): DefenseScheduleItem[] {
     })
 }
 
+function normalizeRubricTemplate(raw: unknown): RubricTemplateLite | null {
+    const rec = asRecord(raw)
+    if (!rec) return null
+
+    const id = toStringOrNull(rec.id ?? rec.template_id ?? rec.rubric_template_id)
+    const name = toStringOrNull(
+        rec.name ?? rec.title ?? rec.template_name ?? rec.rubric_template_name
+    )
+
+    if (!id || !name) return null
+    return { id, name }
+}
+
+function resolveRubricTemplateName(
+    schedule: DefenseScheduleItem,
+    rubricById: Map<string, RubricTemplateLite>
+): string | null {
+    const rec = asRecord(schedule as unknown)
+
+    const embeddedName = rec
+        ? toStringOrNull(
+            rec.rubricTemplateName ??
+            rec.rubric_template_name ??
+            rec.template_name ??
+            rec.template_title ??
+            rec.templateTitle
+        )
+        : null
+
+    if (embeddedName) return embeddedName
+    if (!schedule.rubricTemplateId) return null
+
+    return rubricById.get(schedule.rubricTemplateId)?.name ?? null
+}
+
 export default function StaffThesisGroupDetailsPage() {
     const params = useParams<{ id: string | string[] }>()
     const groupId = React.useMemo(() => {
@@ -127,12 +174,15 @@ export default function StaffThesisGroupDetailsPage() {
     const [members, setMembers] = React.useState<GroupMemberItem[]>([])
     const [schedules, setSchedules] = React.useState<DefenseScheduleItem[]>([])
     const [staffUsers, setStaffUsers] = React.useState<StaffUserItem[]>([])
+    const [rubricTemplates, setRubricTemplates] = React.useState<RubricTemplateLite[]>([])
 
     const [loading, setLoading] = React.useState<boolean>(true)
     const [staffLoading, setStaffLoading] = React.useState<boolean>(true)
+    const [rubricLoading, setRubricLoading] = React.useState<boolean>(true)
 
     const [error, setError] = React.useState<string | null>(null)
     const [staffError, setStaffError] = React.useState<string | null>(null)
+    const [rubricError, setRubricError] = React.useState<string | null>(null)
 
     const [refreshKey, setRefreshKey] = React.useState<number>(0)
 
@@ -141,6 +191,12 @@ export default function StaffThesisGroupDetailsPage() {
         for (const item of staffUsers) map.set(item.id, item)
         return map
     }, [staffUsers])
+
+    const rubricById = React.useMemo(() => {
+        const map = new Map<string, RubricTemplateLite>()
+        for (const item of rubricTemplates) map.set(item.id, item)
+        return map
+    }, [rubricTemplates])
 
     const loadGroup = React.useCallback(
         async (signal: AbortSignal) => {
@@ -268,6 +324,45 @@ export default function StaffThesisGroupDetailsPage() {
         }
     }, [])
 
+    const loadRubricTemplates = React.useCallback(async (signal: AbortSignal) => {
+        setRubricLoading(true)
+        setRubricError(null)
+
+        try {
+            const results = await fetchAllSuccessfulJson(RUBRIC_TEMPLATE_ENDPOINTS, signal)
+
+            if (results.length === 0) {
+                setRubricTemplates([])
+                setRubricError("No compatible rubric-template endpoint found. Template names may be unavailable.")
+                return
+            }
+
+            const items = results
+                .flatMap((result) => unwrapItems(result.payload))
+                .map(normalizeRubricTemplate)
+                .filter((item): item is RubricTemplateLite => item !== null)
+
+            const merged = dedupeById(items).sort((a, b) =>
+                a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+            )
+
+            setRubricTemplates(merged)
+
+            if (merged.length === 0) {
+                setRubricError("No rubric template names were returned from the available endpoints.")
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") return
+            const message =
+                error instanceof Error ? error.message : "Failed to load rubric template names."
+            setRubricTemplates([])
+            setRubricError(message)
+            toast.error(message)
+        } finally {
+            if (!signal.aborted) setRubricLoading(false)
+        }
+    }, [])
+
     const loadViewer = React.useCallback(async (signal: AbortSignal) => {
         try {
             const next = await fetchViewer(signal)
@@ -281,9 +376,10 @@ export default function StaffThesisGroupDetailsPage() {
         const controller = new AbortController()
         void loadGroup(controller.signal)
         void loadStaffUsers(controller.signal)
+        void loadRubricTemplates(controller.signal)
         void loadViewer(controller.signal)
         return () => controller.abort()
-    }, [loadGroup, loadStaffUsers, loadViewer, refreshKey])
+    }, [loadGroup, loadStaffUsers, loadRubricTemplates, loadViewer, refreshKey])
 
     const adviserContent = React.useMemo(() => {
         if (!group?.adviserId) {
@@ -341,10 +437,10 @@ export default function StaffThesisGroupDetailsPage() {
                     <Button
                         variant="outline"
                         onClick={() => setRefreshKey((value) => value + 1)}
-                        disabled={loading || staffLoading}
+                        disabled={loading || staffLoading || rubricLoading}
                     >
                         <RefreshCw className="mr-2 size-4" />
-                        {loading || staffLoading ? "Refreshing..." : "Refresh"}
+                        {loading || staffLoading || rubricLoading ? "Refreshing..." : "Refresh"}
                     </Button>
 
                     <Badge variant="outline">Members: {members.length}</Badge>
@@ -360,6 +456,12 @@ export default function StaffThesisGroupDetailsPage() {
                 {staffError ? (
                     <Alert>
                         <AlertDescription>{staffError}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {rubricError ? (
+                    <Alert>
+                        <AlertDescription>{rubricError}</AlertDescription>
                     </Alert>
                 ) : null}
 
@@ -472,15 +574,29 @@ export default function StaffThesisGroupDetailsPage() {
                                     </TableHeader>
                                     <TableBody>
                                         {schedules.length > 0 ? (
-                                            schedules.map((schedule) => (
-                                                <TableRow key={schedule.id}>
-                                                    <TableCell>{schedule.id}</TableCell>
-                                                    <TableCell>{formatDateTime(schedule.scheduledAt)}</TableCell>
-                                                    <TableCell>{schedule.room ?? "—"}</TableCell>
-                                                    <TableCell>{schedule.status ?? "—"}</TableCell>
-                                                    <TableCell>{schedule.rubricTemplateId ?? "—"}</TableCell>
-                                                </TableRow>
-                                            ))
+                                            schedules.map((schedule) => {
+                                                const rubricTemplateName = resolveRubricTemplateName(
+                                                    schedule,
+                                                    rubricById
+                                                )
+
+                                                const rubricDisplay = schedule.rubricTemplateId
+                                                    ? rubricTemplateName ??
+                                                    (rubricLoading
+                                                        ? "Loading template..."
+                                                        : "Template not found")
+                                                    : "—"
+
+                                                return (
+                                                    <TableRow key={schedule.id}>
+                                                        <TableCell>{schedule.id}</TableCell>
+                                                        <TableCell>{formatDateTime(schedule.scheduledAt)}</TableCell>
+                                                        <TableCell>{schedule.room ?? "—"}</TableCell>
+                                                        <TableCell>{schedule.status ?? "—"}</TableCell>
+                                                        <TableCell>{rubricDisplay}</TableCell>
+                                                    </TableRow>
+                                                )
+                                            })
                                         ) : (
                                             <TableRow>
                                                 <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
