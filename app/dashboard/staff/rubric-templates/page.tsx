@@ -1,10 +1,26 @@
 "use client"
 
 import * as React from "react"
+import { Eye, RefreshCw, Search, SlidersHorizontal } from "lucide-react"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -14,636 +30,338 @@ import {
     TableRow,
 } from "@/components/ui/table"
 
-type RubricTemplateItem = {
+type RubricTemplate = {
     id: string
     name: string
     version: number
     active: boolean
     description: string | null
-    created_at: string | null
-    updated_at: string | null
+    created_at: string
+    updated_at: string
 }
 
-type RubricCriterionItem = {
+type RubricCriterion = {
     id: string
     template_id: string
     criterion: string
     description: string | null
-    weight: number | null
-    min_score: number | null
-    max_score: number | null
-    created_at: string | null
-}
-
-type RubricScaleLevelItem = {
-    template_id: string
-    score: number
-    adjectival: string
-    description: string | null
+    weight: number
+    min_score: number
+    max_score: number
+    created_at: string
 }
 
 type ActiveFilter = "all" | "active" | "inactive"
+type SortBy = "updated_desc" | "updated_asc" | "name_asc" | "name_desc"
 
-const ACTIVE_FILTERS = ["all", "active", "inactive"] as const
+function toNumber(value: unknown, fallback = 0) {
+    const n = typeof value === "number" ? value : Number(value)
+    return Number.isFinite(n) ? n : fallback
+}
 
-const TEMPLATE_ENDPOINT_CANDIDATES = [
-    "/api/rubric-templates?limit=300&orderBy=updated_at&orderDirection=desc",
-    "/api/rubric-templates?limit=300",
-    "/api/rubric/template?limit=300",
-    "/api/staff/rubric-templates?limit=300",
-    "/api/admin/rubric-templates?limit=300",
-]
+function toTimestamp(value: string) {
+    const t = new Date(value).getTime()
+    return Number.isFinite(t) ? t : 0
+}
+
+function formatDate(value: string) {
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return value || "—"
+    return d.toLocaleString()
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
 }
 
-function toStringSafe(value: unknown): string | null {
-    if (typeof value !== "string") return null
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-}
-
-function toNullableString(value: unknown): string | null {
-    if (value === null) return null
-    return toStringSafe(value)
-}
-
-function toNumberSafe(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value
-    if (typeof value === "string") {
-        const parsed = Number(value)
-        if (Number.isFinite(parsed)) return parsed
+async function readJsonRecord(res: Response): Promise<Record<string, unknown>> {
+    try {
+        const data = (await res.json()) as unknown
+        return isRecord(data) ? data : {}
+    } catch {
+        return {}
     }
-    return null
 }
 
-function toIntSafe(value: unknown, fallback = 0): number {
-    const n = toNumberSafe(value)
-    if (n === null) return fallback
-    return Math.trunc(n)
+async function readErrorMessage(res: Response): Promise<string> {
+    const data = await readJsonRecord(res)
+    const error = typeof data.error === "string" ? data.error : null
+    const message = typeof data.message === "string" ? data.message : null
+    return error || message || `Request failed (${res.status})`
 }
 
-function toBooleanSafe(value: unknown): boolean | null {
-    if (typeof value === "boolean") return value
-    if (typeof value === "number") return value !== 0
+function normalizeTemplate(value: unknown): RubricTemplate | null {
+    if (!isRecord(value)) return null
 
-    if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase()
-
-        if (
-            normalized === "true" ||
-            normalized === "1" ||
-            normalized === "yes" ||
-            normalized === "active"
-        ) {
-            return true
-        }
-
-        if (
-            normalized === "false" ||
-            normalized === "0" ||
-            normalized === "no" ||
-            normalized === "inactive"
-        ) {
-            return false
-        }
-    }
-
-    return null
-}
-
-function toTitleCase(value: string): string {
-    if (!value) return value
-    return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
-function formatDateTime(value: string | null): string {
-    if (!value) return "—"
-    const d = new Date(value)
-    if (Number.isNaN(d.getTime())) return value
-    return d.toLocaleString()
-}
-
-function formatWeight(value: number | null): string {
-    if (value === null || Number.isNaN(value)) return "—"
-    return value.toFixed(2)
-}
-
-function formatScoreRange(minScore: number | null, maxScore: number | null): string {
-    if (minScore === null && maxScore === null) return "—"
-    if (minScore === null) return `≤ ${maxScore}`
-    if (maxScore === null) return `≥ ${minScore}`
-    return `${minScore} - ${maxScore}`
-}
-
-function templateStatusTone(active: boolean): string {
-    if (active) {
-        return "border-emerald-600/40 bg-emerald-600/10 text-foreground"
-    }
-    return "border-muted-foreground/30 bg-muted text-muted-foreground"
-}
-
-function extractArrayPayload(payload: unknown): unknown[] {
-    if (Array.isArray(payload)) return payload
-    if (!isRecord(payload)) return []
-
-    if (Array.isArray(payload.items)) return payload.items
-    if (Array.isArray(payload.data)) return payload.data
-    if (Array.isArray(payload.templates)) return payload.templates
-    if (Array.isArray(payload.criteria)) return payload.criteria
-    if (Array.isArray(payload.scale_levels)) return payload.scale_levels
-    if (Array.isArray(payload.scaleLevels)) return payload.scaleLevels
-
-    if (isRecord(payload.data)) {
-        if (Array.isArray(payload.data.items)) return payload.data.items
-        if (Array.isArray(payload.data.templates)) return payload.data.templates
-        if (Array.isArray(payload.data.criteria)) return payload.data.criteria
-        if (Array.isArray(payload.data.scale_levels)) return payload.data.scale_levels
-        if (Array.isArray(payload.data.scaleLevels)) return payload.data.scaleLevels
-    }
-
-    if (isRecord(payload.result)) {
-        if (Array.isArray(payload.result.items)) return payload.result.items
-        if (Array.isArray(payload.result.templates)) return payload.result.templates
-        if (Array.isArray(payload.result.criteria)) return payload.result.criteria
-        if (Array.isArray(payload.result.scale_levels)) return payload.result.scale_levels
-        if (Array.isArray(payload.result.scaleLevels)) return payload.result.scaleLevels
-    }
-
-    return []
-}
-
-function normalizeTemplate(raw: unknown): RubricTemplateItem | null {
-    if (!isRecord(raw)) return null
-
-    const source = isRecord(raw.template) ? raw.template : raw
-
-    const id = toStringSafe(source.id ?? raw.id)
-    if (!id) return null
-
-    const name =
-        toStringSafe(source.name ?? source.title ?? raw.name ?? raw.title) ?? "Untitled Template"
-
-    const version = toIntSafe(source.version ?? raw.version, 1)
-    const active = toBooleanSafe(source.active ?? source.is_active ?? raw.active) ?? false
+    const id = typeof value.id === "string" ? value.id : ""
+    const name = typeof value.name === "string" ? value.name : ""
+    if (!id || !name) return null
 
     return {
         id,
         name,
-        version: version > 0 ? version : 1,
-        active,
-        description: toNullableString(source.description ?? raw.description),
-        created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
-        updated_at: toNullableString(source.updated_at ?? source.updatedAt ?? raw.updated_at),
+        version: Math.max(1, Math.floor(toNumber(value.version, 1))),
+        active: Boolean(value.active),
+        description: typeof value.description === "string" ? value.description : null,
+        created_at: typeof value.created_at === "string" ? value.created_at : "",
+        updated_at: typeof value.updated_at === "string" ? value.updated_at : "",
     }
 }
 
-function normalizeCriterion(raw: unknown): RubricCriterionItem | null {
-    if (!isRecord(raw)) return null
+function normalizeCriterion(value: unknown): RubricCriterion | null {
+    if (!isRecord(value)) return null
 
-    const source = isRecord(raw.criterion_data) ? raw.criterion_data : raw
-
-    const id = toStringSafe(source.id ?? raw.id)
-    const template_id = toStringSafe(source.template_id ?? source.templateId ?? raw.template_id)
-    const criterion = toStringSafe(source.criterion ?? source.name ?? source.title ?? raw.criterion)
-
-    if (!id || !template_id || !criterion) return null
+    const id = typeof value.id === "string" ? value.id : ""
+    const templateId = typeof value.template_id === "string" ? value.template_id : ""
+    const criterion = typeof value.criterion === "string" ? value.criterion : ""
+    if (!id || !templateId || !criterion) return null
 
     return {
         id,
-        template_id,
+        template_id: templateId,
         criterion,
-        description: toNullableString(source.description ?? raw.description),
-        weight: toNumberSafe(source.weight ?? raw.weight),
-        min_score: toNumberSafe(source.min_score ?? source.minScore ?? raw.min_score),
-        max_score: toNumberSafe(source.max_score ?? source.maxScore ?? raw.max_score),
-        created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
+        description: typeof value.description === "string" ? value.description : null,
+        weight: toNumber(value.weight, 0),
+        min_score: toNumber(value.min_score, 0),
+        max_score: toNumber(value.max_score, 3),
+        created_at: typeof value.created_at === "string" ? value.created_at : "",
     }
-}
-
-function normalizeScaleLevel(raw: unknown): RubricScaleLevelItem | null {
-    if (!isRecord(raw)) return null
-
-    const source = isRecord(raw.scale_level) ? raw.scale_level : raw
-
-    const template_id = toStringSafe(source.template_id ?? source.templateId ?? raw.template_id)
-    const score = toIntSafe(source.score ?? raw.score, Number.NaN)
-    const adjectival =
-        toStringSafe(source.adjectival ?? source.label ?? source.title ?? raw.adjectival) ??
-        "Unlabeled"
-
-    if (!template_id || !Number.isFinite(score)) return null
-
-    return {
-        template_id,
-        score,
-        adjectival,
-        description: toNullableString(source.description ?? raw.description),
-    }
-}
-
-function readErrorMessage(res: Response, payload: unknown): string {
-    if (isRecord(payload)) {
-        const error = toStringSafe(payload.error)
-        if (error) return error
-
-        const message = toStringSafe(payload.message)
-        if (message) return message
-    }
-
-    return `Request failed (${res.status})`
-}
-
-function buildCriteriaCandidates(templateId: string): string[] {
-    const where = encodeURIComponent(JSON.stringify({ template_id: templateId }))
-    const encodedId = encodeURIComponent(templateId)
-
-    return [
-        `/api/rubric-templates/${encodedId}/criteria`,
-        `/api/staff/rubric-templates/${encodedId}/criteria`,
-        `/api/admin/rubric-templates/${encodedId}/criteria`,
-        `/api/rubric-criteria?templateId=${encodedId}&limit=500`,
-        `/api/rubric-criteria?template_id=${encodedId}&limit=500`,
-        `/api/rubric-criteria?where=${where}&limit=500`,
-    ]
-}
-
-function buildScaleCandidates(templateId: string): string[] {
-    const encodedId = encodeURIComponent(templateId)
-    const where = encodeURIComponent(JSON.stringify({ template_id: templateId }))
-
-    return [
-        `/api/rubric-templates/${encodedId}/scale-levels`,
-        `/api/staff/rubric-templates/${encodedId}/scale-levels`,
-        `/api/admin/rubric-templates/${encodedId}/scale-levels`,
-        `/api/rubric-scale-levels?templateId=${encodedId}&limit=200`,
-        `/api/rubric-scale-levels?template_id=${encodedId}&limit=200`,
-        `/api/rubric-scale-levels?where=${where}&limit=200`,
-    ]
 }
 
 export default function StaffRubricTemplatesPage() {
-    const [templates, setTemplates] = React.useState<RubricTemplateItem[]>([])
-    const [criteriaByTemplate, setCriteriaByTemplate] = React.useState<
-        Record<string, RubricCriterionItem[]>
-    >({})
-    const [scaleLevelsByTemplate, setScaleLevelsByTemplate] = React.useState<
-        Record<string, RubricScaleLevelItem[]>
-    >({})
-
+    const [templates, setTemplates] = React.useState<RubricTemplate[]>([])
     const [loading, setLoading] = React.useState(true)
-    const [detailsLoading, setDetailsLoading] = React.useState(false)
-
     const [error, setError] = React.useState<string | null>(null)
-    const [detailsError, setDetailsError] = React.useState<string | null>(null)
-
-    const [templateSource, setTemplateSource] = React.useState<string | null>(null)
-    const [criteriaSource, setCriteriaSource] = React.useState<string | null>(null)
-    const [scaleSource, setScaleSource] = React.useState<string | null>(null)
 
     const [search, setSearch] = React.useState("")
     const [activeFilter, setActiveFilter] = React.useState<ActiveFilter>("all")
-    const [selectedTemplateId, setSelectedTemplateId] = React.useState<string | null>(null)
+    const [sortBy, setSortBy] = React.useState<SortBy>("updated_desc")
 
-    const [copyMessage, setCopyMessage] = React.useState<string | null>(null)
+    const [previewOpen, setPreviewOpen] = React.useState(false)
+    const [previewTemplate, setPreviewTemplate] = React.useState<RubricTemplate | null>(null)
+    const [previewCriteria, setPreviewCriteria] = React.useState<RubricCriterion[]>([])
+    const [previewLoading, setPreviewLoading] = React.useState(false)
+    const [previewError, setPreviewError] = React.useState<string | null>(null)
+    const [previewBusyTemplateId, setPreviewBusyTemplateId] = React.useState<string | null>(null)
 
-    const loadTemplates = React.useCallback(async () => {
+    const loadTemplates = React.useCallback(async (showSuccessToast = false) => {
         setLoading(true)
         setError(null)
 
-        let loaded = false
-        let latestError = "Unable to load rubric templates."
-
-        for (const endpoint of TEMPLATE_ENDPOINT_CANDIDATES) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
-
-                if (!res.ok) {
-                    latestError = readErrorMessage(res, payload)
-                    continue
-                }
-
-                const parsed = extractArrayPayload(payload)
-                    .map(normalizeTemplate)
-                    .filter((item): item is RubricTemplateItem => item !== null)
-                    .sort((a, b) => {
-                        const ta = new Date(a.updated_at ?? a.created_at ?? 0).getTime()
-                        const tb = new Date(b.updated_at ?? b.created_at ?? 0).getTime()
-                        return tb - ta
-                    })
-
-                setTemplates(parsed)
-                setTemplateSource(endpoint)
-                setSelectedTemplateId((prev) => {
-                    if (prev && parsed.some((item) => item.id === prev)) return prev
-                    return parsed[0]?.id ?? null
-                })
-
-                loaded = true
-                break
-            } catch (err) {
-                latestError = err instanceof Error ? err.message : "Unable to load rubric templates."
+        try {
+            const res = await fetch("/api/rubric-templates", { cache: "no-store" })
+            if (!res.ok) {
+                throw new Error(await readErrorMessage(res))
             }
-        }
 
-        if (!loaded) {
+            const data = await readJsonRecord(res)
+            const rawItems = Array.isArray(data.items) ? data.items : []
+            const normalized = rawItems
+                .map((item) => normalizeTemplate(item))
+                .filter((item): item is RubricTemplate => item !== null)
+
+            setTemplates(normalized)
+
+            if (showSuccessToast) {
+                toast.success(`Loaded ${normalized.length} rubric template(s).`)
+            }
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to load rubric templates."
+            setError(message)
             setTemplates([])
-            setTemplateSource(null)
-            setSelectedTemplateId(null)
-            setError(`${latestError} No rubric template endpoint responded successfully.`)
+            toast.error(message)
+        } finally {
+            setLoading(false)
         }
-
-        setLoading(false)
-    }, [])
-
-    const loadTemplateDetails = React.useCallback(async (templateId: string) => {
-        setDetailsLoading(true)
-        setDetailsError(null)
-        setCriteriaSource(null)
-        setScaleSource(null)
-
-        let criteriaLoaded = false
-        let scaleLoaded = false
-
-        let latestCriteriaError = "Unable to load criteria."
-        let latestScaleError = "Unable to load scale levels."
-
-        for (const endpoint of buildCriteriaCandidates(templateId)) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
-
-                if (!res.ok) {
-                    latestCriteriaError = readErrorMessage(res, payload)
-                    continue
-                }
-
-                const parsed = extractArrayPayload(payload)
-                    .map(normalizeCriterion)
-                    .filter((item): item is RubricCriterionItem => item !== null)
-                    .sort((a, b) => {
-                        const wa = a.weight ?? 0
-                        const wb = b.weight ?? 0
-                        return wb - wa
-                    })
-
-                setCriteriaByTemplate((prev) => ({ ...prev, [templateId]: parsed }))
-                setCriteriaSource(endpoint)
-                criteriaLoaded = true
-                break
-            } catch (err) {
-                latestCriteriaError = err instanceof Error ? err.message : "Unable to load criteria."
-            }
-        }
-
-        if (!criteriaLoaded) {
-            setCriteriaByTemplate((prev) => ({ ...prev, [templateId]: [] }))
-        }
-
-        for (const endpoint of buildScaleCandidates(templateId)) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
-
-                if (!res.ok) {
-                    latestScaleError = readErrorMessage(res, payload)
-                    continue
-                }
-
-                const parsed = extractArrayPayload(payload)
-                    .map(normalizeScaleLevel)
-                    .filter((item): item is RubricScaleLevelItem => item !== null)
-                    .sort((a, b) => a.score - b.score)
-
-                setScaleLevelsByTemplate((prev) => ({ ...prev, [templateId]: parsed }))
-                setScaleSource(endpoint)
-                scaleLoaded = true
-                break
-            } catch (err) {
-                latestScaleError = err instanceof Error ? err.message : "Unable to load scale levels."
-            }
-        }
-
-        if (!scaleLoaded) {
-            setScaleLevelsByTemplate((prev) => ({ ...prev, [templateId]: [] }))
-        }
-
-        if (!criteriaLoaded || !scaleLoaded) {
-            const errors: string[] = []
-            if (!criteriaLoaded) errors.push(`${latestCriteriaError} Criteria table may be empty.`)
-            if (!scaleLoaded) errors.push(`${latestScaleError} Scale levels table may be empty.`)
-            setDetailsError(errors.join(" "))
-        }
-
-        setDetailsLoading(false)
     }, [])
 
     React.useEffect(() => {
         void loadTemplates()
     }, [loadTemplates])
 
-    React.useEffect(() => {
-        if (!selectedTemplateId) return
+    const fetchTemplateCriteria = React.useCallback(async (templateId: string) => {
+        const res = await fetch(`/api/rubric-templates/${templateId}/criteria`, {
+            cache: "no-store",
+        })
 
-        const hasCriteria = Object.prototype.hasOwnProperty.call(criteriaByTemplate, selectedTemplateId)
-        const hasScale = Object.prototype.hasOwnProperty.call(scaleLevelsByTemplate, selectedTemplateId)
+        if (res.ok) {
+            const data = await readJsonRecord(res)
+            const rawItems = Array.isArray(data.items) ? data.items : []
+            return rawItems
+                .map((item) => normalizeCriterion(item))
+                .filter((item): item is RubricCriterion => item !== null)
+        }
 
-        if (hasCriteria && hasScale) return
+        if (res.status === 404) return []
 
-        void loadTemplateDetails(selectedTemplateId)
-    }, [selectedTemplateId, criteriaByTemplate, scaleLevelsByTemplate, loadTemplateDetails])
+        throw new Error(await readErrorMessage(res))
+    }, [])
+
+    const openTemplatePreview = React.useCallback(
+        async (template: RubricTemplate) => {
+            setPreviewOpen(true)
+            setPreviewTemplate(template)
+            setPreviewCriteria([])
+            setPreviewError(null)
+            setPreviewLoading(true)
+            setPreviewBusyTemplateId(template.id)
+
+            try {
+                const criteria = await fetchTemplateCriteria(template.id)
+                setPreviewCriteria(criteria)
+            } catch (err) {
+                const message =
+                    err instanceof Error ? err.message : "Failed to load template criteria."
+                setPreviewError(message)
+                toast.error(message)
+            } finally {
+                setPreviewLoading(false)
+                setPreviewBusyTemplateId(null)
+            }
+        },
+        [fetchTemplateCriteria],
+    )
+
+    const reloadPreview = React.useCallback(async () => {
+        if (!previewTemplate) return
+        setPreviewLoading(true)
+        setPreviewError(null)
+
+        try {
+            const criteria = await fetchTemplateCriteria(previewTemplate.id)
+            setPreviewCriteria(criteria)
+            toast.success("Template preview refreshed.")
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : "Failed to refresh template preview."
+            setPreviewError(message)
+            toast.error(message)
+        } finally {
+            setPreviewLoading(false)
+        }
+    }, [fetchTemplateCriteria, previewTemplate])
+
+    const stats = React.useMemo(() => {
+        const total = templates.length
+        const active = templates.filter((t) => t.active).length
+        const inactive = total - active
+        return { total, active, inactive }
+    }, [templates])
 
     const filteredTemplates = React.useMemo(() => {
         const q = search.trim().toLowerCase()
 
-        return templates.filter((item) => {
-            if (activeFilter === "active" && !item.active) return false
-            if (activeFilter === "inactive" && item.active) return false
+        const filtered = templates.filter((template) => {
+            if (activeFilter === "active" && !template.active) return false
+            if (activeFilter === "inactive" && template.active) return false
 
             if (!q) return true
 
             return (
-                item.id.toLowerCase().includes(q) ||
-                item.name.toLowerCase().includes(q) ||
-                (item.description?.toLowerCase().includes(q) ?? false)
+                template.id.toLowerCase().includes(q) ||
+                template.name.toLowerCase().includes(q) ||
+                (template.description ?? "").toLowerCase().includes(q)
             )
         })
-    }, [templates, search, activeFilter])
 
-    const selectedTemplate = React.useMemo(() => {
-        if (!selectedTemplateId) return null
-        return templates.find((item) => item.id === selectedTemplateId) ?? null
-    }, [templates, selectedTemplateId])
+        const sorted = [...filtered].sort((a, b) => {
+            if (sortBy === "updated_desc") return toTimestamp(b.updated_at) - toTimestamp(a.updated_at)
+            if (sortBy === "updated_asc") return toTimestamp(a.updated_at) - toTimestamp(b.updated_at)
+            if (sortBy === "name_asc") return a.name.localeCompare(b.name)
+            return b.name.localeCompare(a.name)
+        })
 
-    const selectedCriteria = React.useMemo(() => {
-        if (!selectedTemplateId) return []
-        return criteriaByTemplate[selectedTemplateId] ?? []
-    }, [criteriaByTemplate, selectedTemplateId])
+        return sorted
+    }, [templates, activeFilter, search, sortBy])
 
-    const selectedScaleLevels = React.useMemo(() => {
-        if (!selectedTemplateId) return []
-        return scaleLevelsByTemplate[selectedTemplateId] ?? []
-    }, [scaleLevelsByTemplate, selectedTemplateId])
-
-    const totals = React.useMemo(() => {
-        const total = templates.length
-        const active = templates.filter((item) => item.active).length
-        const inactive = total - active
-        const shown = filteredTemplates.length
-
-        return {
-            total,
-            active,
-            inactive,
-            shown,
-        }
-    }, [templates, filteredTemplates])
-
-    const refreshAll = React.useCallback(() => {
-        setCriteriaByTemplate({})
-        setScaleLevelsByTemplate({})
-        setDetailsError(null)
-        setCopyMessage(null)
-        void loadTemplates()
-    }, [loadTemplates])
-
-    const exportSelectedAsJson = React.useCallback(() => {
-        if (!selectedTemplateId || !selectedTemplate) return
-
-        const data = {
-            template: selectedTemplate,
-            criteria: selectedCriteria,
-            scale_levels: selectedScaleLevels,
-        }
-
-        const json = JSON.stringify(data, null, 2)
-        const blob = new Blob([json], { type: "application/json;charset=utf-8;" })
-        const url = URL.createObjectURL(blob)
-
-        const safeName = selectedTemplate.name
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, "-")
-            .replace(/[^a-z0-9-_]/g, "")
-        const filename = `rubric-template-${safeName || selectedTemplate.id}.json`
-
-        const anchor = document.createElement("a")
-        anchor.href = url
-        anchor.download = filename
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
-
-        URL.revokeObjectURL(url)
-    }, [selectedTemplateId, selectedTemplate, selectedCriteria, selectedScaleLevels])
-
-    const copySelectedJson = React.useCallback(async () => {
-        if (!selectedTemplateId || !selectedTemplate) return
-
-        const data = {
-            template: selectedTemplate,
-            criteria: selectedCriteria,
-            scale_levels: selectedScaleLevels,
-        }
-
-        try {
-            await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
-            setCopyMessage("Template JSON copied to clipboard.")
-        } catch {
-            setCopyMessage("Clipboard access failed. Use Export JSON instead.")
-        }
-    }, [selectedTemplateId, selectedTemplate, selectedCriteria, selectedScaleLevels])
-
-    React.useEffect(() => {
-        if (!copyMessage) return
-        const timer = window.setTimeout(() => setCopyMessage(null), 2500)
-        return () => window.clearTimeout(timer)
-    }, [copyMessage])
+    const previewWeightTotal = React.useMemo(
+        () => previewCriteria.reduce((sum, item) => sum + toNumber(item.weight, 0), 0),
+        [previewCriteria],
+    )
 
     return (
         <DashboardLayout
             title="Rubric Templates"
-            description="Review template versions, criteria, and scale levels used in staff evaluations."
+            description="Browse and preview rubric templates available for staff workflows."
         >
             <div className="space-y-4">
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-xl border bg-card p-4">
+                        <p className="text-xs font-medium text-muted-foreground">Total Templates</p>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight">{stats.total}</p>
+                    </div>
+                    <div className="rounded-xl border bg-card p-4">
+                        <p className="text-xs font-medium text-muted-foreground">Active</p>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight">{stats.active}</p>
+                    </div>
+                    <div className="rounded-xl border bg-card p-4">
+                        <p className="text-xs font-medium text-muted-foreground">Inactive</p>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight">{stats.inactive}</p>
+                    </div>
+                </div>
+
+                <div className="rounded-xl border bg-card p-4">
+                    <div className="grid gap-3 md:grid-cols-12">
+                        <div className="relative md:col-span-6">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                             <Input
-                                placeholder="Search by template name, ID, or description"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
-                                className="w-full lg:max-w-xl"
+                                placeholder="Search by template name, ID, or description"
+                                className="pl-9"
                             />
-
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Button variant="outline" onClick={refreshAll} disabled={loading}>
-                                    Refresh
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    onClick={copySelectedJson}
-                                    disabled={!selectedTemplateId || detailsLoading}
-                                >
-                                    Copy JSON
-                                </Button>
-                                <Button
-                                    onClick={exportSelectedAsJson}
-                                    disabled={!selectedTemplateId || detailsLoading}
-                                >
-                                    Export JSON
-                                </Button>
-                            </div>
                         </div>
 
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {ACTIVE_FILTERS.map((status) => {
-                                    const active = activeFilter === status
-                                    const label = toTitleCase(status)
-
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setActiveFilter(status)}
-                                        >
-                                            {label}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
+                        <div className="md:col-span-3">
+                            <Select
+                                value={activeFilter}
+                                onValueChange={(value) => setActiveFilter(value as ActiveFilter)}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Filter status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All status</SelectItem>
+                                    <SelectItem value="active">Active only</SelectItem>
+                                    <SelectItem value="inactive">Inactive only</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
 
-                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                            <div className="rounded-md border bg-background p-3">
-                                <p className="text-xs text-muted-foreground">Total Templates</p>
-                                <p className="text-lg font-semibold">{totals.total}</p>
-                            </div>
-                            <div className="rounded-md border bg-background p-3">
-                                <p className="text-xs text-muted-foreground">Active</p>
-                                <p className="text-lg font-semibold">{totals.active}</p>
-                            </div>
-                            <div className="rounded-md border bg-background p-3">
-                                <p className="text-xs text-muted-foreground">Inactive</p>
-                                <p className="text-lg font-semibold">{totals.inactive}</p>
-                            </div>
-                            <div className="rounded-md border bg-background p-3">
-                                <p className="text-xs text-muted-foreground">Showing</p>
-                                <p className="text-lg font-semibold">{totals.shown}</p>
-                            </div>
+                        <div className="md:col-span-3">
+                            <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortBy)}>
+                                <SelectTrigger>
+                                    <div className="flex items-center gap-2">
+                                        <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+                                        <SelectValue placeholder="Sort by" />
+                                    </div>
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="updated_desc">Latest updated</SelectItem>
+                                    <SelectItem value="updated_asc">Oldest updated</SelectItem>
+                                    <SelectItem value="name_asc">Name A–Z</SelectItem>
+                                    <SelectItem value="name_desc">Name Z–A</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
+                    </div>
 
-                        <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                            {templateSource ? <p>Template source: {templateSource}</p> : null}
-                            {criteriaSource ? <p>Criteria source: {criteriaSource}</p> : null}
-                            {scaleSource ? <p>Scale source: {scaleSource}</p> : null}
-                            {copyMessage ? <p className="text-foreground">{copyMessage}</p> : null}
-                        </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm text-muted-foreground">
+                            Showing{" "}
+                            <span className="font-semibold text-foreground">{filteredTemplates.length}</span> of{" "}
+                            <span className="font-semibold text-foreground">{templates.length}</span> template(s)
+                        </p>
+
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void loadTemplates(true)}
+                            disabled={loading}
+                        >
+                            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                            {loading ? "Refreshing..." : "Refresh"}
+                        </Button>
                     </div>
                 </div>
 
@@ -653,87 +371,84 @@ export default function StaffRubricTemplatesPage() {
                     </div>
                 ) : null}
 
-                {detailsError ? (
-                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700">
-                        {detailsError}
-                    </div>
-                ) : null}
-
-                <div className="overflow-x-auto rounded-lg border bg-card">
+                <div className="overflow-x-auto rounded-xl border bg-card">
                     <Table>
                         <TableHeader>
                             <TableRow>
                                 <TableHead className="min-w-64">Template</TableHead>
                                 <TableHead className="min-w-24">Version</TableHead>
-                                <TableHead className="min-w-32">Status</TableHead>
-                                <TableHead className="min-w-28 text-right">Criteria</TableHead>
-                                <TableHead className="min-w-28 text-right">Scale Levels</TableHead>
-                                <TableHead className="min-w-52">Updated</TableHead>
-                                <TableHead className="min-w-24 text-right">Action</TableHead>
+                                <TableHead className="min-w-28">Status</TableHead>
+                                <TableHead className="min-w-44">Updated</TableHead>
+                                <TableHead className="min-w-36 text-right">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
 
                         <TableBody>
                             {loading ? (
-                                Array.from({ length: 8 }).map((_, i) => (
-                                    <TableRow key={`skeleton-template-${i}`}>
-                                        <TableCell colSpan={7}>
+                                Array.from({ length: 6 }).map((_, i) => (
+                                    <TableRow key={`template-skeleton-${i}`}>
+                                        <TableCell colSpan={5}>
                                             <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
                                         </TableCell>
                                     </TableRow>
                                 ))
                             ) : filteredTemplates.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                                    <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                                         No rubric templates found.
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                filteredTemplates.map((item) => {
-                                    const isSelected = item.id === selectedTemplateId
-                                    const criteriaCount = criteriaByTemplate[item.id]?.length
-                                    const scaleCount = scaleLevelsByTemplate[item.id]?.length
+                                filteredTemplates.map((template) => {
+                                    const previewBusy = previewBusyTemplateId === template.id
 
                                     return (
-                                        <TableRow key={item.id} className={isSelected ? "bg-muted/40" : undefined}>
+                                        <TableRow key={template.id}>
                                             <TableCell>
-                                                <div className="flex flex-col gap-1">
-                                                    <span className="font-medium">{item.name}</span>
-                                                    <span className="text-xs text-muted-foreground">ID: {item.id}</span>
+                                                <div className="flex min-w-0 flex-col">
+                                                    <span className="font-medium wrap-break-word">{template.name}</span>
+                                                    <span className="text-xs text-muted-foreground break-all">
+                                                        {template.id}
+                                                    </span>
+                                                    {template.description ? (
+                                                        <span className="mt-1 text-xs text-muted-foreground wrap-break-word">
+                                                            {template.description}
+                                                        </span>
+                                                    ) : null}
                                                 </div>
                                             </TableCell>
-                                            <TableCell>{item.version}</TableCell>
+
+                                            <TableCell>v{template.version}</TableCell>
+
                                             <TableCell>
                                                 <span
                                                     className={[
                                                         "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                        templateStatusTone(item.active),
+                                                        template.active
+                                                            ? "border-primary/40 bg-primary/10 text-foreground"
+                                                            : "border-muted-foreground/30 bg-muted text-muted-foreground",
                                                     ].join(" ")}
                                                 >
-                                                    {item.active ? "Active" : "Inactive"}
+                                                    {template.active ? "Active" : "Inactive"}
                                                 </span>
                                             </TableCell>
-                                            <TableCell className="text-right">{criteriaCount ?? "—"}</TableCell>
-                                            <TableCell className="text-right">{scaleCount ?? "—"}</TableCell>
+
                                             <TableCell className="text-muted-foreground">
-                                                {formatDateTime(item.updated_at ?? item.created_at)}
+                                                {formatDate(template.updated_at)}
                                             </TableCell>
-                                            <TableCell className="text-right">
-                                                <Button
-                                                    size="sm"
-                                                    variant={isSelected ? "default" : "outline"}
-                                                    onClick={() => {
-                                                        setSelectedTemplateId(item.id)
-                                                        if (
-                                                            !Object.prototype.hasOwnProperty.call(criteriaByTemplate, item.id) ||
-                                                            !Object.prototype.hasOwnProperty.call(scaleLevelsByTemplate, item.id)
-                                                        ) {
-                                                            void loadTemplateDetails(item.id)
-                                                        }
-                                                    }}
-                                                >
-                                                    {isSelected ? "Selected" : "View"}
-                                                </Button>
+
+                                            <TableCell>
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        disabled={previewBusy}
+                                                        onClick={() => void openTemplatePreview(template)}
+                                                    >
+                                                        <Eye className="mr-2 h-4 w-4" />
+                                                        {previewBusy ? "Loading..." : "Preview"}
+                                                    </Button>
+                                                </div>
                                             </TableCell>
                                         </TableRow>
                                     )
@@ -742,143 +457,146 @@ export default function StaffRubricTemplatesPage() {
                         </TableBody>
                     </Table>
                 </div>
-
-                <div className="rounded-lg border bg-card p-4">
-                    {!selectedTemplate ? (
-                        <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                            Select a rubric template to view criteria and scale levels.
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                                <div className="space-y-1">
-                                    <h2 className="text-base font-semibold">{selectedTemplate.name}</h2>
-                                    <p className="text-sm text-muted-foreground">
-                                        Version {selectedTemplate.version} •{" "}
-                                        {selectedTemplate.active ? "Active template" : "Inactive template"}
-                                    </p>
-                                    {selectedTemplate.description ? (
-                                        <p className="text-sm text-muted-foreground">{selectedTemplate.description}</p>
-                                    ) : null}
-                                </div>
-
-                                <div className="text-xs text-muted-foreground">
-                                    Updated: {formatDateTime(selectedTemplate.updated_at ?? selectedTemplate.created_at)}
-                                </div>
-                            </div>
-
-                            <div className="grid gap-4 lg:grid-cols-2">
-                                <div className="space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <h3 className="text-sm font-semibold">Criteria</h3>
-                                        <p className="text-xs text-muted-foreground">
-                                            {selectedCriteria.length} item(s)
-                                        </p>
-                                    </div>
-
-                                    <div className="overflow-x-auto rounded-lg border">
-                                        <Table>
-                                            <TableHeader>
-                                                <TableRow>
-                                                    <TableHead className="min-w-56">Criterion</TableHead>
-                                                    <TableHead className="min-w-24 text-right">Weight</TableHead>
-                                                    <TableHead className="min-w-28 text-right">Score Range</TableHead>
-                                                </TableRow>
-                                            </TableHeader>
-
-                                            <TableBody>
-                                                {detailsLoading ? (
-                                                    Array.from({ length: 5 }).map((_, i) => (
-                                                        <TableRow key={`criteria-skeleton-${i}`}>
-                                                            <TableCell colSpan={3}>
-                                                                <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    ))
-                                                ) : selectedCriteria.length === 0 ? (
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} className="h-20 text-center text-muted-foreground">
-                                                            No criteria available for this template.
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ) : (
-                                                    selectedCriteria.map((item) => (
-                                                        <TableRow key={item.id}>
-                                                            <TableCell>
-                                                                <div className="flex flex-col gap-1">
-                                                                    <span className="font-medium">{item.criterion}</span>
-                                                                    {item.description ? (
-                                                                        <span className="text-xs text-muted-foreground">
-                                                                            {item.description}
-                                                                        </span>
-                                                                    ) : null}
-                                                                </div>
-                                                            </TableCell>
-                                                            <TableCell className="text-right">{formatWeight(item.weight)}</TableCell>
-                                                            <TableCell className="text-right">
-                                                                {formatScoreRange(item.min_score, item.max_score)}
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    ))
-                                                )}
-                                            </TableBody>
-                                        </Table>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <h3 className="text-sm font-semibold">Scale Levels</h3>
-                                        <p className="text-xs text-muted-foreground">
-                                            {selectedScaleLevels.length} item(s)
-                                        </p>
-                                    </div>
-
-                                    <div className="overflow-x-auto rounded-lg border">
-                                        <Table>
-                                            <TableHeader>
-                                                <TableRow>
-                                                    <TableHead className="min-w-20 text-right">Score</TableHead>
-                                                    <TableHead className="min-w-40">Adjectival</TableHead>
-                                                    <TableHead className="min-w-60">Description</TableHead>
-                                                </TableRow>
-                                            </TableHeader>
-
-                                            <TableBody>
-                                                {detailsLoading ? (
-                                                    Array.from({ length: 5 }).map((_, i) => (
-                                                        <TableRow key={`scale-skeleton-${i}`}>
-                                                            <TableCell colSpan={3}>
-                                                                <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    ))
-                                                ) : selectedScaleLevels.length === 0 ? (
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} className="h-20 text-center text-muted-foreground">
-                                                            No scale levels available for this template.
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ) : (
-                                                    selectedScaleLevels.map((item) => (
-                                                        <TableRow key={`${item.template_id}-${item.score}`}>
-                                                            <TableCell className="text-right font-medium">{item.score}</TableCell>
-                                                            <TableCell>{item.adjectival}</TableCell>
-                                                            <TableCell className="text-muted-foreground">
-                                                                {item.description ?? "—"}
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    ))
-                                                )}
-                                            </TableBody>
-                                        </Table>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
             </div>
+
+            <Dialog
+                open={previewOpen}
+                onOpenChange={(open) => {
+                    setPreviewOpen(open)
+                    if (!open) setPreviewError(null)
+                }}
+            >
+                <DialogContent className="w-full max-w-5xl overflow-hidden p-0">
+                    <div className="max-h-[85vh] overflow-y-auto p-6">
+                        <DialogHeader className="pr-8">
+                            <DialogTitle>Template Preview</DialogTitle>
+                            <DialogDescription>
+                                Review rubric criteria and scoring range before using this template.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {previewTemplate ? (
+                            <div className="mt-4 space-y-3">
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Template</p>
+                                        <p className="mt-1 text-sm font-medium wrap-break-word">
+                                            {previewTemplate.name}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Version</p>
+                                        <p className="mt-1 text-sm font-medium">v{previewTemplate.version}</p>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <p className="text-xs text-muted-foreground">Status</p>
+                                        <p className="mt-1 text-sm font-medium">
+                                            {previewTemplate.active ? "Active" : "Inactive"}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {previewTemplate.description ? (
+                                    <div className="rounded-lg border bg-card p-3">
+                                        <p className="text-xs text-muted-foreground">Description</p>
+                                        <p className="mt-1 text-sm wrap-break-word">{previewTemplate.description}</p>
+                                    </div>
+                                ) : null}
+
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs font-medium text-foreground">
+                                            {previewCriteria.length} criterion
+                                            {previewCriteria.length === 1 ? "" : "a"}
+                                        </span>
+                                        <span
+                                            className={[
+                                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                Math.abs(previewWeightTotal - 100) < 0.0001
+                                                    ? "border-primary/40 bg-primary/10 text-foreground"
+                                                    : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                                            ].join(" ")}
+                                        >
+                                            Total weight: {previewWeightTotal}%
+                                        </span>
+                                    </div>
+
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => void reloadPreview()}
+                                        disabled={previewLoading || !previewTemplate}
+                                    >
+                                        <RefreshCw
+                                            className={`mr-2 h-4 w-4 ${previewLoading ? "animate-spin" : ""}`}
+                                        />
+                                        {previewLoading ? "Reloading..." : "Reload"}
+                                    </Button>
+                                </div>
+
+                                {previewLoading ? (
+                                    <div className="space-y-2 rounded-lg border bg-card p-3">
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                        <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                    </div>
+                                ) : previewError ? (
+                                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                                        {previewError}
+                                    </div>
+                                ) : previewCriteria.length === 0 ? (
+                                    <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+                                        No criteria found for this template yet.
+                                    </div>
+                                ) : (
+                                    <div className="min-w-0 overflow-x-auto rounded-lg border">
+                                        <Table className="w-full">
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead className="w-10 whitespace-nowrap">#</TableHead>
+                                                    <TableHead className="whitespace-nowrap">Criterion</TableHead>
+                                                    <TableHead className="w-24 whitespace-nowrap">Weight</TableHead>
+                                                    <TableHead className="w-20 whitespace-nowrap">Min</TableHead>
+                                                    <TableHead className="w-20 whitespace-nowrap">Max</TableHead>
+                                                    <TableHead className="whitespace-nowrap">Description</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {previewCriteria.map((criterion, index) => (
+                                                    <TableRow key={criterion.id}>
+                                                        <TableCell className="whitespace-nowrap">
+                                                            {index + 1}
+                                                        </TableCell>
+                                                        <TableCell className="font-medium whitespace-normal wrap-break-word">
+                                                            {criterion.criterion}
+                                                        </TableCell>
+                                                        <TableCell className="whitespace-nowrap">
+                                                            {criterion.weight}%
+                                                        </TableCell>
+                                                        <TableCell className="whitespace-nowrap">
+                                                            {criterion.min_score}
+                                                        </TableCell>
+                                                        <TableCell className="whitespace-nowrap">
+                                                            {criterion.max_score}
+                                                        </TableCell>
+                                                        <TableCell className="text-muted-foreground whitespace-normal wrap-break-word">
+                                                            {criterion.description || "—"}
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="mt-4 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+                                Select a template to preview.
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
         </DashboardLayout>
     )
 }
