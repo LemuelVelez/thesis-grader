@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { AdminController } from '../controllers/AdminController';
+import type { RankingTarget } from '../controllers/RankingSupport';
 import { USER_STATUSES, type UserRow, type UUID } from '../models/Model';
 import type { DatabaseServices } from '../services/Services';
 import {
@@ -28,6 +29,94 @@ import {
     dispatchAuditLogsRequest,
     dispatchRubricTemplatesRequest,
 } from './AdminRouteV4';
+
+function toRankingTarget(raw: string | null | undefined): RankingTarget {
+    const normalized = (raw ?? '').trim().toLowerCase();
+    return normalized === 'student' || normalized === 'students' ? 'student' : 'group';
+}
+
+async function dispatchAdminRankingsRequest(
+    req: NextRequest,
+    tail: string[],
+    controller: AdminController,
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+    if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+    const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit'));
+
+    const queryTarget = toRankingTarget(
+        req.nextUrl.searchParams.get('target') ??
+        req.nextUrl.searchParams.get('by') ??
+        req.nextUrl.searchParams.get('scope'),
+    );
+
+    // /api/admin/rankings?target=group|student
+    if (tail.length === 1) {
+        if (queryTarget === 'student') {
+            const items = await controller.getStudentRankings(limit);
+            return json200({ target: 'student', items });
+        }
+
+        const items = await controller.getGroupRankings(limit);
+        return json200({ target: 'group', items });
+    }
+
+    const segment = tail[1]?.toLowerCase();
+
+    // /api/admin/rankings/groups
+    // /api/admin/rankings/groups/:groupId
+    if (segment === 'groups' || segment === 'group') {
+        if (tail.length === 2) {
+            const items = await controller.getGroupRankings(limit);
+            return json200({ target: 'group', items });
+        }
+
+        if (tail.length === 3) {
+            const groupId = tail[2];
+            if (!groupId || !isUuidLike(groupId)) {
+                return json400('groupId is required and must be a valid UUID.');
+            }
+
+            const item = await controller.getGroupRankingByGroupId(groupId as UUID);
+            if (!item) return json404Entity('Group ranking');
+            return json200({ target: 'group', item });
+        }
+
+        return json404Api();
+    }
+
+    // /api/admin/rankings/students
+    // /api/admin/rankings/students/:studentId
+    if (segment === 'students' || segment === 'student') {
+        if (tail.length === 2) {
+            const items = await controller.getStudentRankings(limit);
+            return json200({ target: 'student', items });
+        }
+
+        if (tail.length === 3) {
+            const studentId = tail[2];
+            if (!studentId || !isUuidLike(studentId)) {
+                return json400('studentId is required and must be a valid UUID.');
+            }
+
+            const item = await controller.getStudentRankingByStudentId(studentId as UUID);
+            if (!item) return json404Entity('Student ranking');
+            return json200({ target: 'student', item });
+        }
+
+        return json404Api();
+    }
+
+    // Backward-compat: /api/admin/rankings/:groupId
+    if (tail.length === 2 && isUuidLike(tail[1])) {
+        const item = await controller.getGroupRankingByGroupId(tail[1] as UUID);
+        if (!item) return json404Entity('Group ranking');
+        return json200({ target: 'group', item });
+    }
+
+    return json404Api();
+}
 
 async function dispatchAdminStudentProfileRequest(
     req: NextRequest,
@@ -147,23 +236,8 @@ export async function dispatchAdminRequest(
         });
     }
 
-    if (tail.length === 1 && tail[0] === 'rankings') {
-        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-        const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit'));
-        const items = await services.v_thesis_group_rankings.leaderboard(limit);
-        return json200({ items });
-    }
-
-    if (tail.length === 2 && tail[0] === 'rankings') {
-        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-        const groupId = tail[1];
-        if (!groupId || !isUuidLike(groupId)) {
-            return json400('groupId is required and must be a valid UUID.');
-        }
-
-        const item = await services.v_thesis_group_rankings.byGroup(groupId as UUID);
-        if (!item) return json404Entity('Ranking');
-        return json200({ item });
+    if (tail[0] === 'rankings' || tail[0] === 'ranking') {
+        return dispatchAdminRankingsRequest(req, tail, controller);
     }
 
     const id = tail[0];

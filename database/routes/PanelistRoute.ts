@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { PanelistController } from '../controllers/PanelistController';
+import type { RankingTarget } from '../controllers/RankingSupport';
 import { USER_STATUSES, type JsonObject, type UserRow, type UUID } from '../models/Model';
 import type { DatabaseServices, ListQuery } from '../services/Services';
 import {
@@ -15,6 +16,7 @@ import {
     json405,
     omitWhere,
     parseListQuery,
+    parsePositiveInt,
     readJsonRecord,
     toErrorMessage,
     toNonEmptyString,
@@ -902,6 +904,138 @@ async function listPanelistEvaluationScores(
     return await controller.findMany(merged);
 }
 
+function parsePanelistUpdateInput(
+    body: Record<string, unknown>,
+): Parameters<PanelistController['update']>[1] {
+    const userPatch: Record<string, unknown> = {};
+    const profilePatch: Record<string, unknown> = {};
+
+    if (isRecord(body.user)) {
+        Object.assign(userPatch, body.user);
+    } else {
+        const userKeys = [
+            'name',
+            'email',
+            'password_hash',
+            'passwordHash',
+            'status',
+            'avatar_key',
+            'avatarKey',
+        ] as const;
+
+        for (const key of userKeys) {
+            if (hasOwn(body, key)) {
+                userPatch[key] = body[key];
+            }
+        }
+    }
+
+    if (hasOwn(userPatch, 'passwordHash') && !hasOwn(userPatch, 'password_hash')) {
+        userPatch.password_hash = userPatch.passwordHash;
+        delete userPatch.passwordHash;
+    }
+
+    if (hasOwn(userPatch, 'avatarKey') && !hasOwn(userPatch, 'avatar_key')) {
+        userPatch.avatar_key = userPatch.avatarKey;
+        delete userPatch.avatarKey;
+    }
+
+    if (isRecord(body.profile)) {
+        Object.assign(profilePatch, body.profile);
+    }
+
+    if (hasOwn(body, 'expertise')) {
+        profilePatch.expertise = body.expertise;
+    }
+
+    return {
+        user: userPatch as Parameters<PanelistController['update']>[1]['user'],
+        profile: profilePatch as Parameters<PanelistController['update']>[1]['profile'],
+    };
+}
+
+function toRankingTarget(value: string | null | undefined): RankingTarget {
+    const normalized = (value ?? '').trim().toLowerCase();
+    return normalized === 'student' || normalized === 'students' ? 'student' : 'group';
+}
+
+async function dispatchPanelistRankingsRequest(
+    req: NextRequest,
+    tail: string[],
+    controller: PanelistController,
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+    if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+    const limit = parsePositiveInt(req.nextUrl.searchParams.get('limit'));
+    const queryTarget = toRankingTarget(
+        req.nextUrl.searchParams.get('target') ??
+        req.nextUrl.searchParams.get('by') ??
+        req.nextUrl.searchParams.get('scope'),
+    );
+
+    // /api/panelist/rankings?target=group|student
+    if (tail.length === 1) {
+        if (queryTarget === 'student') {
+            const items = await controller.getStudentRankings(limit);
+            return json200({ target: 'student', items });
+        }
+        const items = await controller.getGroupRankings(limit);
+        return json200({ target: 'group', items });
+    }
+
+    const second = tail[1]?.toLowerCase();
+
+    if (second === 'groups' || second === 'group') {
+        if (tail.length === 2) {
+            const items = await controller.getGroupRankings(limit);
+            return json200({ target: 'group', items });
+        }
+
+        if (tail.length === 3) {
+            const groupId = tail[2];
+            if (!groupId || !isUuidLike(groupId)) {
+                return json400('groupId is required and must be a valid UUID.');
+            }
+
+            const item = await controller.getGroupRankingByGroupId(groupId as UUID);
+            if (!item) return json404Entity('Group ranking');
+            return json200({ target: 'group', item });
+        }
+
+        return json404Api();
+    }
+
+    if (second === 'students' || second === 'student') {
+        if (tail.length === 2) {
+            const items = await controller.getStudentRankings(limit);
+            return json200({ target: 'student', items });
+        }
+
+        if (tail.length === 3) {
+            const studentId = tail[2];
+            if (!studentId || !isUuidLike(studentId)) {
+                return json400('studentId is required and must be a valid UUID.');
+            }
+
+            const item = await controller.getStudentRankingByStudentId(studentId as UUID);
+            if (!item) return json404Entity('Student ranking');
+            return json200({ target: 'student', item });
+        }
+
+        return json404Api();
+    }
+
+    // Backward compatibility: /api/panelist/rankings/:groupId
+    if (tail.length === 2 && isUuidLike(tail[1])) {
+        const item = await controller.getGroupRankingByGroupId(tail[1] as UUID);
+        if (!item) return json404Entity('Group ranking');
+        return json200({ target: 'group', item });
+    }
+
+    return json404Api();
+}
+
 async function dispatchPanelistEvaluationsRequest(
     req: NextRequest,
     tail: string[],
@@ -958,53 +1092,70 @@ async function dispatchPanelistEvaluationsRequest(
             });
         }
 
-        if (method === 'PATCH' || method === 'PUT' || method === 'POST') {
+        if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const rawNotes =
-                body.notes ??
-                body.note ??
-                body.private_notes ??
-                body.privateNotes ??
-                body.private_panel_notes ??
-                body.privatePanelNotes;
-            const notes = parseNotesValue(rawNotes);
+            const notes =
+                parseNotesValue(
+                    body.notes ??
+                    body.note ??
+                    body.private_notes ??
+                    body.privateNotes ??
+                    body.private_panel_notes ??
+                    body.panelist_private_notes,
+                );
 
             if (notes === null) {
-                return json400('notes must be a string or null.');
+                return json400('notes must be a string (or null for empty text).');
             }
 
             try {
                 const item = await upsertPanelNote(extras, evaluationId as UUID, notes);
-                return json200({
-                    item,
-                    message: 'Private panel notes saved.',
-                });
+                return json200({ item });
             } catch (error) {
                 return json400(toErrorMessage(error));
             }
         }
 
-        return json405(['GET', 'PATCH', 'PUT', 'POST', 'OPTIONS']);
+        return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
     }
 
     // Scores routes
-    // GET/POST/PATCH/PUT /api/panelist/evaluations/:evaluationId/scores
-    if (
-        (segment === 'scores' || segment === 'score') &&
-        routeTail.length >= 3
-    ) {
-        const scores = resolveEvaluationScoresController(services);
-        if (!scores) return json404Api();
+    // GET/POST/PATCH/PUT/DELETE
+    // /api/panelist/evaluations/:evaluationId/scores
+    // /api/panelist/evaluations/:evaluationId/scores/:criterionId
+    if ((segment === 'scores' || segment === 'score') && routeTail.length >= 3) {
+        const scoresController = resolveEvaluationScoresController(services);
+        if (!scoresController) {
+            return json400('Evaluation scores service is unavailable for this environment.');
+        }
+
+        const criterionIdFromPath =
+            routeTail.length >= 4 && isUuidLike(routeTail[3])
+                ? (routeTail[3] as UUID)
+                : null;
+
+        if (routeTail.length > 4) return json404Api();
 
         if (method === 'GET') {
             try {
-                const items = await listPanelistEvaluationScores(
-                    scores,
+                const rows = await listPanelistEvaluationScores(
+                    scoresController,
                     req,
                     evaluationId as UUID,
                 );
+
+                const items =
+                    criterionIdFromPath == null
+                        ? rows
+                        : rows.filter((row) => {
+                            if (!isRecord(row)) return false;
+                            const rowCriterion = toNonEmptyString(row.criterion_id);
+                            if (!rowCriterion) return false;
+                            return sameUuid(rowCriterion, criterionIdFromPath);
+                        });
+
                 return json200({ items });
             } catch (error) {
                 return json400(toErrorMessage(error));
@@ -1015,36 +1166,37 @@ async function dispatchPanelistEvaluationsRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const maybeBatch = body.scores;
-
-            if (Array.isArray(maybeBatch)) {
+            const scoresNode = body.scores;
+            if (Array.isArray(scoresNode)) {
                 const items: unknown[] = [];
                 const errors: Array<{ index: number; message: string }> = [];
 
-                for (let i = 0; i < maybeBatch.length; i += 1) {
-                    const node = maybeBatch[i];
+                for (let i = 0; i < scoresNode.length; i += 1) {
+                    const node = scoresNode[i];
                     if (!isRecord(node)) {
-                        errors.push({
-                            index: i,
-                            message: 'Invalid score payload object.',
-                        });
+                        errors.push({ index: i, message: 'Invalid score payload object.' });
                         continue;
                     }
 
                     try {
-                        const payload = await normalizeEvaluationScorePayloadForWrite(
-                            node,
+                        const payloadInput = criterionIdFromPath
+                            ? { ...node, criterion_id: criterionIdFromPath }
+                            : node;
+
+                        const normalized = await normalizeEvaluationScorePayloadForWrite(
+                            payloadInput,
                             evaluationId as UUID,
                             services,
                         );
-                        const invalid = validateNormalizedScorePayload(payload);
-                        if (invalid) {
-                            errors.push({ index: i, message: invalid });
+
+                        const validationError = validateNormalizedScorePayload(normalized);
+                        if (validationError) {
+                            errors.push({ index: i, message: validationError });
                             continue;
                         }
 
-                        const result = await upsertEvaluationScoreByTarget(scores, payload);
-                        items.push(result.item);
+                        const saved = await upsertEvaluationScoreByTarget(scoresController, normalized);
+                        items.push(saved.item);
                     } catch (error) {
                         errors.push({ index: i, message: toErrorMessage(error) });
                     }
@@ -1056,40 +1208,88 @@ async function dispatchPanelistEvaluationsRequest(
                         saved: items.length,
                         failed: errors.length,
                         errors,
-                        message:
-                            errors.length > 0
-                                ? 'Some scores were saved. Please review failed items.'
-                                : 'Draft scores saved successfully.',
                     },
                     { status: errors.length > 0 ? 207 : 200 },
                 );
             }
 
-            const payload = await normalizeEvaluationScorePayloadForWrite(
-                body,
-                evaluationId as UUID,
-                services,
-            );
-            const invalid = validateNormalizedScorePayload(payload);
-            if (invalid) return json400(invalid);
-
             try {
-                const result = await upsertEvaluationScoreByTarget(scores, payload);
+                const payloadInput = criterionIdFromPath
+                    ? { ...body, criterion_id: criterionIdFromPath }
+                    : body;
+
+                const normalized = await normalizeEvaluationScorePayloadForWrite(
+                    payloadInput,
+                    evaluationId as UUID,
+                    services,
+                );
+
+                const validationError = validateNormalizedScorePayload(normalized);
+                if (validationError) return json400(validationError);
+
+                const result = await upsertEvaluationScoreByTarget(scoresController, normalized);
                 return result.created
-                    ? json201({
-                        item: result.item,
-                        message: 'Draft score saved successfully.',
-                    })
-                    : json200({
-                        item: result.item,
-                        message: 'Draft score updated successfully.',
-                    });
+                    ? json201({ item: result.item })
+                    : json200({ item: result.item });
             } catch (error) {
                 return json400(toErrorMessage(error));
             }
         }
 
-        return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
+        if (method === 'DELETE') {
+            if (typeof scoresController.delete !== 'function') return json404Api();
+
+            const body = await readJsonRecord(req);
+            const search = req.nextUrl.searchParams;
+
+            const criterionId =
+                criterionIdFromPath ??
+                pickUuid([
+                    search.get('criterion_id'),
+                    search.get('criterionId'),
+                    body?.criterion_id,
+                    body?.criterionId,
+                ]);
+
+            if (!criterionId) {
+                return json400('criterion_id is required for delete.');
+            }
+
+            const targetType = toTargetType(
+                search.get('target_type') ??
+                search.get('targetType') ??
+                body?.target_type ??
+                body?.targetType,
+            );
+            if (!targetType) {
+                return json400('target_type is required and must be either "group" or "student".');
+            }
+
+            const targetId = pickUuid([
+                search.get('target_id'),
+                search.get('targetId'),
+                body?.target_id,
+                body?.targetId,
+                body?.student_id,
+                body?.studentId,
+                body?.group_id,
+                body?.groupId,
+            ]);
+            if (!targetId) {
+                return json400('target_id is required for delete.');
+            }
+
+            const deleted = await scoresController.delete({
+                evaluation_id: evaluationId as UUID,
+                criterion_id: criterionId,
+                target_type: targetType,
+                target_id: targetId,
+            });
+
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
     return json404Api();
@@ -1100,23 +1300,20 @@ export async function dispatchPanelistRequest(
     tail: string[],
     services: DatabaseServices,
 ): Promise<Response> {
-    const routeTail = normalizePanelistTail(tail);
-
-    // Accept both:
-    // - /api/panelist/evaluations/:evaluationId/{notes|scores}
-    // - /api/panelist/:evaluationId/{notes|scores}
-    const resolvedPanelistEvaluationRoute = resolvePanelistEvaluationRoute(routeTail);
-    if (resolvedPanelistEvaluationRoute) {
-        return dispatchPanelistEvaluationsRequest(req, resolvedPanelistEvaluationRoute.routeTail, services);
-    }
-
-    // Keep old behavior for any /evaluations/* paths.
-    if (routeTail.length > 0 && routeTail[0] === 'evaluations') {
-        return dispatchPanelistEvaluationsRequest(req, routeTail, services);
-    }
-
     const controller = new PanelistController(services);
     const method = req.method.toUpperCase();
+
+    const routeTail = normalizePanelistTail(tail);
+
+    // ranking endpoints
+    if (routeTail[0] === 'rankings' || routeTail[0] === 'ranking') {
+        return dispatchPanelistRankingsRequest(req, routeTail, controller);
+    }
+
+    // panelist-specific evaluation extras (notes/scores) endpoints
+    if (resolvePanelistEvaluationRoute(routeTail)) {
+        return dispatchPanelistEvaluationsRequest(req, routeTail, services);
+    }
 
     if (routeTail.length === 0) {
         if (method === 'GET') {
@@ -1152,10 +1349,8 @@ export async function dispatchPanelistRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const item = await controller.update(
-                id as UUID,
-                body as Parameters<PanelistController['update']>[1],
-            );
+            const updateInput = parsePanelistUpdateInput(body);
+            const item = await controller.update(id as UUID, updateInput);
             if (!item) return json404Entity('Panelist');
             return json200({ item });
         }
@@ -1189,3 +1384,5 @@ export async function dispatchPanelistRequest(
 
     return json404Api();
 }
+
+export default dispatchPanelistRequest;

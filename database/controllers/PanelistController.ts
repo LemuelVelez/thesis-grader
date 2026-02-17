@@ -1,6 +1,7 @@
 import type {
     PanelistProfilePatch,
     PanelistProfileRow,
+    ThesisGroupRankingRow,
     UserInsert,
     UserPatch,
     UserRow,
@@ -8,6 +9,14 @@ import type {
     UUID,
 } from '../models/Model';
 import type { ListQuery, Services } from '../services/Services';
+import {
+    type RankingTarget,
+    type ThesisStudentRankingRow,
+    getGroupRankingByGroupIdWithFallback,
+    getGroupRankingsWithFallback,
+    getStudentRankingByStudentId,
+    getStudentRankings,
+} from './RankingSupport';
 
 function stripUndefined<T extends object>(input: T): Partial<T> {
     const out: Partial<T> = {};
@@ -83,6 +92,36 @@ export class PanelistController {
     async getAll(query: Omit<ListQuery<UserRow>, 'where'> = {}): Promise<PanelistAccount[]> {
         const users = await this.services.users.listByRole('panelist', query);
         return Promise.all(users.map((u) => this.toAccount(u)));
+    }
+
+    /* ------------------------------- RANKINGS -------------------------------- */
+
+    async getRankings(
+        target: RankingTarget = 'group',
+        limit?: number,
+    ): Promise<ThesisGroupRankingRow[] | ThesisStudentRankingRow[]> {
+        if (target === 'student') {
+            return getStudentRankings(this.services, limit);
+        }
+        return getGroupRankingsWithFallback(this.services, limit);
+    }
+
+    async getGroupRankings(limit?: number): Promise<ThesisGroupRankingRow[]> {
+        return getGroupRankingsWithFallback(this.services, limit);
+    }
+
+    async getGroupRankingByGroupId(groupId: UUID): Promise<ThesisGroupRankingRow | null> {
+        return getGroupRankingByGroupIdWithFallback(this.services, groupId);
+    }
+
+    async getStudentRankings(limit?: number): Promise<ThesisStudentRankingRow[]> {
+        return getStudentRankings(this.services, limit);
+    }
+
+    async getStudentRankingByStudentId(
+        studentId: UUID,
+    ): Promise<ThesisStudentRankingRow | null> {
+        return getStudentRankingByStudentId(this.services, studentId);
     }
 
     /* --------------------------------- UPDATE -------------------------------- */
