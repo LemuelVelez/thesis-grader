@@ -1,10 +1,22 @@
 "use client"
 
 import * as React from "react"
+import { RefreshCw } from "lucide-react"
+import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
+import { fetchFirstAvailableJson as fetchFirstAvailableGroupJson } from "@/components/thesis-groups/thesis-group-api"
+import {
+    LIST_ENDPOINTS,
+    normalizeGroup as normalizeGroupList,
+    sortNewest,
+    unwrapItem,
+    unwrapItems as unwrapListItems,
+    type ThesisGroupListItem,
+} from "@/components/thesis-groups/thesis-group-utils"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import {
     Table,
     TableBody,
@@ -13,433 +25,569 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import {
+    asRecord,
+    formatDateTime,
+    normalizeGroup as normalizeGroupDetail,
+    normalizeMember,
+    normalizeSchedule,
+    normalizeStaffUser,
+    sortMembers,
+    toStringOrNull,
+    unwrapDetail,
+    unwrapItems,
+} from "@/components/thesis-groups/thesis-group-details-helpers"
+import {
+    fetchAllSuccessfulJson,
+    fetchFirstAvailableJson as fetchFirstAvailableDetailJson,
+    parseResponseBodySafe,
+} from "@/components/thesis-groups/thesis-group-details-service"
+import {
+    STAFF_LIST_ENDPOINTS,
+    memberEndpoints,
+    scheduleEndpoints,
+    type DefenseScheduleItem,
+    type GroupMemberItem,
+    type StaffUserItem,
+    type ThesisGroupDetail,
+} from "@/components/thesis-groups/thesis-group-details-types"
 
-type ThesisGroupMember = {
-    student_id: string | null
+type Viewer = {
+    id: string | null
     name: string | null
     email: string | null
-    program: string | null
-    section: string | null
+    role: string | null
 }
 
-type ThesisGroupItem = {
-    id: string
-    title: string
-    adviser_id: string | null
-    adviser_name: string | null
-    program: string | null
-    term: string | null
-    created_at: string | null
-    updated_at: string | null
-    members: ThesisGroupMember[]
+type StudentGroupResolution = {
+    group: ThesisGroupDetail
+    members: GroupMemberItem[]
+    schedules: DefenseScheduleItem[]
+    source: string
 }
 
-const GROUP_ENDPOINT_CANDIDATES = [
-    "/api/student/thesis-group/me",
+const ME_ENDPOINTS = ["/api/auth/me", "/api/me", "/api/users/me", "/api/user/me"] as const
+
+const DIRECT_STUDENT_GROUP_ENDPOINTS = [
     "/api/student/thesis-group",
-    "/api/thesis-groups/my",
-    "/api/thesis-groups/me",
-    "/api/thesis-groups",
-]
+    "/api/student/thesis-group/me",
+    "/api/student/thesis-groups/me",
+    "/api/me/thesis-group",
+    "/api/thesis-group/me",
+] as const
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === "object" && !Array.isArray(value)
-}
+function parseViewer(payload: unknown): Viewer | null {
+    const unwrapped = unwrapItem(payload)
+    const rec = asRecord(unwrapped) ?? asRecord(payload)
+    if (!rec) return null
 
-function toStringSafe(value: unknown): string | null {
-    if (typeof value !== "string") return null
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-}
+    const nestedUser = asRecord(rec.user)
+    const source = nestedUser ?? rec
 
-function toNullableString(value: unknown): string | null {
-    if (value === null) return null
-    return toStringSafe(value)
-}
+    const id = toStringOrNull(source.id ?? source.user_id ?? source.auth_user_id)
+    const name = toStringOrNull(source.name ?? source.full_name)
+    const email = toStringOrNull(source.email)
+    const role = toStringOrNull(source.role ?? source.user_role)
 
-function formatDateTime(value: string | null): string {
-    if (!value) return "—"
-    const d = new Date(value)
-    if (Number.isNaN(d.getTime())) return value
-    return d.toLocaleString()
-}
-
-function extractArrayPayload(payload: unknown): unknown[] {
-    if (Array.isArray(payload)) return payload
-    if (!isRecord(payload)) return []
-
-    if (Array.isArray(payload.items)) return payload.items
-    if (Array.isArray(payload.data)) return payload.data
-    if (Array.isArray(payload.groups)) return payload.groups
-
-    if (isRecord(payload.data)) {
-        if (Array.isArray(payload.data.items)) return payload.data.items
-        if (Array.isArray(payload.data.groups)) return payload.data.groups
-    }
-
-    if (isRecord(payload.result)) {
-        if (Array.isArray(payload.result.items)) return payload.result.items
-        if (Array.isArray(payload.result.groups)) return payload.result.groups
-    }
-
-    return []
-}
-
-function getNestedRecord(input: Record<string, unknown>, key: string): Record<string, unknown> | null {
-    const value = input[key]
-    return isRecord(value) ? value : null
-}
-
-function normalizeMember(raw: unknown): ThesisGroupMember | null {
-    if (!isRecord(raw)) return null
-
-    const source = getNestedRecord(raw, "member") ?? raw
-    const user = getNestedRecord(source, "user")
-    const student = getNestedRecord(source, "student")
-
-    const student_id =
-        toNullableString(
-            source.student_id ??
-            source.studentId ??
-            source.user_id ??
-            source.userId ??
-            source.id ??
-            student?.user_id ??
-            user?.id,
-        ) ?? null
-
-    const name =
-        toNullableString(
-            source.name ??
-            source.student_name ??
-            source.studentName ??
-            user?.name ??
-            student?.name,
-        ) ?? null
-
-    const email =
-        toNullableString(source.email ?? source.student_email ?? source.studentEmail ?? user?.email) ?? null
-
-    const program =
-        toNullableString(source.program ?? student?.program) ?? null
-
-    const section =
-        toNullableString(source.section ?? student?.section) ?? null
-
-    if (!student_id && !name && !email) return null
-
-    return {
-        student_id,
-        name,
-        email,
-        program,
-        section,
-    }
-}
-
-function normalizeGroup(raw: unknown): ThesisGroupItem | null {
-    if (!isRecord(raw)) return null
-
-    const source = getNestedRecord(raw, "group") ?? raw
-    const adviser = getNestedRecord(source, "adviser")
-
-    const id = toStringSafe(source.id ?? source.group_id ?? source.groupId)
-    if (!id) return null
-
-    const title =
-        toStringSafe(
-            source.title ?? source.group_title ?? source.groupTitle ?? source.name,
-        ) ?? "Untitled Thesis Group"
-
-    const memberArrays: unknown[] = [
-        source.members,
-        source.group_members,
-        source.groupMembers,
-        raw.members,
-        raw.group_members,
-        raw.groupMembers,
-    ]
-
-    const members: ThesisGroupMember[] = memberArrays
-        .filter((candidate): candidate is unknown[] => Array.isArray(candidate))
-        .flatMap((arr) => arr.map(normalizeMember).filter((item): item is ThesisGroupMember => item !== null))
-
+    if (!id && !name && !email && !role) return null
     return {
         id,
-        title,
-        adviser_id: toNullableString(source.adviser_id ?? source.adviserId ?? adviser?.id),
-        adviser_name: toNullableString(source.adviser_name ?? source.adviserName ?? adviser?.name),
-        program: toNullableString(source.program),
-        term: toNullableString(source.term),
-        created_at: toNullableString(source.created_at ?? source.createdAt),
-        updated_at: toNullableString(source.updated_at ?? source.updatedAt),
-        members,
+        name,
+        email,
+        role: role?.toLowerCase() ?? null,
     }
 }
 
-function extractGroupPayload(payload: unknown): { group: ThesisGroupItem | null; members: ThesisGroupMember[] } {
-    if (Array.isArray(payload)) {
-        const group = normalizeGroup(payload[0])
-        return { group, members: group?.members ?? [] }
-    }
+async function fetchViewer(signal: AbortSignal): Promise<Viewer | null> {
+    for (const endpoint of ME_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, {
+                method: "GET",
+                credentials: "include",
+                cache: "no-store",
+                headers: { Accept: "application/json" },
+                signal,
+            })
 
-    if (!isRecord(payload)) {
-        return { group: null, members: [] }
-    }
+            if (res.status === 404 || res.status === 405) continue
 
-    const data = getNestedRecord(payload, "data")
-    const result = getNestedRecord(payload, "result")
+            const payload = await parseResponseBodySafe(res)
+            if (!res.ok) continue
 
-    const groupCandidates: unknown[] = [
-        payload.item,
-        payload.group,
-        payload.thesis_group,
-        data?.item,
-        data?.group,
-        data?.thesis_group,
-        result?.item,
-        result?.group,
-        result?.thesis_group,
-    ]
-
-    for (const candidate of groupCandidates) {
-        const parsed = normalizeGroup(candidate)
-        if (parsed) {
-            return { group: parsed, members: parsed.members }
+            const viewer = parseViewer(payload)
+            if (viewer) return viewer
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") throw error
         }
     }
 
-    const groupsFromArray = extractArrayPayload(payload).map(normalizeGroup).filter((item): item is ThesisGroupItem => item !== null)
-    if (groupsFromArray.length > 0) {
-        return { group: groupsFromArray[0], members: groupsFromArray[0].members }
-    }
-
-    const memberArrays: unknown[] = [
-        payload.members,
-        payload.group_members,
-        payload.groupMembers,
-        data?.members,
-        data?.group_members,
-        data?.groupMembers,
-        result?.members,
-        result?.group_members,
-        result?.groupMembers,
-    ]
-
-    const members = memberArrays
-        .filter((candidate): candidate is unknown[] => Array.isArray(candidate))
-        .flatMap((arr) => arr.map(normalizeMember).filter((item): item is ThesisGroupMember => item !== null))
-
-    return { group: null, members }
+    return null
 }
 
-async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
-    if (isRecord(payload)) {
-        const message = toStringSafe(payload.error) ?? toStringSafe(payload.message)
-        if (message) return message
+function toDetailGroup(item: ThesisGroupListItem): ThesisGroupDetail {
+    return {
+        id: item.id,
+        title: item.title,
+        program: item.program,
+        term: item.term,
+        adviserId: item.adviserId,
+        manualAdviserInfo: item.manualAdviserInfo,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
     }
+}
 
+function isOwnedByViewer(member: GroupMemberItem, viewer: Viewer | null): boolean {
+    if (!viewer) return false
+
+    const viewerId = (viewer.id ?? "").trim().toLowerCase()
+    const viewerEmail = (viewer.email ?? "").trim().toLowerCase()
+
+    const linkedUserId = (member.linkedUserId ?? "").trim().toLowerCase()
+    const studentId = (member.studentId ?? "").trim().toLowerCase()
+
+    if (viewerId && linkedUserId && viewerId === linkedUserId) return true
+    if (viewerId && studentId && viewerId === studentId) return true
+    if (viewerEmail && studentId && viewerEmail === studentId) return true
+
+    return false
+}
+
+function sortSchedules(items: DefenseScheduleItem[]): DefenseScheduleItem[] {
+    return [...items].sort((a, b) => {
+        const ta = a.scheduledAt ? new Date(a.scheduledAt).getTime() : 0
+        const tb = b.scheduledAt ? new Date(b.scheduledAt).getTime() : 0
+        return ta - tb
+    })
+}
+
+async function fetchMembersForGroup(groupId: string, signal: AbortSignal): Promise<GroupMemberItem[]> {
     try {
-        const text = await res.text()
-        if (text.trim().length > 0) return text
-    } catch {
-        // ignore
+        const payload = await fetchFirstAvailableDetailJson(memberEndpoints(groupId), signal)
+        return sortMembers(
+            unwrapItems(payload)
+                .map(normalizeMember)
+                .filter((item): item is GroupMemberItem => item !== null)
+        )
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error
+        return []
+    }
+}
+
+async function fetchSchedulesForGroup(groupId: string, signal: AbortSignal): Promise<DefenseScheduleItem[]> {
+    try {
+        const payload = await fetchFirstAvailableDetailJson(scheduleEndpoints(groupId), signal)
+        return sortSchedules(
+            unwrapItems(payload)
+                .map(normalizeSchedule)
+                .filter((item): item is DefenseScheduleItem => item !== null)
+        )
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error
+        return []
+    }
+}
+
+async function fetchAdviserById(adviserId: string, signal: AbortSignal): Promise<StaffUserItem | null> {
+    try {
+        const results = await fetchAllSuccessfulJson(STAFF_LIST_ENDPOINTS, signal)
+        const staff = results
+            .flatMap((result) => unwrapItems(result.payload))
+            .map(normalizeStaffUser)
+            .filter((item): item is StaffUserItem => item !== null)
+
+        return staff.find((item) => item.id === adviserId) ?? null
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error
+        return null
+    }
+}
+
+async function tryDirectStudentGroup(signal: AbortSignal): Promise<StudentGroupResolution | null> {
+    for (const endpoint of DIRECT_STUDENT_GROUP_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, {
+                method: "GET",
+                credentials: "include",
+                cache: "no-store",
+                headers: { Accept: "application/json" },
+                signal,
+            })
+
+            if (res.status === 404 || res.status === 405) continue
+
+            const payload = await parseResponseBodySafe(res)
+            if (!res.ok) continue
+
+            const payloadRec = asRecord(payload)
+            let candidateRaw: unknown = unwrapDetail(payload)
+            let parsedGroup = normalizeGroupDetail(candidateRaw)
+
+            if (!parsedGroup && payloadRec?.group) {
+                candidateRaw = payloadRec.group
+                parsedGroup = normalizeGroupDetail(candidateRaw)
+            }
+
+            if (!parsedGroup) {
+                const firstGroup = unwrapListItems(payload)
+                    .map(normalizeGroupDetail)
+                    .find((item): item is ThesisGroupDetail => item !== null)
+                if (firstGroup) parsedGroup = firstGroup
+            }
+
+            if (!parsedGroup) continue
+
+            const candidateRec = asRecord(candidateRaw) ?? asRecord(unwrapDetail(payload))
+
+            const embeddedMembers = unwrapItems(
+                candidateRec?.members ??
+                candidateRec?.group_members ??
+                candidateRec?.groupMembers ??
+                []
+            )
+                .map(normalizeMember)
+                .filter((item): item is GroupMemberItem => item !== null)
+
+            const embeddedSchedules = unwrapItems(
+                candidateRec?.defense_schedules ??
+                candidateRec?.schedules ??
+                []
+            )
+                .map(normalizeSchedule)
+                .filter((item): item is DefenseScheduleItem => item !== null)
+
+            return {
+                group: parsedGroup,
+                members: sortMembers(embeddedMembers),
+                schedules: sortSchedules(embeddedSchedules),
+                source: endpoint,
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") throw error
+        }
     }
 
-    return `Request failed (${res.status})`
+    return null
 }
 
 export default function StudentThesisGroupPage() {
-    const [group, setGroup] = React.useState<ThesisGroupItem | null>(null)
-    const [members, setMembers] = React.useState<ThesisGroupMember[]>([])
+    const [viewer, setViewer] = React.useState<Viewer | null>(null)
+    const [group, setGroup] = React.useState<ThesisGroupDetail | null>(null)
+    const [members, setMembers] = React.useState<GroupMemberItem[]>([])
+    const [schedules, setSchedules] = React.useState<DefenseScheduleItem[]>([])
+    const [adviser, setAdviser] = React.useState<StaffUserItem | null>(null)
 
-    const [loading, setLoading] = React.useState(true)
+    const [loading, setLoading] = React.useState<boolean>(true)
     const [error, setError] = React.useState<string | null>(null)
-    const [source, setSource] = React.useState<string | null>(null)
+    const [discoveryNote, setDiscoveryNote] = React.useState<string | null>(null)
+    const [refreshKey, setRefreshKey] = React.useState<number>(0)
 
-    const [search, setSearch] = React.useState("")
-
-    const loadGroup = React.useCallback(async () => {
+    const load = React.useCallback(async (signal: AbortSignal) => {
         setLoading(true)
         setError(null)
+        setDiscoveryNote(null)
 
-        let latestError = "Unable to load thesis group data."
-        let loaded = false
+        try {
+            const viewerSnapshot = await fetchViewer(signal)
+            if (!signal.aborted) setViewer(viewerSnapshot)
 
-        for (const endpoint of GROUP_ENDPOINT_CANDIDATES) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
-
-                if (!res.ok) {
-                    latestError = await readErrorMessage(res, payload)
-                    continue
-                }
-
-                const parsed = extractGroupPayload(payload)
-
-                if (!parsed.group && parsed.members.length === 0) {
-                    continue
-                }
-
-                setGroup(parsed.group)
-                setMembers(parsed.group?.members.length ? parsed.group.members : parsed.members)
-                setSource(endpoint)
-                loaded = true
-                break
-            } catch (err) {
-                latestError = err instanceof Error ? err.message : "Unable to load thesis group data."
+            if (!viewerSnapshot?.id && !viewerSnapshot?.email) {
+                setGroup(null)
+                setMembers([])
+                setSchedules([])
+                setAdviser(null)
+                setError("Unable to identify the signed-in student account.")
+                return
             }
-        }
 
-        if (!loaded) {
+            let resolvedGroup: ThesisGroupDetail | null = null
+            let resolvedMembers: GroupMemberItem[] = []
+            let resolvedSchedules: DefenseScheduleItem[] = []
+            let resolvedSource: string | null = null
+
+            const directResult = await tryDirectStudentGroup(signal)
+
+            if (directResult) {
+                resolvedGroup = directResult.group
+                resolvedMembers = directResult.members
+                resolvedSchedules = directResult.schedules
+                resolvedSource = `Loaded from ${directResult.source}.`
+
+                if (resolvedMembers.length === 0) {
+                    resolvedMembers = await fetchMembersForGroup(directResult.group.id, signal)
+                }
+
+                if (resolvedSchedules.length === 0) {
+                    resolvedSchedules = await fetchSchedulesForGroup(directResult.group.id, signal)
+                }
+            } else {
+                const listResult = await fetchFirstAvailableGroupJson(LIST_ENDPOINTS, signal)
+
+                if (!listResult) {
+                    setGroup(null)
+                    setMembers([])
+                    setSchedules([])
+                    setAdviser(null)
+                    setError(
+                        "No compatible thesis-group API endpoint found. Wire one of: /api/thesis-groups or /api/admin/thesis-groups."
+                    )
+                    return
+                }
+
+                const candidates = sortNewest(
+                    unwrapListItems(listResult.payload)
+                        .map(normalizeGroupList)
+                        .filter((item): item is ThesisGroupListItem => item !== null)
+                )
+
+                for (const candidate of candidates) {
+                    const candidateMembers = await fetchMembersForGroup(candidate.id, signal)
+                    const mine = candidateMembers.some((member) => isOwnedByViewer(member, viewerSnapshot))
+                    if (!mine) continue
+
+                    resolvedGroup = toDetailGroup(candidate)
+                    resolvedMembers = candidateMembers
+                    resolvedSchedules = await fetchSchedulesForGroup(candidate.id, signal)
+                    resolvedSource = "Resolved from thesis-group membership scan."
+                    break
+                }
+            }
+
+            if (!resolvedGroup) {
+                setGroup(null)
+                setMembers([])
+                setSchedules([])
+                setAdviser(null)
+                setDiscoveryNote("No thesis group is currently linked to your account.")
+                return
+            }
+
+            setGroup(resolvedGroup)
+            setMembers(sortMembers(resolvedMembers))
+            setSchedules(sortSchedules(resolvedSchedules))
+            setDiscoveryNote(resolvedSource)
+
+            if (resolvedGroup.adviserId) {
+                const adviserProfile = await fetchAdviserById(resolvedGroup.adviserId, signal)
+                setAdviser(adviserProfile)
+            } else {
+                setAdviser(null)
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") return
+            const message = error instanceof Error ? error.message : "Failed to load your thesis-group record."
             setGroup(null)
             setMembers([])
-            setSource(null)
-            setError(`${latestError} No thesis-group endpoint responded successfully.`)
+            setSchedules([])
+            setAdviser(null)
+            setError(message)
+            toast.error(message)
+        } finally {
+            if (!signal.aborted) setLoading(false)
         }
-
-        setLoading(false)
     }, [])
 
     React.useEffect(() => {
-        void loadGroup()
-    }, [loadGroup])
+        const controller = new AbortController()
+        void load(controller.signal)
+        return () => controller.abort()
+    }, [load, refreshKey])
 
-    const filteredMembers = React.useMemo(() => {
-        const q = search.trim().toLowerCase()
-        if (!q) return members
+    const adviserContent = React.useMemo(() => {
+        if (!group?.adviserId) {
+            if (group?.manualAdviserInfo) {
+                return (
+                    <div className="space-y-1">
+                        <Badge variant="outline">Legacy Manual Adviser</Badge>
+                        <p className="text-sm">{group.manualAdviserInfo}</p>
+                    </div>
+                )
+            }
+            return <span className="text-muted-foreground">Not assigned</span>
+        }
 
-        return members.filter((member) => {
-            const fields = [
-                member.student_id ?? "",
-                member.name ?? "",
-                member.email ?? "",
-                member.program ?? "",
-                member.section ?? "",
-            ]
-            return fields.some((field) => field.toLowerCase().includes(q))
-        })
-    }, [members, search])
+        if (adviser) {
+            return (
+                <div className="space-y-0.5 leading-tight">
+                    <div className="font-medium">{adviser.name}</div>
+                    {adviser.email ? <div className="text-xs text-muted-foreground">{adviser.email}</div> : null}
+                </div>
+            )
+        }
+
+        return (
+            <div className="space-y-1">
+                <Badge variant="outline">Assigned Staff Adviser</Badge>
+                <p className="text-xs text-muted-foreground">
+                    Adviser profile details are temporarily unavailable.
+                </p>
+            </div>
+        )
+    }, [adviser, group?.adviserId, group?.manualAdviserInfo])
 
     return (
         <DashboardLayout
-            title="Thesis Group"
-            description="View your assigned thesis group, adviser, and members."
+            title={group ? `My Thesis Group: ${group.title}` : "My Thesis Group"}
+            description="Track your thesis-group profile, member list, and defense schedule in one place."
         >
-            <div className="space-y-4">
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div className="space-y-1">
-                            <p className="text-sm font-medium">My Group Overview</p>
-                            <p className="text-xs text-muted-foreground">
-                                {source ? `Data source: ${source}` : "No data source detected yet."}
-                            </p>
-                        </div>
+            <div className="space-y-6">
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        variant="outline"
+                        onClick={() => setRefreshKey((value) => value + 1)}
+                        disabled={loading}
+                    >
+                        <RefreshCw className="mr-2 size-4" />
+                        {loading ? "Refreshing..." : "Refresh"}
+                    </Button>
 
-                        <Button variant="outline" onClick={() => void loadGroup()} disabled={loading}>
-                            Refresh
-                        </Button>
-                    </div>
+                    <Badge variant="outline">Members: {members.length}</Badge>
+                    <Badge variant="outline">Schedules: {schedules.length}</Badge>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Group ID</p>
-                            <p className="text-sm font-semibold">{group?.id ?? "—"}</p>
-                        </div>
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Group Title</p>
-                            <p className="text-sm font-semibold">{group?.title ?? "—"}</p>
-                        </div>
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Program / Term</p>
-                            <p className="text-sm font-semibold">
-                                {[group?.program ?? "—", group?.term ?? "—"].join(" • ")}
-                            </p>
-                        </div>
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Adviser</p>
-                            <p className="text-sm font-semibold">{group?.adviser_name ?? group?.adviser_id ?? "—"}</p>
-                        </div>
-                    </div>
-
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Created</p>
-                            <p className="text-sm">{formatDateTime(group?.created_at ?? null)}</p>
-                        </div>
-                        <div className="rounded-md border bg-background p-3">
-                            <p className="text-xs text-muted-foreground">Updated</p>
-                            <p className="text-sm">{formatDateTime(group?.updated_at ?? null)}</p>
-                        </div>
-                    </div>
+                    {discoveryNote ? <Badge variant="secondary">{discoveryNote}</Badge> : null}
                 </div>
 
                 {error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                        {error}
+                    <Alert variant="destructive">
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {!error && !loading && !group ? (
+                    <Alert>
+                        <AlertDescription>
+                            No thesis group is currently linked to your student account yet.
+                        </AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {loading ? (
+                    <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+                        Loading your thesis-group record...
                     </div>
                 ) : null}
 
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                        <div>
-                            <p className="text-sm font-medium">Group Members</p>
-                            <p className="text-xs text-muted-foreground">
-                                Showing <span className="font-semibold text-foreground">{filteredMembers.length}</span> of{" "}
-                                <span className="font-semibold text-foreground">{members.length}</span> member(s)
-                            </p>
-                        </div>
-
-                        <Input
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Search member ID, name, email, program, section"
-                            className="w-full md:max-w-sm"
-                        />
-                    </div>
-
-                    <div className="overflow-x-auto rounded-lg border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="min-w-40">Student ID</TableHead>
-                                    <TableHead className="min-w-48">Name</TableHead>
-                                    <TableHead className="min-w-52">Email</TableHead>
-                                    <TableHead className="min-w-36">Program</TableHead>
-                                    <TableHead className="min-w-28">Section</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {loading ? (
-                                    Array.from({ length: 5 }).map((_, i) => (
-                                        <TableRow key={`group-member-skeleton-${i}`}>
-                                            <TableCell colSpan={5}>
-                                                <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                            </TableCell>
+                {group ? (
+                    <>
+                        <section className="space-y-2">
+                            <h2 className="text-sm font-semibold">Overview</h2>
+                            <div className="overflow-hidden rounded-lg border">
+                                <Table>
+                                    <TableBody>
+                                        <TableRow>
+                                            <TableCell className="w-44 font-medium">Group ID</TableCell>
+                                            <TableCell>{group.id}</TableCell>
                                         </TableRow>
-                                    ))
-                                ) : filteredMembers.length === 0 ? (
-                                    <TableRow>
-                                        <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
-                                            No group members found.
-                                        </TableCell>
-                                    </TableRow>
-                                ) : (
-                                    filteredMembers.map((member, index) => (
-                                        <TableRow key={`${member.student_id ?? "member"}-${index}`}>
-                                            <TableCell className="font-medium">{member.student_id ?? "—"}</TableCell>
-                                            <TableCell>{member.name ?? "—"}</TableCell>
-                                            <TableCell>{member.email ?? "—"}</TableCell>
-                                            <TableCell>{member.program ?? "—"}</TableCell>
-                                            <TableCell>{member.section ?? "—"}</TableCell>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Title</TableCell>
+                                            <TableCell>{group.title}</TableCell>
                                         </TableRow>
-                                    ))
-                                )}
-                            </TableBody>
-                        </Table>
-                    </div>
-                </div>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Program</TableCell>
+                                            <TableCell>{group.program ?? "—"}</TableCell>
+                                        </TableRow>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Term</TableCell>
+                                            <TableCell>{group.term ?? "—"}</TableCell>
+                                        </TableRow>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Adviser</TableCell>
+                                            <TableCell>{adviserContent}</TableCell>
+                                        </TableRow>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Created</TableCell>
+                                            <TableCell>{formatDateTime(group.createdAt)}</TableCell>
+                                        </TableRow>
+                                        <TableRow>
+                                            <TableCell className="font-medium">Last Updated</TableCell>
+                                            <TableCell>{formatDateTime(group.updatedAt)}</TableCell>
+                                        </TableRow>
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </section>
+
+                        <section className="space-y-2">
+                            <h2 className="text-sm font-semibold">Members ({members.length})</h2>
+                            <div className="overflow-hidden rounded-lg border">
+                                <Table>
+                                    <TableHeader className="bg-muted/40">
+                                        <TableRow>
+                                            <TableHead>Student ID</TableHead>
+                                            <TableHead>Name</TableHead>
+                                            <TableHead>Program</TableHead>
+                                            <TableHead>Section</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {members.length > 0 ? (
+                                            members.map((member) => {
+                                                const mine = isOwnedByViewer(member, viewer)
+
+                                                return (
+                                                    <TableRow key={member.id}>
+                                                        <TableCell>{member.studentId ?? "—"}</TableCell>
+                                                        <TableCell>
+                                                            <div className="flex items-center gap-2">
+                                                                <span>{member.name ?? "—"}</span>
+                                                                {mine ? <Badge variant="secondary">You</Badge> : null}
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell>{member.program ?? "—"}</TableCell>
+                                                        <TableCell>{member.section ?? "—"}</TableCell>
+                                                    </TableRow>
+                                                )
+                                            })
+                                        ) : (
+                                            <TableRow>
+                                                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                                                    No members found for this group.
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </section>
+
+                        <section className="space-y-2">
+                            <h2 className="text-sm font-semibold">Defense Schedules ({schedules.length})</h2>
+                            <div className="overflow-hidden rounded-lg border">
+                                <Table>
+                                    <TableHeader className="bg-muted/40">
+                                        <TableRow>
+                                            <TableHead>Schedule ID</TableHead>
+                                            <TableHead>Scheduled At</TableHead>
+                                            <TableHead>Room</TableHead>
+                                            <TableHead>Status</TableHead>
+                                            <TableHead>Rubric Template</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {schedules.length > 0 ? (
+                                            schedules.map((schedule) => (
+                                                <TableRow key={schedule.id}>
+                                                    <TableCell>{schedule.id}</TableCell>
+                                                    <TableCell>{formatDateTime(schedule.scheduledAt)}</TableCell>
+                                                    <TableCell>{schedule.room ?? "—"}</TableCell>
+                                                    <TableCell>{schedule.status ?? "—"}</TableCell>
+                                                    <TableCell>{schedule.rubricTemplateId ?? "—"}</TableCell>
+                                                </TableRow>
+                                            ))
+                                        ) : (
+                                            <TableRow>
+                                                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                                                    No defense schedules found yet.
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </section>
+                    </>
+                ) : null}
             </div>
         </DashboardLayout>
     )
