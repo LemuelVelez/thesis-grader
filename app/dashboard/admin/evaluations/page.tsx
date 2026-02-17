@@ -36,11 +36,39 @@ type EvaluationAction = "submit" | "lock" | "set-pending"
 type FormMode = "create" | "edit"
 type AssigneeRole = "panelist" | "student"
 type AssignmentMode = "all" | "particular"
+type EvaluationKind = "panelist" | "student"
+
 type AssignmentPreset =
     | "all-panelists"
     | "particular-panelist"
     | "all-students"
     | "particular-student"
+
+type EvaluationRef = {
+    id: string
+    kind: EvaluationKind
+}
+
+type PanelistEvaluationApiRecord = {
+    id: string
+    schedule_id: string
+    evaluator_id: string
+    status: EvaluationStatus
+    submitted_at: string | null
+    locked_at: string | null
+    created_at: string
+}
+
+type StudentEvaluationApiRecord = {
+    id: string
+    schedule_id: string
+    student_id: string
+    status: EvaluationStatus
+    submitted_at: string | null
+    locked_at: string | null
+    created_at: string
+    updated_at?: string
+}
 
 type EvaluationRecord = {
     id: string
@@ -50,6 +78,8 @@ type EvaluationRecord = {
     submitted_at: string | null
     locked_at: string | null
     created_at: string
+    kind: EvaluationKind
+    assignee_role: AssigneeRole
 }
 
 type DefenseScheduleOption = {
@@ -75,13 +105,13 @@ type UserOption = {
 }
 
 type EvaluationsResponse = {
-    items?: EvaluationRecord[]
+    items?: unknown[]
     error?: string
     message?: string
 }
 
 type EvaluationResponse = {
-    item?: EvaluationRecord
+    item?: unknown
     error?: string
     message?: string
 }
@@ -112,6 +142,13 @@ type GroupedEvaluationBucket = {
     submitted: number
     locked: number
 }
+
+const PANELIST_EVALUATIONS_ENDPOINT = "/api/evaluations"
+const STUDENT_EVALUATIONS_ENDPOINT_CANDIDATES = [
+    "/api/student-evaluations",
+    "/api/admin/student-evaluations",
+    "/api/student/evaluations",
+] as const
 
 const STATUS_FILTERS: FilterStatus[] = ["all", "pending", "submitted", "locked"]
 const ASSIGNMENT_STATUSES: EvaluationStatus[] = ["pending", "submitted", "locked"]
@@ -155,7 +192,7 @@ const ASSIGNMENT_PRESET_META: Record<
     "particular-student": {
         role: "student",
         mode: "particular",
-        label: "Assign to one selected student",
+        label: "Particular Student",
         description: "Assign to one selected student",
         roleSingular: "student",
         rolePlural: "students",
@@ -211,6 +248,19 @@ function statusBadgeClass(status: string): string {
     return "border-muted-foreground/30 bg-muted text-muted-foreground"
 }
 
+function compactString(value: string | null | undefined) {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+function extractApiMessage(payload: unknown): string {
+    if (!isRecord(payload)) return ""
+    const error =
+        typeof payload.error === "string" ? payload.error.trim() : ""
+    const message =
+        typeof payload.message === "string" ? payload.message.trim() : ""
+    return message || error || ""
+}
+
 async function parseJsonSafely<T>(res: Response): Promise<T> {
     let data: unknown = {}
     try {
@@ -220,23 +270,8 @@ async function parseJsonSafely<T>(res: Response): Promise<T> {
     }
 
     if (!res.ok) {
-        const apiError =
-            isRecord(data) && typeof data.error === "string" ? data.error.trim() : ""
-        const apiMessage =
-            isRecord(data) && typeof data.message === "string"
-                ? data.message.trim()
-                : ""
-
-        const errorIsGenericInternal =
-            apiError.toLowerCase() === "internal server error." ||
-            apiError.toLowerCase() === "internal server error"
-
-        const message =
-            (!errorIsGenericInternal && apiError) ||
-            apiMessage ||
-            apiError ||
-            `Request failed (${res.status})`
-
+        const extracted = extractApiMessage(data)
+        const message = extracted || `Request failed (${res.status})`
         throw new Error(message)
     }
 
@@ -271,16 +306,8 @@ function matchAny(value: string, query: string) {
     return value.toLowerCase().includes(query)
 }
 
-function compactString(value: string | null | undefined) {
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
-}
-
 function roleLabel(role: ThesisRole) {
     return toTitleCase(String(role))
-}
-
-function toAssigneeRole(role: ThesisRole): AssigneeRole {
-    return normalizeStatus(String(role)) === "student" ? "student" : "panelist"
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
@@ -296,6 +323,58 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
     return out
 }
 
+function uniqueEvaluations(items: EvaluationRecord[]): EvaluationRecord[] {
+    const seen = new Set<string>()
+    const out: EvaluationRecord[] = []
+
+    for (const item of items) {
+        const key = `${item.kind}:${item.id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(item)
+    }
+
+    return out
+}
+
+function replaceEvaluation(
+    list: EvaluationRecord[],
+    nextItem: EvaluationRecord,
+): EvaluationRecord[] {
+    return list.map((item) =>
+        item.id === nextItem.id && item.kind === nextItem.kind ? nextItem : item,
+    )
+}
+
+function removeEvaluation(
+    list: EvaluationRecord[],
+    target: EvaluationRecord,
+): EvaluationRecord[] {
+    return list.filter(
+        (item) => !(item.id === target.id && item.kind === target.kind),
+    )
+}
+
+function appendAndSortEvaluations(
+    current: EvaluationRecord[],
+    additions: EvaluationRecord[],
+): EvaluationRecord[] {
+    const merged = uniqueEvaluations([...additions, ...current])
+    return merged.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )
+}
+
+function isSameRef(a: EvaluationRef | null, b: EvaluationRef | null): boolean {
+    if (!a || !b) return false
+    return a.id === b.id && a.kind === b.kind
+}
+
+function isSameRefRecord(ref: EvaluationRef | null, row: EvaluationRecord): boolean {
+    if (!ref) return false
+    return ref.id === row.id && ref.kind === row.kind
+}
+
 function isUserAssignable(status?: string): boolean {
     const normalized = normalizeStatus(status ?? "active")
     return !["inactive", "disabled", "blocked", "archived", "suspended"].includes(normalized)
@@ -306,6 +385,118 @@ function toAssignmentPreset(role: AssigneeRole, mode: AssignmentMode): Assignmen
     if (role === "student" && mode === "particular") return "particular-student"
     if (role === "panelist" && mode === "all") return "all-panelists"
     return "particular-panelist"
+}
+
+function toPanelistApiRecord(value: unknown): PanelistEvaluationApiRecord | null {
+    if (!isRecord(value)) return null
+
+    const id = compactString(typeof value.id === "string" ? value.id : null)
+    const schedule_id = compactString(
+        typeof value.schedule_id === "string" ? value.schedule_id : null,
+    )
+    const evaluator_id = compactString(
+        typeof value.evaluator_id === "string" ? value.evaluator_id : null,
+    )
+    const statusRaw = compactString(
+        typeof value.status === "string" ? value.status : null,
+    )
+    const created_at = compactString(
+        typeof value.created_at === "string" ? value.created_at : null,
+    )
+
+    if (!id || !schedule_id || !evaluator_id || !created_at) return null
+
+    return {
+        id,
+        schedule_id,
+        evaluator_id,
+        status: (statusRaw ?? "pending") as EvaluationStatus,
+        submitted_at:
+            typeof value.submitted_at === "string" ? value.submitted_at : null,
+        locked_at: typeof value.locked_at === "string" ? value.locked_at : null,
+        created_at,
+    }
+}
+
+function toStudentApiRecord(value: unknown): StudentEvaluationApiRecord | null {
+    if (!isRecord(value)) return null
+
+    const id = compactString(typeof value.id === "string" ? value.id : null)
+    const schedule_id = compactString(
+        typeof value.schedule_id === "string" ? value.schedule_id : null,
+    )
+    const student_id = compactString(
+        typeof value.student_id === "string" ? value.student_id : null,
+    )
+    const statusRaw = compactString(
+        typeof value.status === "string" ? value.status : null,
+    )
+    const created_at = compactString(
+        typeof value.created_at === "string" ? value.created_at : null,
+    )
+
+    if (!id || !schedule_id || !student_id || !created_at) return null
+
+    return {
+        id,
+        schedule_id,
+        student_id,
+        status: (statusRaw ?? "pending") as EvaluationStatus,
+        submitted_at:
+            typeof value.submitted_at === "string" ? value.submitted_at : null,
+        locked_at: typeof value.locked_at === "string" ? value.locked_at : null,
+        created_at,
+        updated_at:
+            typeof value.updated_at === "string" ? value.updated_at : undefined,
+    }
+}
+
+function toUnifiedFromPanelist(item: PanelistEvaluationApiRecord): EvaluationRecord {
+    return {
+        id: item.id,
+        schedule_id: item.schedule_id,
+        evaluator_id: item.evaluator_id,
+        status: item.status,
+        submitted_at: item.submitted_at,
+        locked_at: item.locked_at,
+        created_at: item.created_at,
+        kind: "panelist",
+        assignee_role: "panelist",
+    }
+}
+
+function toUnifiedFromStudent(item: StudentEvaluationApiRecord): EvaluationRecord {
+    return {
+        id: item.id,
+        schedule_id: item.schedule_id,
+        evaluator_id: item.student_id,
+        status: item.status,
+        submitted_at: item.submitted_at,
+        locked_at: item.locked_at,
+        created_at: item.created_at,
+        kind: "student",
+        assignee_role: "student",
+    }
+}
+
+function mapApiItemByRole(
+    role: AssigneeRole,
+    item: unknown,
+): EvaluationRecord | null {
+    if (role === "panelist") {
+        const parsed = toPanelistApiRecord(item)
+        return parsed ? toUnifiedFromPanelist(parsed) : null
+    }
+
+    const parsed = toStudentApiRecord(item)
+    return parsed ? toUnifiedFromStudent(parsed) : null
+}
+
+function mapApiItemByKind(
+    kind: EvaluationKind,
+    item: unknown,
+): EvaluationRecord | null {
+    return mapApiItemByRole(kind === "student" ? "student" : "panelist", item)
 }
 
 export default function AdminEvaluationsPage() {
@@ -327,7 +518,7 @@ export default function AdminEvaluationsPage() {
     const [formOpen, setFormOpen] = React.useState(false)
     const [formMode, setFormMode] = React.useState<FormMode>("create")
     const [formBusy, setFormBusy] = React.useState(false)
-    const [editingId, setEditingId] = React.useState<string | null>(null)
+    const [editingRef, setEditingRef] = React.useState<EvaluationRef | null>(null)
     const [form, setForm] = React.useState<EvaluationFormState>(getEvaluationFormDefault())
 
     const [assignmentPreset, setAssignmentPreset] =
@@ -336,10 +527,13 @@ export default function AdminEvaluationsPage() {
     const [scheduleQuery, setScheduleQuery] = React.useState("")
     const [evaluatorQuery, setEvaluatorQuery] = React.useState("")
 
-    const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null)
+    const [pendingDeleteRef, setPendingDeleteRef] = React.useState<EvaluationRef | null>(null)
 
     const [viewOpen, setViewOpen] = React.useState(false)
-    const [viewingId, setViewingId] = React.useState<string | null>(null)
+    const [viewingRef, setViewingRef] = React.useState<EvaluationRef | null>(null)
+
+    const [studentEvaluationsEndpoint, setStudentEvaluationsEndpoint] =
+        React.useState<string | null>(null)
 
     const groupNameById = React.useMemo(() => {
         const map = new Map<string, string>()
@@ -365,7 +559,7 @@ export default function AdminEvaluationsPage() {
         return map
     }, [evaluators])
 
-    const assignmentKeysBySchedule = React.useMemo(() => {
+    const assignmentKeysByScheduleRole = React.useMemo(() => {
         const map = new Map<string, Set<string>>()
 
         for (const row of evaluations) {
@@ -374,25 +568,33 @@ export default function AdminEvaluationsPage() {
 
             if (!scheduleId || !evaluatorId) continue
 
-            if (!map.has(scheduleId)) {
-                map.set(scheduleId, new Set<string>())
+            const composite = `${scheduleId}|${row.assignee_role}`
+
+            if (!map.has(composite)) {
+                map.set(composite, new Set<string>())
             }
 
-            map.get(scheduleId)!.add(evaluatorId)
+            map.get(composite)!.add(evaluatorId)
         }
 
         return map
     }, [evaluations])
+
+    const editingRecord = React.useMemo(() => {
+        if (!editingRef) return null
+        return evaluations.find((row) => isSameRefRecord(editingRef, row)) ?? null
+    }, [editingRef, evaluations])
 
     const assignmentMeta = React.useMemo(
         () => ASSIGNMENT_PRESET_META[assignmentPreset],
         [assignmentPreset],
     )
 
-    const availablePresets = React.useMemo<AssignmentPreset[]>(
-        () => (formMode === "create" ? CREATE_PRESETS : EDIT_PRESETS),
-        [formMode],
-    )
+    const availablePresets = React.useMemo<AssignmentPreset[]>(() => {
+        if (formMode === "create") return CREATE_PRESETS
+        if (!editingRecord) return EDIT_PRESETS
+        return [editingRecord.assignee_role === "student" ? "particular-student" : "particular-panelist"]
+    }, [editingRecord, formMode])
 
     const resolveGroupNameFromSchedule = React.useCallback(
         (schedule: DefenseScheduleOption | null | undefined): string => {
@@ -427,12 +629,114 @@ export default function AdminEvaluationsPage() {
         [evaluatorById],
     )
 
+    const discoverStudentEvaluationsEndpoint = React.useCallback(async (): Promise<string> => {
+        let lastMessage = ""
+
+        for (const endpoint of STUDENT_EVALUATIONS_ENDPOINT_CANDIDATES) {
+            try {
+                const res = await fetch(`${endpoint}?limit=1`, { cache: "no-store" })
+                const payload = await parseJsonLoose(res)
+
+                if (res.ok) {
+                    return endpoint
+                }
+
+                if (res.status === 404 || res.status === 405) {
+                    continue
+                }
+
+                lastMessage = extractApiMessage(payload) || `Request failed (${res.status})`
+            } catch (err) {
+                lastMessage = err instanceof Error ? err.message : "Network error."
+            }
+        }
+
+        throw new Error(lastMessage || "Student evaluation endpoint is unavailable.")
+    }, [])
+
+    const resolveStudentEvaluationsEndpoint = React.useCallback(async (): Promise<string> => {
+        if (studentEvaluationsEndpoint) return studentEvaluationsEndpoint
+        const endpoint = await discoverStudentEvaluationsEndpoint()
+        setStudentEvaluationsEndpoint(endpoint)
+        return endpoint
+    }, [discoverStudentEvaluationsEndpoint, studentEvaluationsEndpoint])
+
+    const resolveEndpointByRole = React.useCallback(
+        async (role: AssigneeRole): Promise<string> => {
+            if (role === "panelist") return PANELIST_EVALUATIONS_ENDPOINT
+            return resolveStudentEvaluationsEndpoint()
+        },
+        [resolveStudentEvaluationsEndpoint],
+    )
+
+    const resolveEndpointByKind = React.useCallback(
+        async (kind: EvaluationKind): Promise<string> => {
+            if (kind === "panelist") return PANELIST_EVALUATIONS_ENDPOINT
+            return resolveStudentEvaluationsEndpoint()
+        },
+        [resolveStudentEvaluationsEndpoint],
+    )
+
+    const fetchStudentEvaluations = React.useCallback(async () => {
+        let lastMessage = ""
+
+        for (const endpoint of STUDENT_EVALUATIONS_ENDPOINT_CANDIDATES) {
+            try {
+                const res = await fetch(endpoint, { cache: "no-store" })
+                const payload = await parseJsonLoose(res)
+
+                if (!res.ok) {
+                    if (res.status === 404 || res.status === 405) continue
+                    lastMessage = extractApiMessage(payload) || `Request failed (${res.status})`
+                    continue
+                }
+
+                const rows = extractItems(payload)
+                    .map(toStudentApiRecord)
+                    .filter((row): row is StudentEvaluationApiRecord => !!row)
+
+                return { endpoint, rows }
+            } catch (err) {
+                lastMessage = err instanceof Error ? err.message : "Network error."
+            }
+        }
+
+        throw new Error(lastMessage || "Student evaluation endpoint is unavailable.")
+    }, [])
+
     const loadEvaluations = React.useCallback(async () => {
         setLoadingTable(true)
         try {
-            const res = await fetch("/api/evaluations", { cache: "no-store" })
-            const data = await parseJsonSafely<EvaluationsResponse>(res)
-            setEvaluations(Array.isArray(data.items) ? data.items : [])
+            const panelistRes = await fetch(PANELIST_EVALUATIONS_ENDPOINT, {
+                cache: "no-store",
+            })
+            const panelistData = await parseJsonSafely<EvaluationsResponse>(panelistRes)
+            const panelistRows = extractItems(panelistData)
+                .map(toPanelistApiRecord)
+                .filter((row): row is PanelistEvaluationApiRecord => !!row)
+            const mappedPanelists = panelistRows.map(toUnifiedFromPanelist)
+
+            let mappedStudents: EvaluationRecord[] = []
+            let resolvedStudentEndpoint: string | null = studentEvaluationsEndpoint
+
+            try {
+                const studentBundle = await fetchStudentEvaluations()
+                resolvedStudentEndpoint = studentBundle.endpoint
+                mappedStudents = studentBundle.rows.map(toUnifiedFromStudent)
+            } catch {
+                // If student endpoint is unavailable, keep page functional for panelist flow.
+                // Student create/edit actions will show a clear toast when invoked.
+                resolvedStudentEndpoint = null
+                mappedStudents = []
+            }
+
+            setStudentEvaluationsEndpoint(resolvedStudentEndpoint)
+
+            const merged = uniqueEvaluations([...mappedPanelists, ...mappedStudents]).sort(
+                (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+            )
+
+            setEvaluations(merged)
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to fetch evaluations."
             setError(message)
@@ -441,7 +745,7 @@ export default function AdminEvaluationsPage() {
         } finally {
             setLoadingTable(false)
         }
-    }, [])
+    }, [fetchStudentEvaluations, studentEvaluationsEndpoint])
 
     const loadMeta = React.useCallback(async () => {
         setLoadingMeta(true)
@@ -572,8 +876,9 @@ export default function AdminEvaluationsPage() {
             const evaluatorName =
                 compactString(evaluator?.name) ??
                 compactString(evaluator?.email) ??
-                "unknown evaluator"
-            const evaluatorRole = evaluator ? roleLabel(evaluator.role) : ""
+                "unknown assignee"
+            const evaluatorRole = evaluator ? roleLabel(evaluator.role) : toTitleCase(item.assignee_role)
+            const flow = item.assignee_role === "student" ? "student evaluation" : "panelist evaluation"
 
             return (
                 matchAny(groupName, q) ||
@@ -581,6 +886,7 @@ export default function AdminEvaluationsPage() {
                 matchAny(scheduleRoom, q) ||
                 matchAny(evaluatorName, q) ||
                 matchAny(evaluatorRole, q) ||
+                matchAny(flow, q) ||
                 matchAny(normalized, q)
             )
         })
@@ -677,8 +983,9 @@ export default function AdminEvaluationsPage() {
         }
 
         const scheduleKey = form.schedule_id.trim().toLowerCase()
+        const composite = `${scheduleKey}|${assignmentMeta.role}`
         const existingAssignees = scheduleKey
-            ? assignmentKeysBySchedule.get(scheduleKey) ?? new Set<string>()
+            ? assignmentKeysByScheduleRole.get(composite) ?? new Set<string>()
             : new Set<string>()
 
         let valid = 0
@@ -709,11 +1016,11 @@ export default function AdminEvaluationsPage() {
             alreadyAssigned,
             toCreate,
         }
-    }, [assignmentMeta.mode, assignableUsers, assignmentKeysBySchedule, form.schedule_id])
+    }, [assignmentMeta.mode, assignmentMeta.role, assignableUsers, assignmentKeysByScheduleRole, form.schedule_id])
 
     const openCreateForm = React.useCallback(() => {
         setFormMode("create")
-        setEditingId(null)
+        setEditingRef(null)
         setForm(getEvaluationFormDefault())
         setAssignmentPreset("all-panelists")
         setScheduleQuery("")
@@ -724,19 +1031,16 @@ export default function AdminEvaluationsPage() {
     const openEditForm = React.useCallback(
         (row: EvaluationRecord) => {
             setFormMode("edit")
-            setEditingId(row.id)
+            setEditingRef({ id: row.id, kind: row.kind })
             setForm({
                 schedule_id: row.schedule_id,
                 evaluator_id: row.evaluator_id,
                 status: row.status,
             })
 
-            const user = evaluators.find(
-                (u) => u.id.toLowerCase() === row.evaluator_id.toLowerCase(),
+            setAssignmentPreset(
+                toAssignmentPreset(row.assignee_role, "particular"),
             )
-
-            const role = user ? toAssigneeRole(user.role) : "panelist"
-            setAssignmentPreset(toAssignmentPreset(role, "particular"))
 
             const selectedSchedule = resolveScheduleById(row.schedule_id)
             const selectedEvaluator = resolveEvaluatorById(row.evaluator_id)
@@ -752,13 +1056,13 @@ export default function AdminEvaluationsPage() {
 
             setFormOpen(true)
         },
-        [evaluators, resolveEvaluatorById, resolveGroupNameFromSchedule, resolveScheduleById],
+        [resolveEvaluatorById, resolveGroupNameFromSchedule, resolveScheduleById],
     )
 
     const closeForm = React.useCallback(() => {
         setFormOpen(false)
         setFormBusy(false)
-        setEditingId(null)
+        setEditingRef(null)
         setForm(getEvaluationFormDefault())
         setAssignmentPreset("all-panelists")
         setScheduleQuery("")
@@ -766,7 +1070,7 @@ export default function AdminEvaluationsPage() {
     }, [])
 
     const openViewDialog = React.useCallback((row: EvaluationRecord) => {
-        setViewingId(row.id)
+        setViewingRef({ id: row.id, kind: row.kind })
         setViewOpen(true)
     }, [])
 
@@ -813,8 +1117,9 @@ export default function AdminEvaluationsPage() {
             return
         }
 
+        const scheduleRoleKey = `${schedule_id.toLowerCase()}|${assignmentMeta.role}`
         const existingSetForSchedule =
-            assignmentKeysBySchedule.get(schedule_id.toLowerCase()) ?? new Set<string>()
+            assignmentKeysByScheduleRole.get(scheduleRoleKey) ?? new Set<string>()
 
         if (formMode === "create" && assignmentMeta.mode === "particular") {
             if (existingSetForSchedule.has(evaluator_id.toLowerCase())) {
@@ -826,10 +1131,12 @@ export default function AdminEvaluationsPage() {
             }
         }
 
-        if (formMode === "edit" && editingId) {
+        if (formMode === "edit" && editingRecord) {
+            const targetRole = editingRecord.assignee_role
             const duplicate = evaluations.some((row) => {
-                if (row.id === editingId) return false
+                if (row.id === editingRecord.id && row.kind === editingRecord.kind) return false
                 return (
+                    row.assignee_role === targetRole &&
                     row.schedule_id.toLowerCase() === schedule_id.toLowerCase() &&
                     row.evaluator_id.toLowerCase() === evaluator_id.toLowerCase()
                 )
@@ -856,6 +1163,7 @@ export default function AdminEvaluationsPage() {
                     return
                 }
 
+                const endpoint = await resolveEndpointByRole(assignmentMeta.role)
                 const validTargets = targets.filter((user) => isUuidLike(user.id))
                 const invalidCount = targets.length - validTargets.length
 
@@ -880,20 +1188,28 @@ export default function AdminEvaluationsPage() {
 
                 const settled = await Promise.allSettled(
                     targetsToCreate.map(async (user) => {
-                        const payload: Partial<EvaluationRecord> = {
-                            schedule_id,
-                            evaluator_id: user.id,
-                            status: status || "pending",
-                        }
+                        const payload =
+                            assignmentMeta.role === "panelist"
+                                ? {
+                                    schedule_id,
+                                    evaluator_id: user.id,
+                                    status: status || "pending",
+                                }
+                                : {
+                                    schedule_id,
+                                    student_id: user.id,
+                                    status: status || "pending",
+                                }
 
-                        const res = await fetch("/api/evaluations", {
+                        const res = await fetch(endpoint, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify(payload),
                         })
 
                         const data = await parseJsonSafely<EvaluationResponse>(res)
-                        return data.item ?? null
+                        const mapped = mapApiItemByRole(assignmentMeta.role, data.item)
+                        return mapped
                     }),
                 )
 
@@ -916,7 +1232,7 @@ export default function AdminEvaluationsPage() {
 
                 if (successCount > 0) {
                     if (createdItems.length === successCount && createdItems.length > 0) {
-                        setEvaluations((prev) => uniqueById([...createdItems, ...prev]))
+                        setEvaluations((prev) => appendAndSortEvaluations(prev, createdItems))
                     } else {
                         await loadEvaluations()
                     }
@@ -953,63 +1269,92 @@ export default function AdminEvaluationsPage() {
             }
 
             if (formMode === "create") {
-                const payload: Partial<EvaluationRecord> = {
-                    schedule_id,
-                    evaluator_id,
-                    status: status || "pending",
-                }
+                const endpoint = await resolveEndpointByRole(assignmentMeta.role)
 
-                const res = await fetch("/api/evaluations", {
+                const payload =
+                    assignmentMeta.role === "panelist"
+                        ? {
+                            schedule_id,
+                            evaluator_id,
+                            status: status || "pending",
+                        }
+                        : {
+                            schedule_id,
+                            student_id: evaluator_id,
+                            status: status || "pending",
+                        }
+
+                const res = await fetch(endpoint, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload),
                 })
 
                 const data = await parseJsonSafely<EvaluationResponse>(res)
+                const mapped = mapApiItemByRole(assignmentMeta.role, data.item)
 
-                if (data.item) {
-                    setEvaluations((prev) => [data.item!, ...prev])
+                if (mapped) {
+                    setEvaluations((prev) => appendAndSortEvaluations(prev, [mapped]))
                 } else {
                     await loadEvaluations()
                 }
 
-                toast.success("Evaluation assigned", {
-                    description: `Assigned to selected ${assignmentMeta.roleSingular}.`,
-                })
+                toast.success(
+                    assignmentMeta.role === "student"
+                        ? "Student evaluation assigned"
+                        : "Panelist evaluation assigned",
+                    {
+                        description: `Assigned to selected ${assignmentMeta.roleSingular}.`,
+                    },
+                )
 
                 closeForm()
                 return
             }
 
-            if (!editingId) {
+            if (!editingRecord) {
                 throw new Error("No evaluation selected for update.")
             }
 
-            const payload: Partial<EvaluationRecord> = {
-                schedule_id,
-                evaluator_id,
-                status: status || "pending",
-            }
+            const role: AssigneeRole = editingRecord.assignee_role
+            const endpoint = await resolveEndpointByRole(role)
 
-            const res = await fetch(`/api/evaluations/${editingId}`, {
+            const payload =
+                role === "panelist"
+                    ? {
+                        schedule_id,
+                        evaluator_id,
+                        status: status || "pending",
+                    }
+                    : {
+                        schedule_id,
+                        student_id: evaluator_id,
+                        status: status || "pending",
+                    }
+
+            const res = await fetch(`${endpoint}/${editingRecord.id}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
             })
 
             const data = await parseJsonSafely<EvaluationResponse>(res)
+            const mapped = mapApiItemByRole(role, data.item)
 
-            if (data.item) {
-                setEvaluations((prev) =>
-                    prev.map((row) => (row.id === data.item!.id ? data.item! : row)),
-                )
+            if (mapped) {
+                setEvaluations((prev) => replaceEvaluation(prev, mapped))
             } else {
                 await loadEvaluations()
             }
 
-            toast.success("Evaluation updated", {
-                description: "Changes were saved successfully.",
-            })
+            toast.success(
+                role === "student"
+                    ? "Student evaluation updated"
+                    : "Panelist evaluation updated",
+                {
+                    description: "Changes were saved successfully.",
+                },
+            )
 
             closeForm()
         } catch (err) {
@@ -1020,44 +1365,51 @@ export default function AdminEvaluationsPage() {
             setFormBusy(false)
         }
     }, [
-        assignmentKeysBySchedule,
+        assignmentKeysByScheduleRole,
         assignmentMeta,
         assignableUsers,
         closeForm,
-        editingId,
+        editingRecord,
         evaluations,
         form,
         formBusy,
         formMode,
         loadEvaluations,
+        resolveEndpointByRole,
     ])
 
     const deleteEvaluation = React.useCallback(
-        async (evaluationId: string) => {
-            const key = `${evaluationId}:delete`
+        async (evaluation: EvaluationRecord) => {
+            const key = `${evaluation.kind}:${evaluation.id}:delete`
             setBusyKey(key)
             setError(null)
 
             try {
-                const res = await fetch(`/api/evaluations/${evaluationId}`, {
+                const endpoint = await resolveEndpointByKind(evaluation.kind)
+
+                const res = await fetch(`${endpoint}/${evaluation.id}`, {
                     method: "DELETE",
                 })
 
                 await parseJsonSafely<{ deleted?: number; error?: string; message?: string }>(res)
 
-                setEvaluations((prev) => prev.filter((row) => row.id !== evaluationId))
-                setPendingDeleteId(null)
+                setEvaluations((prev) => removeEvaluation(prev, evaluation))
+                setPendingDeleteRef(null)
 
-                if (editingId === evaluationId) {
+                if (editingRef && isSameRef(editingRef, { id: evaluation.id, kind: evaluation.kind })) {
                     closeForm()
                 }
 
-                if (viewingId === evaluationId) {
+                if (viewingRef && isSameRef(viewingRef, { id: evaluation.id, kind: evaluation.kind })) {
                     setViewOpen(false)
-                    setViewingId(null)
+                    setViewingRef(null)
                 }
 
-                toast.success("Evaluation deleted")
+                toast.success(
+                    evaluation.kind === "student"
+                        ? "Student evaluation deleted"
+                        : "Panelist evaluation deleted",
+                )
             } catch (err) {
                 const message = err instanceof Error ? err.message : "Failed to delete evaluation."
                 setError(message)
@@ -1066,50 +1418,70 @@ export default function AdminEvaluationsPage() {
                 setBusyKey(null)
             }
         },
-        [closeForm, editingId, viewingId],
+        [closeForm, editingRef, resolveEndpointByKind, viewingRef],
     )
 
     const runAction = React.useCallback(
         async (evaluation: EvaluationRecord, action: EvaluationAction) => {
-            const actionKey = `${evaluation.id}:${action}`
+            const actionKey = `${evaluation.kind}:${evaluation.id}:${action}`
             if (busyKey) return
 
             setBusyKey(actionKey)
             setError(null)
 
             try {
-                let endpoint = ""
-                let payload: Record<string, unknown> = {}
+                const endpointBase = await resolveEndpointByKind(evaluation.kind)
 
+                let res: Response
                 if (action === "submit") {
-                    endpoint = `/api/evaluations/${evaluation.id}/submit`
+                    res = await fetch(`${endpointBase}/${evaluation.id}/submit`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({}),
+                    })
                 } else if (action === "lock") {
-                    endpoint = `/api/evaluations/${evaluation.id}/lock`
+                    res = await fetch(`${endpointBase}/${evaluation.id}/lock`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({}),
+                    })
                 } else {
-                    endpoint = `/api/evaluations/${evaluation.id}/status`
-                    payload = { status: "pending" }
+                    res = await fetch(`${endpointBase}/${evaluation.id}/status`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "pending" }),
+                    })
+
+                    if (res.status === 404 || res.status === 405) {
+                        res = await fetch(`${endpointBase}/${evaluation.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ status: "pending" }),
+                        })
+                    }
                 }
 
-                const res = await fetch(endpoint, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
-                })
-
                 const data = await parseJsonSafely<EvaluationResponse>(res)
+                const mapped = mapApiItemByKind(evaluation.kind, data.item)
 
-                if (data.item) {
-                    setEvaluations((prev) =>
-                        prev.map((row) => (row.id === data.item!.id ? data.item! : row)),
-                    )
+                if (mapped) {
+                    setEvaluations((prev) => replaceEvaluation(prev, mapped))
                 } else {
                     await loadEvaluations()
                 }
 
                 if (action === "submit") {
-                    toast.success("Evaluation submitted")
+                    toast.success(
+                        evaluation.kind === "student"
+                            ? "Student evaluation submitted"
+                            : "Panelist evaluation submitted",
+                    )
                 } else if (action === "lock") {
-                    toast.success("Evaluation locked")
+                    toast.success(
+                        evaluation.kind === "student"
+                            ? "Student evaluation locked"
+                            : "Panelist evaluation locked",
+                    )
                 } else {
                     toast.success("Evaluation set to pending")
                 }
@@ -1121,7 +1493,7 @@ export default function AdminEvaluationsPage() {
                 setBusyKey(null)
             }
         },
-        [busyKey, loadEvaluations],
+        [busyKey, loadEvaluations, resolveEndpointByKind],
     )
 
     const scheduleSuggestions = React.useMemo(() => {
@@ -1183,9 +1555,9 @@ export default function AdminEvaluationsPage() {
     }, [assignableUsers])
 
     const selectedViewEvaluation = React.useMemo(() => {
-        if (!viewingId) return null
-        return evaluations.find((row) => row.id === viewingId) ?? null
-    }, [evaluations, viewingId])
+        if (!viewingRef) return null
+        return evaluations.find((row) => isSameRefRecord(viewingRef, row)) ?? null
+    }, [evaluations, viewingRef])
 
     const selectedViewSchedule = React.useMemo(() => {
         if (!selectedViewEvaluation) return null
@@ -1199,6 +1571,13 @@ export default function AdminEvaluationsPage() {
 
     React.useEffect(() => {
         if (!formOpen) return
+
+        if (formMode === "edit" && editingRecord) {
+            const expectedPreset = toAssignmentPreset(editingRecord.assignee_role, "particular")
+            if (assignmentPreset !== expectedPreset) {
+                setAssignmentPreset(expectedPreset)
+            }
+        }
 
         if (form.schedule_id && !scheduleQuery.trim()) {
             const picked = resolveScheduleById(form.schedule_id)
@@ -1217,9 +1596,12 @@ export default function AdminEvaluationsPage() {
         }
     }, [
         assignmentMeta.mode,
+        assignmentPreset,
+        editingRecord,
         evaluatorQuery,
         form.evaluator_id,
         form.schedule_id,
+        formMode,
         formOpen,
         resolveEvaluatorById,
         resolveGroupNameFromSchedule,
@@ -1259,27 +1641,27 @@ export default function AdminEvaluationsPage() {
 
     React.useEffect(() => {
         if (!viewOpen) {
-            setViewingId(null)
+            setViewingRef(null)
             return
         }
 
-        if (viewingId && !selectedViewEvaluation) {
+        if (viewingRef && !selectedViewEvaluation) {
             setViewOpen(false)
-            setViewingId(null)
+            setViewingRef(null)
         }
-    }, [selectedViewEvaluation, viewOpen, viewingId])
+    }, [selectedViewEvaluation, viewOpen, viewingRef])
 
     return (
         <DashboardLayout
             title="Evaluations"
-            description="Assign evaluations to all/particular panelists or students, and manage evaluation lifecycle."
+            description="Assign panelist and student evaluations in distinct flows, then manage lifecycle and status in one user-friendly workspace."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                             <Input
-                                placeholder="Search by group name, evaluator name, room, schedule, or status"
+                                placeholder="Search by group name, assignee, role, room, schedule, or status"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 className="w-full lg:max-w-xl"
@@ -1335,8 +1717,8 @@ export default function AdminEvaluationsPage() {
                                 </h3>
                                 <p className="text-sm text-muted-foreground">
                                     {formMode === "create"
-                                        ? "Assign by one of four modes: all panelists, particular panelist, all students, or particular student."
-                                        : "Update a single evaluation assignment and status."}
+                                        ? "Student and panelist assignments are handled via separate API flows automatically."
+                                        : "Update one evaluation assignment using its original flow."}
                                 </p>
                             </div>
 
@@ -1645,7 +2027,7 @@ export default function AdminEvaluationsPage() {
                     <div className="border-b px-4 py-3">
                         <p className="text-sm font-medium">Evaluations by Group</p>
                         <p className="text-xs text-muted-foreground">
-                            Evaluations are grouped by thesis group for faster review and action handling.
+                            Student and panelist evaluations are displayed together while preserving separate backend flows.
                         </p>
                     </div>
 
@@ -1701,7 +2083,7 @@ export default function AdminEvaluationsPage() {
                                                 <TableHeader>
                                                     <TableRow>
                                                         <TableHead className="min-w-56">Schedule</TableHead>
-                                                        <TableHead className="min-w-56">Evaluator</TableHead>
+                                                        <TableHead className="min-w-56">Assignee</TableHead>
                                                         <TableHead className="min-w-28">Status</TableHead>
                                                         <TableHead className="min-w-44">Submitted</TableHead>
                                                         <TableHead className="min-w-44">Locked</TableHead>
@@ -1713,11 +2095,17 @@ export default function AdminEvaluationsPage() {
                                                 <TableBody>
                                                     {group.items.map((row) => {
                                                         const status = normalizeStatus(row.status)
-                                                        const isSubmitBusy = busyKey === `${row.id}:submit`
-                                                        const isLockBusy = busyKey === `${row.id}:lock`
-                                                        const isPendingBusy = busyKey === `${row.id}:set-pending`
-                                                        const isDeleteBusy = busyKey === `${row.id}:delete`
-                                                        const confirmDelete = pendingDeleteId === row.id
+                                                        const isSubmitBusy =
+                                                            busyKey === `${row.kind}:${row.id}:submit`
+                                                        const isLockBusy =
+                                                            busyKey === `${row.kind}:${row.id}:lock`
+                                                        const isPendingBusy =
+                                                            busyKey === `${row.kind}:${row.id}:set-pending`
+                                                        const isDeleteBusy =
+                                                            busyKey === `${row.kind}:${row.id}:delete`
+                                                        const confirmDelete =
+                                                            pendingDeleteRef?.id === row.id &&
+                                                            pendingDeleteRef?.kind === row.kind
 
                                                         const schedule =
                                                             scheduleById.get(row.schedule_id.toLowerCase()) ?? null
@@ -1731,7 +2119,7 @@ export default function AdminEvaluationsPage() {
                                                         const evaluatorName =
                                                             compactString(evaluator?.name) ??
                                                             compactString(evaluator?.email) ??
-                                                            "Unknown Evaluator"
+                                                            "Unknown Assignee"
 
                                                         const evaluatorEmail = compactString(evaluator?.email)
                                                         const evaluatorRole = evaluator
@@ -1743,7 +2131,7 @@ export default function AdminEvaluationsPage() {
                                                             .join(" • ")
 
                                                         return (
-                                                            <TableRow key={row.id}>
+                                                            <TableRow key={`${row.kind}:${row.id}`}>
                                                                 <TableCell>
                                                                     <div className="space-y-0.5">
                                                                         <p className="text-sm">{scheduleDate}</p>
@@ -1761,6 +2149,14 @@ export default function AdminEvaluationsPage() {
                                                                         <p className="text-sm font-medium">{evaluatorName}</p>
                                                                         <p className="text-xs text-muted-foreground">
                                                                             {evaluatorMeta || "—"}
+                                                                        </p>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            Flow:{" "}
+                                                                            <span className="font-medium text-foreground">
+                                                                                {row.assignee_role === "student"
+                                                                                    ? "Student"
+                                                                                    : "Panelist"}
+                                                                            </span>
                                                                         </p>
                                                                     </div>
                                                                 </TableCell>
@@ -1811,7 +2207,12 @@ export default function AdminEvaluationsPage() {
                                                                             <Button
                                                                                 variant="outline"
                                                                                 size="sm"
-                                                                                onClick={() => setPendingDeleteId(row.id)}
+                                                                                onClick={() =>
+                                                                                    setPendingDeleteRef({
+                                                                                        id: row.id,
+                                                                                        kind: row.kind,
+                                                                                    })
+                                                                                }
                                                                                 disabled={isDeleteBusy}
                                                                             >
                                                                                 Delete
@@ -1822,7 +2223,7 @@ export default function AdminEvaluationsPage() {
                                                                                     variant="outline"
                                                                                     size="sm"
                                                                                     onClick={() =>
-                                                                                        void deleteEvaluation(row.id)
+                                                                                        void deleteEvaluation(row)
                                                                                     }
                                                                                     disabled={isDeleteBusy}
                                                                                 >
@@ -1833,7 +2234,7 @@ export default function AdminEvaluationsPage() {
                                                                                 <Button
                                                                                     variant="outline"
                                                                                     size="sm"
-                                                                                    onClick={() => setPendingDeleteId(null)}
+                                                                                    onClick={() => setPendingDeleteRef(null)}
                                                                                     disabled={isDeleteBusy}
                                                                                 >
                                                                                     Cancel
@@ -1901,7 +2302,7 @@ export default function AdminEvaluationsPage() {
                                 <DialogHeader>
                                     <DialogTitle>Evaluation Details</DialogTitle>
                                     <DialogDescription>
-                                        View full assignment details and trigger quick lifecycle actions without leaving this page.
+                                        View full assignment details and run quick lifecycle actions.
                                     </DialogDescription>
                                 </DialogHeader>
 
@@ -1916,6 +2317,11 @@ export default function AdminEvaluationsPage() {
                                                 ].join(" ")}
                                             >
                                                 {toTitleCase(normalizeStatus(selectedViewEvaluation.status))}
+                                            </span>
+                                            <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
+                                                {selectedViewEvaluation.assignee_role === "student"
+                                                    ? "Student Flow"
+                                                    : "Panelist Flow"}
                                             </span>
                                         </div>
                                     </div>
@@ -1944,11 +2350,11 @@ export default function AdminEvaluationsPage() {
                                         </div>
 
                                         <div className="rounded-lg border p-3">
-                                            <p className="text-xs font-medium text-muted-foreground">Evaluator</p>
+                                            <p className="text-xs font-medium text-muted-foreground">Assignee</p>
                                             <p className="mt-1 text-sm font-medium">
                                                 {compactString(selectedViewEvaluator?.name) ??
                                                     compactString(selectedViewEvaluator?.email) ??
-                                                    "Unknown Evaluator"}
+                                                    "Unknown Assignee"}
                                             </p>
                                             <p className="mt-1 text-xs text-muted-foreground">
                                                 {[compactString(selectedViewEvaluator?.email), selectedViewEvaluator ? roleLabel(selectedViewEvaluator.role) : null]
@@ -1988,9 +2394,13 @@ export default function AdminEvaluationsPage() {
                                             <Button
                                                 variant="outline"
                                                 onClick={() => void runAction(selectedViewEvaluation, "set-pending")}
-                                                disabled={busyKey === `${selectedViewEvaluation.id}:set-pending`}
+                                                disabled={
+                                                    busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:set-pending`
+                                                }
                                             >
-                                                {busyKey === `${selectedViewEvaluation.id}:set-pending`
+                                                {busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:set-pending`
                                                     ? "Updating..."
                                                     : "Set Pending"}
                                             </Button>
@@ -2000,9 +2410,13 @@ export default function AdminEvaluationsPage() {
                                             <Button
                                                 variant="outline"
                                                 onClick={() => void runAction(selectedViewEvaluation, "submit")}
-                                                disabled={busyKey === `${selectedViewEvaluation.id}:submit`}
+                                                disabled={
+                                                    busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:submit`
+                                                }
                                             >
-                                                {busyKey === `${selectedViewEvaluation.id}:submit`
+                                                {busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:submit`
                                                     ? "Submitting..."
                                                     : "Submit"}
                                             </Button>
@@ -2011,9 +2425,13 @@ export default function AdminEvaluationsPage() {
                                         {normalizeStatus(selectedViewEvaluation.status) !== "locked" ? (
                                             <Button
                                                 onClick={() => void runAction(selectedViewEvaluation, "lock")}
-                                                disabled={busyKey === `${selectedViewEvaluation.id}:lock`}
+                                                disabled={
+                                                    busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:lock`
+                                                }
                                             >
-                                                {busyKey === `${selectedViewEvaluation.id}:lock`
+                                                {busyKey ===
+                                                    `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:lock`
                                                     ? "Locking..."
                                                     : "Lock Evaluation"}
                                             </Button>
