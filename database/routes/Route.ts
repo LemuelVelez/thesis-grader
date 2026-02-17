@@ -100,6 +100,7 @@ export type ApiResource =
     | 'users'
     | 'notifications'
     | 'evaluations'
+    | 'student-evaluations'
     | 'defense-schedules'
     | 'rubric-templates'
     | 'thesis-groups'
@@ -275,6 +276,11 @@ export function resolveApiRoot(segment: string | undefined): ApiRoot | null {
         case 'evaluation':
         case 'evaluations':
             return 'evaluations';
+
+        case 'student-evaluation':
+        case 'student-evaluations':
+        case 'student-evals':
+            return 'student-evaluations';
 
         case 'defense-schedule':
         case 'defense-schedules':
@@ -1219,7 +1225,7 @@ async function dispatchNotificationsRequest(
 
             const body = await readJsonRecord(req);
             const readAt = body ? parseReadAt(body) : undefined;
-            const updated = await controller.markAllAsRead(userId as UUID, readAt);
+            const updated = await controller.markAllAsRead(userId asString = request.user_id as UUID, readAt);
             return json200({ updated });
         }
 
@@ -1427,6 +1433,260 @@ async function dispatchEvaluationsRequest(
     return json404Api();
 }
 
+/* ------------------------ Student Evaluations Routes ----------------------- */
+/* Student evaluations are intentionally separate from panelist evaluations.   */
+
+type StudentEvaluationsControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: Record<string, unknown>) => Promise<unknown>;
+    findById?: (id: UUID) => Promise<unknown | null>;
+    updateOne?: (
+        where: { id: UUID },
+        patch: Record<string, unknown>,
+    ) => Promise<unknown | null>;
+    delete?: (where: { id: UUID }) => Promise<number>;
+    setStatus?: (
+        id: UUID,
+        status: EvaluationStatus | string,
+    ) => Promise<unknown | null>;
+    submit?: (id: UUID, submittedAt?: string) => Promise<unknown | null>;
+    lock?: (id: UUID, lockedAt?: string) => Promise<unknown | null>;
+    listBySchedule?: (scheduleId: UUID) => Promise<unknown[]>;
+    listByStudent?: (studentId: UUID) => Promise<unknown[]>;
+    listByEvaluator?: (evaluatorId: UUID) => Promise<unknown[]>;
+};
+
+function resolveStudentEvaluationsController(
+    services: DatabaseServices,
+): StudentEvaluationsControllerLike | null {
+    const maybe = (
+        services as unknown as { studentEvaluations?: StudentEvaluationsControllerLike }
+    ).studentEvaluations;
+
+    return maybe ?? null;
+}
+
+function normalizeStudentEvaluationPayload(
+    body: Record<string, unknown>,
+): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...body };
+
+    const studentIdCandidates: unknown[] = [
+        body.student_id,
+        body.studentId,
+        body.evaluator_id,
+        body.evaluatorId,
+        body.user_id,
+        body.userId,
+    ];
+
+    for (const candidate of studentIdCandidates) {
+        const parsed = toNonEmptyString(candidate);
+        if (parsed) {
+            out.student_id = parsed;
+            break;
+        }
+    }
+
+    if (!hasOwn(out, 'status')) {
+        out.status = 'pending';
+    }
+
+    delete out.evaluator_id;
+    delete out.evaluatorId;
+
+    return out;
+}
+
+async function dispatchStudentEvaluationsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = resolveStudentEvaluationsController(services);
+
+    if (!controller) {
+        return NextResponse.json(
+            {
+                error: 'Student evaluation endpoint is unavailable.',
+                message:
+                    'Student evaluation service is not configured. Student and panelist evaluation flows remain separate.',
+            },
+            { status: 404 },
+        );
+    }
+
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            if (typeof controller.findMany !== 'function') return json404Api();
+            const query = parseListQuery<Record<string, unknown>>(req);
+            const items = await controller.findMany(query);
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            if (typeof controller.create !== 'function') return json404Api();
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const payload = normalizeStudentEvaluationPayload(body);
+            const item = await controller.create(payload);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[0] === 'schedule') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        if (typeof controller.listBySchedule !== 'function') return json404Api();
+
+        const scheduleId = tail[1];
+        if (!scheduleId) return json400('scheduleId is required.');
+
+        const items = await controller.listBySchedule(scheduleId as UUID);
+        return json200({ items });
+    }
+
+    if (
+        tail.length === 2 &&
+        (tail[0] === 'student' || tail[0] === 'evaluator')
+    ) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const studentId = tail[1];
+        if (!studentId) return json400('studentId is required.');
+
+        const listByStudent = controller.listByStudent ?? controller.listByEvaluator;
+        if (typeof listByStudent !== 'function') return json404Api();
+
+        const items = await listByStudent(studentId as UUID);
+        return json200({ items });
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            if (typeof controller.findById !== 'function') return json404Api();
+            const item = await controller.findById(id as UUID);
+            if (!item) return json404Entity('Student evaluation');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            if (typeof controller.updateOne !== 'function') return json404Api();
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const payload = normalizeStudentEvaluationPayload(body);
+            const item = await controller.updateOne({ id: id as UUID }, payload);
+            if (!item) return json404Entity('Student evaluation');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json404Api();
+            const deleted = await controller.delete({ id: id as UUID });
+            if (deleted === 0) return json404Entity('Student evaluation');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    if (tail.length === 2 && tail[1] === 'status') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        if (!body) return json400('Invalid JSON body.');
+
+        const status = toEvaluationStatus(body.status);
+        if (!status) {
+            return json400('Invalid status. Provide a non-empty status string.');
+        }
+
+        let item: unknown | null = null;
+
+        if (typeof controller.setStatus === 'function') {
+            item = await controller.setStatus(id as UUID, status);
+        } else if (typeof controller.updateOne === 'function') {
+            item = await controller.updateOne(
+                { id: id as UUID },
+                { status },
+            );
+        }
+
+        if (!item) return json404Entity('Student evaluation');
+        return json200({ item });
+    }
+
+    if (tail.length === 2 && tail[1] === 'submit') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        const submittedAt = body
+            ? parseOptionalIsoDate(body.submittedAt ?? body.submitted_at)
+            : undefined;
+
+        let item: unknown | null = null;
+
+        if (typeof controller.submit === 'function') {
+            item = await controller.submit(id as UUID, submittedAt);
+        } else if (typeof controller.updateOne === 'function') {
+            item = await controller.updateOne(
+                { id: id as UUID },
+                {
+                    status: 'submitted',
+                    submitted_at: submittedAt ?? new Date().toISOString(),
+                },
+            );
+        }
+
+        if (!item) return json404Entity('Student evaluation');
+        return json200({ item });
+    }
+
+    if (tail.length === 2 && tail[1] === 'lock') {
+        if (method !== 'PATCH' && method !== 'POST') {
+            return json405(['PATCH', 'POST', 'OPTIONS']);
+        }
+
+        const body = await readJsonRecord(req);
+        const lockedAt = body
+            ? parseOptionalIsoDate(body.lockedAt ?? body.locked_at)
+            : undefined;
+
+        let item: unknown | null = null;
+
+        if (typeof controller.lock === 'function') {
+            item = await controller.lock(id as UUID, lockedAt);
+        } else if (typeof controller.updateOne === 'function') {
+            item = await controller.updateOne(
+                { id: id as UUID },
+                {
+                    status: 'locked',
+                    locked_at: lockedAt ?? new Date().toISOString(),
+                },
+            );
+        }
+
+        if (!item) return json404Entity('Student evaluation');
+        return json200({ item });
+    }
+
+    return json404Api();
+}
+
 async function enforceApiGuard(
     req: NextRequest,
     resource: ApiRoot,
@@ -1512,6 +1772,9 @@ export async function dispatchApiRequest(
                 users: '/api/users/*',
                 notifications: '/api/notifications/*',
                 evaluations: '/api/evaluations/*',
+                studentEvaluations: '/api/student-evaluations/*',
+                adminStudentEvaluations: '/api/admin/student-evaluations/*',
+                studentScopedEvaluations: '/api/student/evaluations/*',
                 defenseSchedules: '/api/defense-schedules/*',
                 defenseSchedulePanelists: '/api/defense-schedule-panelists/*',
                 rubricTemplates: '/api/rubric-templates/*',
@@ -1532,6 +1795,56 @@ export async function dispatchApiRequest(
     if (guardDenied) return guardDenied;
 
     const tail = isThesisGroupsAlias ? segments.slice(2) : segments.slice(1);
+
+    const isAdminStudentEvaluationsAlias =
+        root === 'admin' &&
+        (
+            tail[0] === 'student-evaluations' ||
+            tail[0] === 'student-evaluation' ||
+            (
+                tail[0] === 'student' &&
+                (
+                    tail[1] === 'evaluations' ||
+                    tail[1] === 'student-evaluations' ||
+                    tail[1] === 'student-evaluation'
+                )
+            )
+        );
+
+    const isStudentScopedEvaluationsAlias =
+        root === 'student' &&
+        (
+            tail[0] === 'evaluations' ||
+            tail[0] === 'student-evaluations' ||
+            tail[0] === 'student-evaluation'
+        );
+
+    if (
+        root === 'student-evaluations' ||
+        isAdminStudentEvaluationsAlias ||
+        isStudentScopedEvaluationsAlias
+    ) {
+        let studentEvalTail = tail;
+
+        if (root === 'admin') {
+            if (
+                tail[0] === 'student' &&
+                (
+                    tail[1] === 'evaluations' ||
+                    tail[1] === 'student-evaluations' ||
+                    tail[1] === 'student-evaluation'
+                )
+            ) {
+                studentEvalTail = tail.slice(2);
+            } else {
+                studentEvalTail = tail.slice(1);
+            }
+        } else if (root === 'student') {
+            studentEvalTail = tail.slice(1);
+        }
+
+        return dispatchStudentEvaluationsRequest(req, studentEvalTail, services);
+    }
 
     switch (root) {
         case 'admin':
@@ -1554,6 +1867,9 @@ export async function dispatchApiRequest(
 
         case 'evaluations':
             return dispatchEvaluationsRequest(req, tail, services);
+
+        case 'student-evaluations':
+            return dispatchStudentEvaluationsRequest(req, tail, services);
 
         case 'defense-schedules':
             return dispatchDefenseSchedulesRequest(req, tail, services);
