@@ -44,6 +44,35 @@ type EvaluationExtrasControllerLike = {
     findById?: (id: UUID) => Promise<unknown | null>;
 };
 
+type ServicesWithLooseGet = {
+    get?: (key: string) => unknown;
+};
+
+function tryGetServiceByAnyKey(
+    services: DatabaseServices,
+    key: string,
+): unknown | null {
+    const getter = (services as unknown as ServicesWithLooseGet).get;
+    if (typeof getter !== 'function') return null;
+
+    try {
+        const value = getter.call(services, key);
+        return value ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function normalizePanelistTail(tail: string[]): string[] {
+    const clean = tail.filter((segment) => typeof segment === 'string' && segment.trim().length > 0);
+
+    let offset = 0;
+    if (clean[offset]?.toLowerCase() === 'api') offset += 1;
+    if (clean[offset]?.toLowerCase() === 'panelist') offset += 1;
+
+    return clean.slice(offset);
+}
+
 function resolveEvaluationScoresController(
     services: DatabaseServices,
 ): EvaluationScoresControllerLike | null {
@@ -59,36 +88,60 @@ function resolveEvaluationScoresController(
     ).evaluationScores;
     if (maybeCamel) return maybeCamel;
 
-    try {
-        const viaRegistry = services.get('evaluation_scores');
-        if (viaRegistry) return viaRegistry as unknown as EvaluationScoresControllerLike;
-    } catch {
-        // no-op
-    }
+    const viaRegistry = tryGetServiceByAnyKey(services, 'evaluation_scores');
+    if (viaRegistry) return viaRegistry as EvaluationScoresControllerLike;
 
     return null;
+}
+
+function isEvaluationExtrasControllerLike(value: unknown): value is EvaluationExtrasControllerLike {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as EvaluationExtrasControllerLike;
+    return (
+        typeof candidate.findMany === 'function' ||
+        typeof candidate.create === 'function' ||
+        typeof candidate.updateOne === 'function' ||
+        typeof candidate.findById === 'function'
+    );
 }
 
 function resolveEvaluationExtrasController(
     services: DatabaseServices,
 ): EvaluationExtrasControllerLike | null {
-    if ((services as Partial<DatabaseServices>).evaluation_extras) {
-        return (services as Partial<DatabaseServices>)
-            .evaluation_extras as unknown as EvaluationExtrasControllerLike;
+    const directCandidates: unknown[] = [
+        (services as Partial<DatabaseServices>).evaluation_extras,
+        (services as unknown as { evaluationExtras?: unknown }).evaluationExtras,
+        (services as unknown as { evaluation_extra?: unknown }).evaluation_extra,
+        (services as unknown as { evaluationExtra?: unknown }).evaluationExtra,
+    ];
+
+    for (const candidate of directCandidates) {
+        if (isEvaluationExtrasControllerLike(candidate)) {
+            return candidate;
+        }
     }
 
-    const maybeCamel = (
-        services as unknown as {
-            evaluationExtras?: EvaluationExtrasControllerLike;
-        }
-    ).evaluationExtras;
-    if (maybeCamel) return maybeCamel;
+    const registryKeys = [
+        'evaluation_extras',
+        'evaluation_extra',
+        'evaluationExtras',
+        'evaluationExtra',
+    ] as const;
 
-    try {
-        const viaRegistry = services.get('evaluation_extras');
-        if (viaRegistry) return viaRegistry as unknown as EvaluationExtrasControllerLike;
-    } catch {
-        // no-op
+    for (const key of registryKeys) {
+        const viaRegistry = tryGetServiceByAnyKey(services, key);
+        if (isEvaluationExtrasControllerLike(viaRegistry)) {
+            return viaRegistry;
+        }
+    }
+
+    const dynamicEntries = Object.entries(services as unknown as Record<string, unknown>);
+    for (const [key, value] of dynamicEntries) {
+        const lowered = key.toLowerCase();
+        if (!lowered.includes('evaluation') || !lowered.includes('extra')) continue;
+        if (isEvaluationExtrasControllerLike(value)) {
+            return value;
+        }
     }
 
     return null;
@@ -332,10 +385,15 @@ async function upsertPanelNote(
     let saved: unknown | null = null;
 
     if (existing && typeof controller.updateOne === 'function') {
-        saved = await controller.updateOne(
-            { evaluation_id: evaluationId },
-            { data: nextData },
-        );
+        const existingId = toNonEmptyString(existing.id);
+        saved =
+            (existingId
+                ? await controller.updateOne({ id: existingId }, { data: nextData })
+                : null) ??
+            (await controller.updateOne(
+                { evaluation_id: evaluationId },
+                { data: nextData },
+            ));
     } else if (typeof controller.create === 'function') {
         try {
             saved = await controller.create({
@@ -448,23 +506,28 @@ async function dispatchPanelistEvaluationsRequest(
     services: DatabaseServices,
 ): Promise<Response> {
     const method = req.method.toUpperCase();
+    const routeTail = normalizePanelistTail(tail);
 
-    // /api/panelist/evaluations/:evaluationId/:segment
-    if (tail.length < 2) return json404Api();
+    // Supports both:
+    // - ['evaluations', ':evaluationId', ':segment']
+    // - ['panelist', 'evaluations', ':evaluationId', ':segment'] (normalized above)
+    if (routeTail.length < 3 || routeTail[0] !== 'evaluations') return json404Api();
 
-    const evaluationId = tail[1];
+    const evaluationId = routeTail[1];
     if (!evaluationId || !isUuidLike(evaluationId)) return json404Api();
 
-    const segment = tail[2];
+    const segment = routeTail[2];
 
     // Notes routes
     // GET    /api/panelist/evaluations/:evaluationId/notes
     // PATCH  /api/panelist/evaluations/:evaluationId/notes
     // PUT    /api/panelist/evaluations/:evaluationId/notes
     // POST   /api/panelist/evaluations/:evaluationId/notes
-    if (segment === 'notes' && tail.length === 3) {
+    if (segment === 'notes' && routeTail.length === 3) {
         const extras = resolveEvaluationExtrasController(services);
-        if (!extras) return json404Api();
+        if (!extras) {
+            return json400('Private notes service is unavailable for this environment.');
+        }
 
         if (method === 'GET') {
             const existing = await findEvaluationExtraByEvaluationId(extras, evaluationId as UUID);
@@ -515,7 +578,7 @@ async function dispatchPanelistEvaluationsRequest(
 
     // Scores routes
     // GET/POST/PATCH/PUT /api/panelist/evaluations/:evaluationId/scores
-    if (segment === 'scores' && tail.length === 3) {
+    if (segment === 'scores' && routeTail.length === 3) {
         const scores = resolveEvaluationScoresController(services);
         if (!scores) return json404Api();
 
@@ -606,17 +669,19 @@ export async function dispatchPanelistRequest(
     tail: string[],
     services: DatabaseServices,
 ): Promise<Response> {
+    const routeTail = normalizePanelistTail(tail);
+
     // New nested panelist evaluation routes:
     // - /api/panelist/evaluations/:evaluationId/notes
     // - /api/panelist/evaluations/:evaluationId/scores
-    if (tail.length > 0 && tail[0] === 'evaluations') {
-        return dispatchPanelistEvaluationsRequest(req, tail, services);
+    if (routeTail.length > 0 && routeTail[0] === 'evaluations') {
+        return dispatchPanelistEvaluationsRequest(req, routeTail, services);
     }
 
     const controller = new PanelistController(services);
     const method = req.method.toUpperCase();
 
-    if (tail.length === 0) {
+    if (routeTail.length === 0) {
         if (method === 'GET') {
             const query = parseListQuery<UserRow>(req);
             const items = await controller.getAll(omitWhere(query));
@@ -636,10 +701,10 @@ export async function dispatchPanelistRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
-    const id = tail[0];
+    const id = routeTail[0];
     if (!id || !isUuidLike(id)) return json404Api();
 
-    if (tail.length === 1) {
+    if (routeTail.length === 1) {
         if (method === 'GET') {
             const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Panelist');
@@ -667,7 +732,7 @@ export async function dispatchPanelistRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
-    if (tail.length === 2 && tail[1] === 'status') {
+    if (routeTail.length === 2 && routeTail[1] === 'status') {
         if (method !== 'PATCH' && method !== 'POST') {
             return json405(['PATCH', 'POST', 'OPTIONS']);
         }
