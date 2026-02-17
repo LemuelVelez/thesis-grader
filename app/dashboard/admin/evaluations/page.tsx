@@ -175,6 +175,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
 }
 
+function isUuidLike(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value.trim(),
+    )
+}
+
 function toTitleCase(value: string) {
     if (!value) return value
     return value.charAt(0).toUpperCase() + value.slice(1)
@@ -214,11 +220,23 @@ async function parseJsonSafely<T>(res: Response): Promise<T> {
     }
 
     if (!res.ok) {
+        const apiError =
+            isRecord(data) && typeof data.error === "string" ? data.error.trim() : ""
+        const apiMessage =
+            isRecord(data) && typeof data.message === "string"
+                ? data.message.trim()
+                : ""
+
+        const errorIsGenericInternal =
+            apiError.toLowerCase() === "internal server error." ||
+            apiError.toLowerCase() === "internal server error"
+
         const message =
-            isRecord(data) &&
-                (typeof data.error === "string" || typeof data.message === "string")
-                ? String(data.error || data.message)
-                : `Request failed (${res.status})`
+            (!errorIsGenericInternal && apiError) ||
+            apiMessage ||
+            apiError ||
+            `Request failed (${res.status})`
+
         throw new Error(message)
     }
 
@@ -346,6 +364,25 @@ export default function AdminEvaluationsPage() {
         }
         return map
     }, [evaluators])
+
+    const assignmentKeysBySchedule = React.useMemo(() => {
+        const map = new Map<string, Set<string>>()
+
+        for (const row of evaluations) {
+            const scheduleId = row.schedule_id.trim().toLowerCase()
+            const evaluatorId = row.evaluator_id.trim().toLowerCase()
+
+            if (!scheduleId || !evaluatorId) continue
+
+            if (!map.has(scheduleId)) {
+                map.set(scheduleId, new Set<string>())
+            }
+
+            map.get(scheduleId)!.add(evaluatorId)
+        }
+
+        return map
+    }, [evaluations])
 
     const assignmentMeta = React.useMemo(
         () => ASSIGNMENT_PRESET_META[assignmentPreset],
@@ -628,6 +665,52 @@ export default function AdminEvaluationsPage() {
         })
     }, [assignmentMeta.role, evaluators])
 
+    const bulkAssignmentPreview = React.useMemo(() => {
+        if (assignmentMeta.mode !== "all") {
+            return {
+                total: 0,
+                valid: 0,
+                invalid: 0,
+                alreadyAssigned: 0,
+                toCreate: 0,
+            }
+        }
+
+        const scheduleKey = form.schedule_id.trim().toLowerCase()
+        const existingAssignees = scheduleKey
+            ? assignmentKeysBySchedule.get(scheduleKey) ?? new Set<string>()
+            : new Set<string>()
+
+        let valid = 0
+        let invalid = 0
+        let alreadyAssigned = 0
+        let toCreate = 0
+
+        for (const user of assignableUsers) {
+            const id = user.id.trim()
+            if (!isUuidLike(id)) {
+                invalid += 1
+                continue
+            }
+
+            valid += 1
+
+            if (scheduleKey && existingAssignees.has(id.toLowerCase())) {
+                alreadyAssigned += 1
+            } else {
+                toCreate += 1
+            }
+        }
+
+        return {
+            total: assignableUsers.length,
+            valid,
+            invalid,
+            alreadyAssigned,
+            toCreate,
+        }
+    }, [assignmentMeta.mode, assignableUsers, assignmentKeysBySchedule, form.schedule_id])
+
     const openCreateForm = React.useCallback(() => {
         setFormMode("create")
         setEditingId(null)
@@ -706,6 +789,13 @@ export default function AdminEvaluationsPage() {
             return
         }
 
+        if (!isUuidLike(schedule_id)) {
+            toast.error("Selected schedule is invalid.", {
+                description: "Please pick a schedule from the quick-pick list.",
+            })
+            return
+        }
+
         if (formMode === "edit" && assignmentMeta.mode === "all") {
             toast.error("Editing supports particular assignee only.")
             return
@@ -714,6 +804,44 @@ export default function AdminEvaluationsPage() {
         if (assignmentMeta.mode === "particular" && !evaluator_id) {
             toast.error(`Please select a ${assignmentMeta.roleSingular}.`)
             return
+        }
+
+        if (assignmentMeta.mode === "particular" && !isUuidLike(evaluator_id)) {
+            toast.error(`Selected ${assignmentMeta.roleSingular} id is invalid.`, {
+                description: "Please choose the assignee from the quick-pick list.",
+            })
+            return
+        }
+
+        const existingSetForSchedule =
+            assignmentKeysBySchedule.get(schedule_id.toLowerCase()) ?? new Set<string>()
+
+        if (formMode === "create" && assignmentMeta.mode === "particular") {
+            if (existingSetForSchedule.has(evaluator_id.toLowerCase())) {
+                toast.error("Duplicate assignment", {
+                    description:
+                        "This assignee already has an evaluation for the selected schedule.",
+                })
+                return
+            }
+        }
+
+        if (formMode === "edit" && editingId) {
+            const duplicate = evaluations.some((row) => {
+                if (row.id === editingId) return false
+                return (
+                    row.schedule_id.toLowerCase() === schedule_id.toLowerCase() &&
+                    row.evaluator_id.toLowerCase() === evaluator_id.toLowerCase()
+                )
+            })
+
+            if (duplicate) {
+                toast.error("Duplicate assignment", {
+                    description:
+                        "Another evaluation already exists with the same schedule and assignee.",
+                })
+                return
+            }
         }
 
         setFormBusy(true)
@@ -728,8 +856,30 @@ export default function AdminEvaluationsPage() {
                     return
                 }
 
+                const validTargets = targets.filter((user) => isUuidLike(user.id))
+                const invalidCount = targets.length - validTargets.length
+
+                const targetsToCreate = validTargets.filter(
+                    (user) => !existingSetForSchedule.has(user.id.toLowerCase()),
+                )
+                const alreadyAssignedCount = validTargets.length - targetsToCreate.length
+
+                if (targetsToCreate.length === 0) {
+                    toast.info("No new assignments to create", {
+                        description: [
+                            alreadyAssignedCount > 0
+                                ? `${alreadyAssignedCount} already assigned`
+                                : null,
+                            invalidCount > 0 ? `${invalidCount} invalid user id(s) skipped` : null,
+                        ]
+                            .filter((x): x is string => !!x)
+                            .join(" • ") || "Everything is already up to date.",
+                    })
+                    return
+                }
+
                 const settled = await Promise.allSettled(
-                    targets.map(async (user) => {
+                    targetsToCreate.map(async (user) => {
                         const payload: Partial<EvaluationRecord> = {
                             schedule_id,
                             evaluator_id: user.id,
@@ -779,13 +929,22 @@ export default function AdminEvaluationsPage() {
                     )
                 }
 
+                const summaryParts = [
+                    `${successCount} created`,
+                    failures.length > 0 ? `${failures.length} failed` : null,
+                    alreadyAssignedCount > 0
+                        ? `${alreadyAssignedCount} already assigned`
+                        : null,
+                    invalidCount > 0 ? `${invalidCount} invalid id(s) skipped` : null,
+                ].filter((x): x is string => !!x)
+
                 if (failures.length > 0) {
                     toast.error("Partial assignment completed", {
-                        description: `${successCount} created, ${failures.length} failed.`,
+                        description: summaryParts.join(" • "),
                     })
                 } else {
                     toast.success("Bulk assignment completed", {
-                        description: `${successCount} ${assignmentMeta.rolePlural} assigned successfully.`,
+                        description: summaryParts.join(" • "),
                     })
                 }
 
@@ -860,7 +1019,18 @@ export default function AdminEvaluationsPage() {
         } finally {
             setFormBusy(false)
         }
-    }, [assignmentMeta, assignableUsers, closeForm, editingId, form, formBusy, formMode, loadEvaluations])
+    }, [
+        assignmentKeysBySchedule,
+        assignmentMeta,
+        assignableUsers,
+        closeForm,
+        editingId,
+        evaluations,
+        form,
+        formBusy,
+        formMode,
+        loadEvaluations,
+    ])
 
     const deleteEvaluation = React.useCallback(
         async (evaluationId: string) => {
@@ -1288,6 +1458,39 @@ export default function AdminEvaluationsPage() {
                                             </span>{" "}
                                             {assignableUsers.length} active {assignmentMeta.rolePlural}
                                         </div>
+
+                                        {form.schedule_id ? (
+                                            <div className="grid gap-2 sm:grid-cols-2">
+                                                <div className="rounded-md border p-2 text-xs">
+                                                    <p className="text-muted-foreground">Ready to create</p>
+                                                    <p className="mt-1 font-semibold text-foreground">
+                                                        {bulkAssignmentPreview.toCreate}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-md border p-2 text-xs">
+                                                    <p className="text-muted-foreground">Already assigned</p>
+                                                    <p className="mt-1 font-semibold text-foreground">
+                                                        {bulkAssignmentPreview.alreadyAssigned}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-md border p-2 text-xs">
+                                                    <p className="text-muted-foreground">Valid IDs</p>
+                                                    <p className="mt-1 font-semibold text-foreground">
+                                                        {bulkAssignmentPreview.valid}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-md border p-2 text-xs">
+                                                    <p className="text-muted-foreground">Invalid IDs (skipped)</p>
+                                                    <p className="mt-1 font-semibold text-foreground">
+                                                        {bulkAssignmentPreview.invalid}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-md border p-2 text-xs text-muted-foreground">
+                                                Select a schedule first to preview new vs already assigned recipients.
+                                            </div>
+                                        )}
 
                                         <div className="space-y-2">
                                             <p className="text-xs text-muted-foreground">
