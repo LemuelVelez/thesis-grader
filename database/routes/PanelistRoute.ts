@@ -1,9 +1,11 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { PanelistController } from '../controllers/PanelistController';
-import { USER_STATUSES, type UserRow, type UUID } from '../models/Model';
-import type { DatabaseServices } from '../services/Services';
+import { USER_STATUSES, type JsonObject, type UserRow, type UUID } from '../models/Model';
+import type { DatabaseServices, ListQuery } from '../services/Services';
 import {
+    isRecord,
+    isUniqueViolation,
     isUuidLike,
     json200,
     json201,
@@ -14,14 +16,603 @@ import {
     omitWhere,
     parseListQuery,
     readJsonRecord,
+    toErrorMessage,
+    toNonEmptyString,
     toUserStatus,
 } from './Route';
+
+type EvaluationTargetType = 'group' | 'student';
+
+type EvaluationScoresControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: Record<string, unknown>) => Promise<unknown>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: Record<string, unknown>,
+    ) => Promise<unknown | null>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
+    listByEvaluation?: (evaluationId: UUID) => Promise<unknown[]>;
+};
+
+type EvaluationExtrasControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: Record<string, unknown>) => Promise<unknown>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: Record<string, unknown>,
+    ) => Promise<unknown | null>;
+    findById?: (id: UUID) => Promise<unknown | null>;
+};
+
+function resolveEvaluationScoresController(
+    services: DatabaseServices,
+): EvaluationScoresControllerLike | null {
+    if ((services as Partial<DatabaseServices>).evaluation_scores) {
+        return (services as Partial<DatabaseServices>)
+            .evaluation_scores as unknown as EvaluationScoresControllerLike;
+    }
+
+    const maybeCamel = (
+        services as unknown as {
+            evaluationScores?: EvaluationScoresControllerLike;
+        }
+    ).evaluationScores;
+    if (maybeCamel) return maybeCamel;
+
+    try {
+        const viaRegistry = services.get('evaluation_scores');
+        if (viaRegistry) return viaRegistry as unknown as EvaluationScoresControllerLike;
+    } catch {
+        // no-op
+    }
+
+    return null;
+}
+
+function resolveEvaluationExtrasController(
+    services: DatabaseServices,
+): EvaluationExtrasControllerLike | null {
+    if ((services as Partial<DatabaseServices>).evaluation_extras) {
+        return (services as Partial<DatabaseServices>)
+            .evaluation_extras as unknown as EvaluationExtrasControllerLike;
+    }
+
+    const maybeCamel = (
+        services as unknown as {
+            evaluationExtras?: EvaluationExtrasControllerLike;
+        }
+    ).evaluationExtras;
+    if (maybeCamel) return maybeCamel;
+
+    try {
+        const viaRegistry = services.get('evaluation_extras');
+        if (viaRegistry) return viaRegistry as unknown as EvaluationExtrasControllerLike;
+    } catch {
+        // no-op
+    }
+
+    return null;
+}
+
+function pickUuid(candidates: unknown[]): string | null {
+    for (const value of candidates) {
+        const parsed = toNonEmptyString(value);
+        if (parsed && isUuidLike(parsed)) return parsed;
+    }
+    return null;
+}
+
+function toTargetType(value: unknown): EvaluationTargetType | null {
+    const raw = toNonEmptyString(value)?.toLowerCase();
+    if (!raw) return null;
+    if (raw === 'group') return 'group';
+    if (raw === 'student' || raw === 'individual') return 'student';
+    return null;
+}
+
+function normalizeEvaluationScorePayload(
+    body: Record<string, unknown>,
+    scopedEvaluationId: UUID,
+): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+
+    const evaluationId = pickUuid([
+        scopedEvaluationId,
+        body.evaluation_id,
+        body.evaluationId,
+        body.eval_id,
+        body.evalId,
+    ]);
+    if (evaluationId) out.evaluation_id = evaluationId;
+
+    const criterionId = pickUuid([
+        body.criterion_id,
+        body.criterionId,
+        body.criteria_id,
+        body.criteriaId,
+        body.rubric_criterion_id,
+        body.rubricCriterionId,
+    ]);
+    if (criterionId) out.criterion_id = criterionId;
+
+    const studentId = pickUuid([body.student_id, body.studentId]);
+    const groupId = pickUuid([body.group_id, body.groupId]);
+
+    const explicitTargetType = toTargetType(
+        body.target_type ??
+        body.targetType ??
+        body.subject_type ??
+        body.subjectType ??
+        body.targetType,
+    );
+
+    const targetType: EvaluationTargetType | null =
+        explicitTargetType ?? (studentId ? 'student' : groupId ? 'group' : null);
+
+    if (targetType) out.target_type = targetType;
+
+    let targetId: string | null = null;
+
+    if (targetType === 'student') {
+        targetId = pickUuid([
+            body.target_id,
+            body.targetId,
+            body.subject_id,
+            body.subjectId,
+            studentId,
+        ]);
+    } else if (targetType === 'group') {
+        targetId = pickUuid([
+            body.target_id,
+            body.targetId,
+            body.subject_id,
+            body.subjectId,
+            groupId,
+        ]);
+    } else {
+        targetId = pickUuid([
+            body.target_id,
+            body.targetId,
+            body.subject_id,
+            body.subjectId,
+            studentId,
+            groupId,
+        ]);
+    }
+
+    if (targetId) out.target_id = targetId;
+
+    const scoreRaw = body.score;
+    if (typeof scoreRaw === 'number' && Number.isFinite(scoreRaw)) {
+        out.score = scoreRaw;
+    } else if (typeof scoreRaw === 'string' && scoreRaw.trim().length > 0) {
+        const parsed = Number(scoreRaw);
+        if (Number.isFinite(parsed)) out.score = parsed;
+    }
+
+    if (body.comment === null || typeof body.comment === 'string') {
+        out.comment = body.comment;
+    } else {
+        out.comment = null;
+    }
+
+    return out;
+}
+
+function validateNormalizedScorePayload(payload: Record<string, unknown>): string | null {
+    const evaluationId = toNonEmptyString(payload.evaluation_id);
+    if (!evaluationId || !isUuidLike(evaluationId)) {
+        return 'evaluation_id is required and must be a valid UUID.';
+    }
+
+    const criterionId = toNonEmptyString(payload.criterion_id);
+    if (!criterionId || !isUuidLike(criterionId)) {
+        return 'criterion_id is required and must be a valid UUID.';
+    }
+
+    const targetType = toTargetType(payload.target_type);
+    if (!targetType) {
+        return 'target_type is required and must be either "group" or "student".';
+    }
+
+    const targetId = toNonEmptyString(payload.target_id);
+    if (!targetId || !isUuidLike(targetId)) {
+        return 'target_id is required and must be a valid UUID.';
+    }
+
+    const score = payload.score;
+    if (typeof score !== 'number' || !Number.isFinite(score)) {
+        return 'score must be a finite number.';
+    }
+
+    return null;
+}
+
+async function upsertEvaluationScoreByTarget(
+    controller: EvaluationScoresControllerLike,
+    payload: Record<string, unknown>,
+): Promise<{ item: unknown; created: boolean }> {
+    const evaluationId = toNonEmptyString(payload.evaluation_id) as UUID;
+    const criterionId = toNonEmptyString(payload.criterion_id) as UUID;
+    const targetType = toTargetType(payload.target_type) as EvaluationTargetType;
+    const targetId = toNonEmptyString(payload.target_id) as UUID;
+
+    const where = {
+        evaluation_id: evaluationId,
+        criterion_id: criterionId,
+        target_type: targetType,
+        target_id: targetId,
+    };
+
+    if (typeof controller.updateOne === 'function') {
+        const updated = await controller.updateOne(where, payload);
+        if (updated) return { item: updated, created: false };
+    }
+
+    if (typeof controller.create === 'function') {
+        try {
+            const created = await controller.create(payload);
+            return { item: created, created: true };
+        } catch (error) {
+            if (isUniqueViolation(error) && typeof controller.updateOne === 'function') {
+                const updated = await controller.updateOne(where, payload);
+                if (updated) return { item: updated, created: false };
+            }
+            throw error;
+        }
+    }
+
+    throw new Error('Evaluation scores service is unavailable.');
+}
+
+function readPanelNoteFromData(data: Record<string, unknown>): string {
+    const candidates: unknown[] = [
+        data.panelist_private_notes,
+        data.private_panel_notes,
+        data.panel_notes,
+        data.notes,
+    ];
+
+    for (const value of candidates) {
+        if (typeof value === 'string') return value;
+        if (value === null) return '';
+    }
+
+    return '';
+}
+
+function extractDataObject(row: unknown): Record<string, unknown> {
+    if (!isRecord(row)) return {};
+    const data = row.data;
+    return isRecord(data) ? data : {};
+}
+
+function parseNotesValue(value: unknown): string | null {
+    if (value === null) return '';
+    if (typeof value === 'string') return value;
+    return null;
+}
+
+async function findEvaluationExtraByEvaluationId(
+    controller: EvaluationExtrasControllerLike,
+    evaluationId: UUID,
+): Promise<Record<string, unknown> | null> {
+    if (typeof controller.findMany === 'function') {
+        const rows = await controller.findMany({
+            where: { evaluation_id: evaluationId },
+            limit: 1,
+        } as ListQuery<Record<string, unknown>>);
+
+        if (Array.isArray(rows) && rows.length > 0 && isRecord(rows[0])) {
+            return rows[0] as Record<string, unknown>;
+        }
+    }
+
+    if (typeof controller.findById === 'function') {
+        const row = await controller.findById(evaluationId);
+        if (row && isRecord(row)) return row as Record<string, unknown>;
+    }
+
+    return null;
+}
+
+async function upsertPanelNote(
+    controller: EvaluationExtrasControllerLike,
+    evaluationId: UUID,
+    notes: string,
+): Promise<Record<string, unknown>> {
+    const existing = await findEvaluationExtraByEvaluationId(controller, evaluationId);
+    const baseData = existing ? extractDataObject(existing) : {};
+
+    const nextData: JsonObject = {
+        ...baseData,
+        panelist_private_notes: notes,
+    };
+
+    let saved: unknown | null = null;
+
+    if (existing && typeof controller.updateOne === 'function') {
+        saved = await controller.updateOne(
+            { evaluation_id: evaluationId },
+            { data: nextData },
+        );
+    } else if (typeof controller.create === 'function') {
+        try {
+            saved = await controller.create({
+                evaluation_id: evaluationId,
+                data: nextData,
+            });
+        } catch (error) {
+            if (isUniqueViolation(error) && typeof controller.updateOne === 'function') {
+                saved = await controller.updateOne(
+                    { evaluation_id: evaluationId },
+                    { data: nextData },
+                );
+            } else {
+                throw error;
+            }
+        }
+    } else if (typeof controller.updateOne === 'function') {
+        saved = await controller.updateOne(
+            { evaluation_id: evaluationId },
+            { data: nextData },
+        );
+    } else {
+        throw new Error('Evaluation extras service is unavailable.');
+    }
+
+    const source = isRecord(saved) ? saved : existing ?? {};
+    const updatedAt = toNonEmptyString(source.updated_at) ?? null;
+
+    return {
+        evaluation_id: evaluationId,
+        notes,
+        updated_at: updatedAt,
+    };
+}
+
+async function listPanelistEvaluationScores(
+    controller: EvaluationScoresControllerLike,
+    req: NextRequest,
+    evaluationId: UUID,
+): Promise<unknown[]> {
+    const search = req.nextUrl.searchParams;
+
+    const criterionId = pickUuid([
+        search.get('criterion_id'),
+        search.get('criterionId'),
+    ]);
+    const targetTypeRaw = search.get('target_type') ?? search.get('targetType');
+    const targetType = targetTypeRaw ? toTargetType(targetTypeRaw) : null;
+    const targetId = pickUuid([search.get('target_id'), search.get('targetId')]);
+
+    if (targetTypeRaw && !targetType) {
+        throw new Error('target_type must be either "group" or "student".');
+    }
+
+    if (targetId && !isUuidLike(targetId)) {
+        throw new Error('target_id must be a valid UUID.');
+    }
+
+    if (typeof controller.listByEvaluation === 'function') {
+        const rows = await controller.listByEvaluation(evaluationId);
+        return rows.filter((row) => {
+            if (!isRecord(row)) return false;
+
+            if (criterionId) {
+                const rowCriterion = toNonEmptyString(row.criterion_id);
+                if (!rowCriterion || rowCriterion.toLowerCase() !== criterionId.toLowerCase()) {
+                    return false;
+                }
+            }
+
+            if (targetType) {
+                const rowTargetType = toTargetType(row.target_type);
+                if (rowTargetType !== targetType) return false;
+            }
+
+            if (targetId) {
+                const rowTargetId = toNonEmptyString(row.target_id);
+                if (!rowTargetId || rowTargetId.toLowerCase() !== targetId.toLowerCase()) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    if (typeof controller.findMany !== 'function') {
+        throw new Error('Evaluation scores list endpoint is unavailable.');
+    }
+
+    const query = parseListQuery<Record<string, unknown>>(req);
+    const where = (isRecord(query.where) ? { ...query.where } : {}) as Record<string, unknown>;
+
+    where.evaluation_id = evaluationId;
+    if (criterionId) where.criterion_id = criterionId;
+    if (targetType) where.target_type = targetType;
+    if (targetId) where.target_id = targetId;
+
+    const merged: ListQuery<Record<string, unknown>> = {
+        ...query,
+        where,
+    };
+
+    return await controller.findMany(merged);
+}
+
+async function dispatchPanelistEvaluationsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+
+    // /api/panelist/evaluations/:evaluationId/:segment
+    if (tail.length < 2) return json404Api();
+
+    const evaluationId = tail[1];
+    if (!evaluationId || !isUuidLike(evaluationId)) return json404Api();
+
+    const segment = tail[2];
+
+    // Notes routes
+    // GET    /api/panelist/evaluations/:evaluationId/notes
+    // PATCH  /api/panelist/evaluations/:evaluationId/notes
+    // PUT    /api/panelist/evaluations/:evaluationId/notes
+    // POST   /api/panelist/evaluations/:evaluationId/notes
+    if (segment === 'notes' && tail.length === 3) {
+        const extras = resolveEvaluationExtrasController(services);
+        if (!extras) return json404Api();
+
+        if (method === 'GET') {
+            const existing = await findEvaluationExtraByEvaluationId(extras, evaluationId as UUID);
+            if (!existing) {
+                return json200({
+                    item: {
+                        evaluation_id: evaluationId,
+                        notes: '',
+                        updated_at: null,
+                    },
+                });
+            }
+
+            const data = extractDataObject(existing);
+            const notes = readPanelNoteFromData(data);
+            const updatedAt = toNonEmptyString(existing.updated_at) ?? null;
+
+            return json200({
+                item: {
+                    evaluation_id: evaluationId,
+                    notes,
+                    updated_at: updatedAt,
+                },
+            });
+        }
+
+        if (method === 'PATCH' || method === 'PUT' || method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const rawNotes = body.notes ?? body.note ?? body.private_notes ?? body.privateNotes;
+            const notes = parseNotesValue(rawNotes);
+
+            if (notes === null) {
+                return json400('notes must be a string or null.');
+            }
+
+            try {
+                const item = await upsertPanelNote(extras, evaluationId as UUID, notes);
+                return json200({ item });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'POST', 'OPTIONS']);
+    }
+
+    // Scores routes
+    // GET/POST/PATCH/PUT /api/panelist/evaluations/:evaluationId/scores
+    if (segment === 'scores' && tail.length === 3) {
+        const scores = resolveEvaluationScoresController(services);
+        if (!scores) return json404Api();
+
+        if (method === 'GET') {
+            try {
+                const items = await listPanelistEvaluationScores(
+                    scores,
+                    req,
+                    evaluationId as UUID,
+                );
+                return json200({ items });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const maybeBatch = body.scores;
+
+            if (Array.isArray(maybeBatch)) {
+                const items: unknown[] = [];
+                const errors: Array<{ index: number; message: string }> = [];
+
+                for (let i = 0; i < maybeBatch.length; i += 1) {
+                    const node = maybeBatch[i];
+                    if (!isRecord(node)) {
+                        errors.push({
+                            index: i,
+                            message: 'Invalid score payload object.',
+                        });
+                        continue;
+                    }
+
+                    try {
+                        const payload = normalizeEvaluationScorePayload(
+                            node,
+                            evaluationId as UUID,
+                        );
+                        const invalid = validateNormalizedScorePayload(payload);
+                        if (invalid) {
+                            errors.push({ index: i, message: invalid });
+                            continue;
+                        }
+
+                        const result = await upsertEvaluationScoreByTarget(scores, payload);
+                        items.push(result.item);
+                    } catch (error) {
+                        errors.push({ index: i, message: toErrorMessage(error) });
+                    }
+                }
+
+                return NextResponse.json(
+                    {
+                        items,
+                        saved: items.length,
+                        failed: errors.length,
+                        errors,
+                    },
+                    { status: errors.length > 0 ? 207 : 200 },
+                );
+            }
+
+            const payload = normalizeEvaluationScorePayload(body, evaluationId as UUID);
+            const invalid = validateNormalizedScorePayload(payload);
+            if (invalid) return json400(invalid);
+
+            try {
+                const result = await upsertEvaluationScoreByTarget(scores, payload);
+                return result.created
+                    ? json201({ item: result.item })
+                    : json200({ item: result.item });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
 
 export async function dispatchPanelistRequest(
     req: NextRequest,
     tail: string[],
     services: DatabaseServices,
 ): Promise<Response> {
+    // New nested panelist evaluation routes:
+    // - /api/panelist/evaluations/:evaluationId/notes
+    // - /api/panelist/evaluations/:evaluationId/scores
+    if (tail.length > 0 && tail[0] === 'evaluations') {
+        return dispatchPanelistEvaluationsRequest(req, tail, services);
+    }
+
     const controller = new PanelistController(services);
     const method = req.method.toUpperCase();
 

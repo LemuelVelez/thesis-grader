@@ -137,7 +137,6 @@ const CRITERIA_ENDPOINTS = [
 ] as const
 
 const NO_SCORE_SELECT_VALUE = "__none__"
-const PANEL_NOTES_STORAGE_PREFIX = "panelist-evaluation-notes:"
 
 const GROUP_MEMBER_ENDPOINT_BUILDERS = [
     (groupId: string) => `/api/groups/${encodeURIComponent(groupId)}/members`,
@@ -256,7 +255,13 @@ function normalizeScore(raw: unknown): EvaluationScoreItem | null {
             ? "student"
             : raw.group_id !== undefined && raw.group_id !== null
                 ? "group"
-                : normalizeSubjectType(raw.subject_type ?? raw.subjectType ?? raw.target_type ?? raw.targetType)
+                : normalizeSubjectType(
+                    raw.subject_type ??
+                    raw.subjectType ??
+                    raw.target_type ??
+                    raw.targetType ??
+                    raw.targetType
+                )
 
     const subjectId =
         toNullableString(
@@ -678,11 +683,9 @@ export default function PanelistEvaluationDetailsPage() {
     const [selectedTargetKey, setSelectedTargetKey] = React.useState("")
     const [notes, setNotes] = React.useState("")
     const [notesHydrated, setNotesHydrated] = React.useState(false)
-
-    const notesStorageKey = React.useMemo(
-        () => (id ? `${PANEL_NOTES_STORAGE_PREFIX}${id}` : ""),
-        [id],
-    )
+    const [notesLoading, setNotesLoading] = React.useState(false)
+    const [notesSaveState, setNotesSaveState] = React.useState<"idle" | "saving" | "saved" | "error">("idle")
+    const notesLastSavedRef = React.useRef("")
 
     const loadDetails = React.useCallback(
         async (options?: { showSuccessToast?: boolean; showErrorToast?: boolean }) => {
@@ -695,7 +698,7 @@ export default function PanelistEvaluationDetailsPage() {
             try {
                 const [itemRes, scoreRes, me, scheduleRows, userRows, templateRows, fallbackCriteriaRows] = await Promise.all([
                     fetch(`/api/evaluations/${id}`, { cache: "no-store" }),
-                    fetch(`/api/evaluation-scores?evaluation_id=${encodeURIComponent(id)}`, { cache: "no-store" }).catch(
+                    fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/scores`, { cache: "no-store" }).catch(
                         () => null,
                     ),
                     resolveCurrentUserProfile(),
@@ -795,12 +798,26 @@ export default function PanelistEvaluationDetailsPage() {
                 }
 
                 let parsedScores: EvaluationScoreItem[] = []
-                if (scoreRes) {
+                if (scoreRes && scoreRes.ok) {
                     const scorePayload = (await scoreRes.json().catch(() => null)) as unknown
-                    if (scoreRes.ok) {
-                        parsedScores = extractArrayPayload(scorePayload)
-                            .map(normalizeScore)
-                            .filter((row): row is EvaluationScoreItem => row !== null)
+                    parsedScores = extractArrayPayload(scorePayload)
+                        .map(normalizeScore)
+                        .filter((row): row is EvaluationScoreItem => row !== null)
+                } else {
+                    // Backward-compatible fallback read (older servers)
+                    try {
+                        const fallbackRes = await fetch(
+                            `/api/evaluation-scores?evaluation_id=${encodeURIComponent(id)}`,
+                            { cache: "no-store" },
+                        )
+                        const fallbackPayload = (await fallbackRes.json().catch(() => null)) as unknown
+                        if (fallbackRes.ok) {
+                            parsedScores = extractArrayPayload(fallbackPayload)
+                                .map(normalizeScore)
+                                .filter((row): row is EvaluationScoreItem => row !== null)
+                        }
+                    } catch {
+                        // no-op
                     }
                 }
 
@@ -912,9 +929,143 @@ export default function PanelistEvaluationDetailsPage() {
         [id],
     )
 
+    const loadPanelNotes = React.useCallback(
+        async (options?: { showErrorToast?: boolean }) => {
+            const { showErrorToast = true } = options ?? {}
+
+            if (!id) {
+                setNotes("")
+                notesLastSavedRef.current = ""
+                setNotesHydrated(false)
+                setNotesLoading(false)
+                setNotesSaveState("idle")
+                return
+            }
+
+            setNotesLoading(true)
+            setNotesHydrated(false)
+
+            try {
+                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/notes`, {
+                    cache: "no-store",
+                })
+                const payload = (await res.json().catch(() => null)) as unknown
+
+                if (!res.ok) {
+                    const msg = await readErrorMessage(res, payload)
+                    setNotes("")
+                    notesLastSavedRef.current = ""
+                    setNotesSaveState("error")
+                    if (showErrorToast) {
+                        toast.error("Unable to load private notes", { description: msg })
+                    }
+                    return
+                }
+
+                const itemPayload = extractItemPayload(payload)
+                const fetchedNotes =
+                    isRecord(itemPayload) && typeof itemPayload.notes === "string"
+                        ? itemPayload.notes
+                        : ""
+
+                setNotes(fetchedNotes)
+                notesLastSavedRef.current = fetchedNotes
+                setNotesSaveState("idle")
+            } catch (err) {
+                const message = err instanceof Error ? err.message : "Unable to load private notes."
+                setNotes("")
+                notesLastSavedRef.current = ""
+                setNotesSaveState("error")
+                if (showErrorToast) {
+                    toast.error("Unable to load private notes", { description: message })
+                }
+            } finally {
+                setNotesLoading(false)
+                setNotesHydrated(true)
+            }
+        },
+        [id],
+    )
+
+    const persistPanelNotes = React.useCallback(
+        async (
+            nextNotes: string,
+            options?: {
+                silent?: boolean
+                successMessage?: string
+            },
+        ): Promise<boolean> => {
+            const { silent = false, successMessage = "Private notes saved online." } = options ?? {}
+
+            if (!id) return false
+
+            setNotesSaveState("saving")
+
+            try {
+                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/notes`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ notes: nextNotes }),
+                })
+
+                const payload = (await res.json().catch(() => null)) as unknown
+
+                if (!res.ok) {
+                    const msg = await readErrorMessage(res, payload)
+                    setNotesSaveState("error")
+                    if (!silent) {
+                        toast.error("Unable to save private notes", { description: msg })
+                    }
+                    return false
+                }
+
+                const itemPayload = extractItemPayload(payload)
+                const confirmedNotes =
+                    isRecord(itemPayload) && typeof itemPayload.notes === "string"
+                        ? itemPayload.notes
+                        : nextNotes
+
+                setNotes(confirmedNotes)
+                notesLastSavedRef.current = confirmedNotes
+                setNotesSaveState("saved")
+
+                if (!silent) {
+                    toast.success(successMessage)
+                }
+
+                return true
+            } catch (err) {
+                const message = err instanceof Error ? err.message : "Unable to save private notes."
+                setNotesSaveState("error")
+                if (!silent) {
+                    toast.error("Unable to save private notes", { description: message })
+                }
+                return false
+            }
+        },
+        [id],
+    )
+
     React.useEffect(() => {
         void loadDetails({ showErrorToast: false })
     }, [loadDetails])
+
+    React.useEffect(() => {
+        void loadPanelNotes({ showErrorToast: false })
+    }, [loadPanelNotes])
+
+    React.useEffect(() => {
+        if (!notesHydrated || notesLoading) return
+        if (notes === notesLastSavedRef.current) return
+
+        const timer = window.setTimeout(() => {
+            void persistPanelNotes(notes, { silent: true })
+        }, 900)
+
+        return () => {
+            window.clearTimeout(timer)
+        }
+    }, [notes, notesHydrated, notesLoading, persistPanelNotes])
 
     const scheduleById = React.useMemo(() => {
         const map = new Map<string, DefenseScheduleOption>()
@@ -1079,6 +1230,8 @@ export default function PanelistEvaluationDetailsPage() {
         [draftScores],
     )
 
+    const notesDirty = notes !== notesLastSavedRef.current
+
     const selectedTarget = React.useMemo(
         () => targets.find((target) => target.key === selectedTargetKey) ?? targets[0] ?? null,
         [selectedTargetKey, targets],
@@ -1100,32 +1253,6 @@ export default function PanelistEvaluationDetailsPage() {
             setSelectedTargetKey(targets[0].key)
         }
     }, [selectedTargetKey, targets])
-
-    React.useEffect(() => {
-        if (!notesStorageKey || typeof window === "undefined") {
-            setNotes("")
-            setNotesHydrated(false)
-            return
-        }
-
-        try {
-            const stored = window.localStorage.getItem(notesStorageKey)
-            setNotes(stored ?? "")
-        } catch {
-            setNotes("")
-        } finally {
-            setNotesHydrated(true)
-        }
-    }, [notesStorageKey])
-
-    React.useEffect(() => {
-        if (!notesHydrated || !notesStorageKey || typeof window === "undefined") return
-        try {
-            window.localStorage.setItem(notesStorageKey, notes)
-        } catch {
-            // ignore storage failures
-        }
-    }, [notes, notesHydrated, notesStorageKey])
 
     const updateDraftScore = React.useCallback(
         (target: EvaluationTarget, criterion: CriterionOption, score: number | null) => {
@@ -1162,10 +1289,10 @@ export default function PanelistEvaluationDetailsPage() {
         (target: EvaluationTarget, criterion: CriterionOption, comment: string) => {
             setDraftScores((prev) => {
                 const key = makeDraftKey(target.subject_type, target.subject_id, criterion.id)
-                const existing = prev[key]
+                const keyExisting = prev[key]
 
                 const base: DraftScore =
-                    existing ?? {
+                    keyExisting ?? {
                         key,
                         server_id: null,
                         subject_type: target.subject_type,
@@ -1270,10 +1397,11 @@ export default function PanelistEvaluationDetailsPage() {
         toast.success(`Cleared draft scores for ${selectedTarget.label}.`)
     }, [criteria, selectedTarget])
 
-    const clearLocalNotes = React.useCallback(() => {
-        setNotes("")
-        toast.success("Private notes cleared for this evaluation.")
-    }, [])
+    const clearOnlineNotes = React.useCallback(async () => {
+        await persistPanelNotes("", {
+            successMessage: "Private notes cleared online.",
+        })
+    }, [persistPanelNotes])
 
     const persistScoreDraft = React.useCallback(
         async (draft: DraftScore): Promise<{ ok: boolean; serverId: string | null; message?: string }> => {
@@ -1286,142 +1414,44 @@ export default function PanelistEvaluationDetailsPage() {
             }
 
             const comment = compact(draft.comment)
-            const basePayload: Record<string, unknown> = {
-                evaluation_id: id,
+
+            const payload: Record<string, unknown> = {
                 criterion_id: draft.criterion_id,
                 score: draft.score,
                 comment: comment ?? null,
-            }
-
-            const canonicalTargetPayload: Record<string, unknown> = {
                 target_type: draft.subject_type,
                 target_id: draft.subject_id,
-                subject_type: draft.subject_type,
-                subject_id: draft.subject_id,
             }
 
-            const legacyTargetVariants =
-                draft.subject_type === "student"
-                    ? [
-                        { student_id: draft.subject_id },
-                        { subject_type: "student", subject_id: draft.subject_id },
-                    ]
-                    : [
-                        { group_id: draft.subject_id },
-                        { subject_type: "group", subject_id: draft.subject_id },
-                    ]
-
-            const attempts: Array<{ url: string; method: "PATCH" | "POST"; body: Record<string, unknown> }> = []
-
-            if (draft.server_id) {
-                attempts.push({
-                    url: `/api/evaluation-scores/${encodeURIComponent(draft.server_id)}`,
-                    method: "PATCH",
-                    body: {
-                        score: draft.score,
-                        comment: comment ?? null,
-                    },
-                })
-
-                attempts.push({
-                    url: `/api/evaluation-scores/${encodeURIComponent(draft.server_id)}`,
-                    method: "PATCH",
-                    body: {
-                        ...basePayload,
-                        ...canonicalTargetPayload,
-                    },
-                })
-            }
-
-            // Primary canonical flow (new schema)
-            attempts.push({
-                url: `/api/evaluations/${encodeURIComponent(id)}/scores`,
-                method: "POST",
-                body: {
-                    ...basePayload,
-                    ...canonicalTargetPayload,
-                },
-            })
-
-            attempts.push({
-                url: "/api/evaluation-scores",
-                method: "POST",
-                body: {
-                    ...basePayload,
-                    ...canonicalTargetPayload,
-                },
-            })
-
-            attempts.push({
-                url: "/api/evaluation-scores",
-                method: "PATCH",
-                body: {
-                    ...basePayload,
-                    ...canonicalTargetPayload,
-                },
-            })
-
-            // Backward compatibility fallbacks
-            for (const variant of legacyTargetVariants) {
-                attempts.push({
-                    url: `/api/evaluations/${encodeURIComponent(id)}/scores`,
+            try {
+                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/scores`, {
                     method: "POST",
-                    body: {
-                        ...basePayload,
-                        ...variant,
-                    },
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
                 })
 
-                attempts.push({
-                    url: "/api/evaluation-scores",
-                    method: "POST",
-                    body: {
-                        ...basePayload,
-                        ...variant,
-                    },
-                })
+                const responsePayload = (await res.json().catch(() => null)) as unknown
 
-                attempts.push({
-                    url: "/api/evaluation-scores",
-                    method: "PATCH",
-                    body: {
-                        ...basePayload,
-                        ...variant,
-                    },
-                })
-            }
-
-            let lastError = "Unable to save score."
-
-            for (const attempt of attempts) {
-                try {
-                    const res = await fetch(attempt.url, {
-                        method: attempt.method,
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(attempt.body),
-                    })
-
-                    const payload = (await res.json().catch(() => null)) as unknown
-
-                    if (!res.ok) {
-                        lastError = await readErrorMessage(res, payload)
-                        continue
-                    }
-
-                    const parsed = normalizeScore(extractItemPayload(payload))
+                if (!res.ok) {
+                    const msg = await readErrorMessage(res, responsePayload)
                     return {
-                        ok: true,
-                        serverId: parsed?.id ?? draft.server_id ?? null,
+                        ok: false,
+                        serverId: draft.server_id,
+                        message: msg,
                     }
-                } catch (err) {
-                    lastError = err instanceof Error ? err.message : "Unable to save score."
                 }
-            }
 
-            return {
-                ok: false,
-                serverId: draft.server_id,
-                message: lastError,
+                const parsed = normalizeScore(extractItemPayload(responsePayload))
+                return {
+                    ok: true,
+                    serverId: parsed?.id ?? draft.server_id ?? null,
+                }
+            } catch (err) {
+                return {
+                    ok: false,
+                    serverId: draft.server_id,
+                    message: err instanceof Error ? err.message : "Unable to save score.",
+                }
             }
         },
         [id],
@@ -1517,7 +1547,10 @@ export default function PanelistEvaluationDetailsPage() {
                 }
 
                 toast.success(mode === "submit" ? "Evaluation submitted." : "Evaluation locked.")
-                await loadDetails({ showErrorToast: false, showSuccessToast: false })
+                await Promise.all([
+                    loadDetails({ showErrorToast: false, showSuccessToast: false }),
+                    loadPanelNotes({ showErrorToast: false }),
+                ])
             } catch (err) {
                 const message = err instanceof Error ? err.message : "Unable to update evaluation."
                 setError(message)
@@ -1526,7 +1559,7 @@ export default function PanelistEvaluationDetailsPage() {
                 setActionLoading(null)
             }
         },
-        [id, loadDetails],
+        [id, loadDetails, loadPanelNotes],
     )
 
     const handleSubmitEvaluation = React.useCallback(async () => {
@@ -1561,6 +1594,15 @@ export default function PanelistEvaluationDetailsPage() {
         await patchStatus("lock")
     }, [item, patchStatus, saveAllScores])
 
+    const notesStatusText = React.useMemo(() => {
+        if (notesLoading) return "Loading online notes..."
+        if (!notesHydrated) return "Preparing online notes..."
+        if (notesSaveState === "saving") return "Saving notes online..."
+        if (notesSaveState === "error") return "Online save failed. Click Save now to retry."
+        if (notesDirty) return "Unsaved changes pending auto-save..."
+        return "Auto-saved online per evaluation."
+    }, [notesDirty, notesHydrated, notesLoading, notesSaveState])
+
     return (
         <DashboardLayout
             title="Evaluation Details"
@@ -1575,7 +1617,12 @@ export default function PanelistEvaluationDetailsPage() {
                     <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => void loadDetails({ showSuccessToast: true })}
+                        onClick={() => {
+                            void Promise.all([
+                                loadDetails({ showSuccessToast: true }),
+                                loadPanelNotes({ showErrorToast: false }),
+                            ])
+                        }}
                         disabled={loading}
                     >
                         Refresh
@@ -1774,29 +1821,53 @@ export default function PanelistEvaluationDetailsPage() {
                                         <div className="space-y-2">
                                             <div className="flex items-center justify-between gap-2">
                                                 <p className="text-xs font-medium text-muted-foreground">
-                                                    Private panel notes (saved on this device)
+                                                    Private panel notes (saved online)
                                                 </p>
-                                                <Button
-                                                    type="button"
-                                                    size="sm"
-                                                    variant="ghost"
-                                                    onClick={clearLocalNotes}
-                                                    disabled={notes.trim().length === 0}
-                                                >
-                                                    Clear notes
-                                                </Button>
+                                                <div className="flex items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="secondary"
+                                                        onClick={() =>
+                                                            void persistPanelNotes(notes, {
+                                                                successMessage: "Private notes saved online.",
+                                                            })
+                                                        }
+                                                        disabled={
+                                                            notesLoading ||
+                                                            notesSaveState === "saving" ||
+                                                            !notesHydrated ||
+                                                            !notesDirty
+                                                        }
+                                                    >
+                                                        {notesSaveState === "saving" ? "Saving..." : "Save now"}
+                                                    </Button>
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        onClick={() => void clearOnlineNotes()}
+                                                        disabled={
+                                                            notesLoading ||
+                                                            notesSaveState === "saving" ||
+                                                            notes.trim().length === 0
+                                                        }
+                                                    >
+                                                        Clear notes
+                                                    </Button>
+                                                </div>
                                             </div>
                                             <Textarea
                                                 value={notes}
-                                                onChange={(e) => setNotes(e.target.value)}
+                                                onChange={(e) => {
+                                                    setNotes(e.target.value)
+                                                    setNotesSaveState("idle")
+                                                }}
                                                 placeholder="Write quick reminders while scoring."
                                                 className="min-h-24"
+                                                disabled={notesLoading}
                                             />
-                                            <p className="text-[11px] text-muted-foreground">
-                                                {notesHydrated
-                                                    ? "Auto-saved locally per evaluation."
-                                                    : "Preparing private notes storage..."}
-                                            </p>
+                                            <p className="text-[11px] text-muted-foreground">{notesStatusText}</p>
                                         </div>
                                     </CardContent>
                                 </Card>
