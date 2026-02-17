@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
@@ -12,6 +11,14 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion"
 import { Button } from "@/components/ui/button"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
     Table,
@@ -312,6 +319,9 @@ export default function AdminEvaluationsPage() {
     const [evaluatorQuery, setEvaluatorQuery] = React.useState("")
 
     const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null)
+
+    const [viewOpen, setViewOpen] = React.useState(false)
+    const [viewingId, setViewingId] = React.useState<string | null>(null)
 
     const groupNameById = React.useMemo(() => {
         const map = new Map<string, string>()
@@ -672,6 +682,11 @@ export default function AdminEvaluationsPage() {
         setEvaluatorQuery("")
     }, [])
 
+    const openViewDialog = React.useCallback((row: EvaluationRecord) => {
+        setViewingId(row.id)
+        setViewOpen(true)
+    }, [])
+
     const onFormFieldChange = React.useCallback(
         <K extends keyof EvaluationFormState>(key: K, value: EvaluationFormState[K]) => {
             setForm((prev) => ({ ...prev, [key]: value }))
@@ -867,6 +882,11 @@ export default function AdminEvaluationsPage() {
                     closeForm()
                 }
 
+                if (viewingId === evaluationId) {
+                    setViewOpen(false)
+                    setViewingId(null)
+                }
+
                 toast.success("Evaluation deleted")
             } catch (err) {
                 const message = err instanceof Error ? err.message : "Failed to delete evaluation."
@@ -876,7 +896,7 @@ export default function AdminEvaluationsPage() {
                 setBusyKey(null)
             }
         },
-        [closeForm, editingId],
+        [closeForm, editingId, viewingId],
     )
 
     const runAction = React.useCallback(
@@ -992,6 +1012,21 @@ export default function AdminEvaluationsPage() {
         return assignableUsers.slice(0, 8)
     }, [assignableUsers])
 
+    const selectedViewEvaluation = React.useMemo(() => {
+        if (!viewingId) return null
+        return evaluations.find((row) => row.id === viewingId) ?? null
+    }, [evaluations, viewingId])
+
+    const selectedViewSchedule = React.useMemo(() => {
+        if (!selectedViewEvaluation) return null
+        return resolveScheduleById(selectedViewEvaluation.schedule_id)
+    }, [resolveScheduleById, selectedViewEvaluation])
+
+    const selectedViewEvaluator = React.useMemo(() => {
+        if (!selectedViewEvaluation) return null
+        return resolveEvaluatorById(selectedViewEvaluation.evaluator_id)
+    }, [resolveEvaluatorById, selectedViewEvaluation])
+
     React.useEffect(() => {
         if (!formOpen) return
 
@@ -1051,6 +1086,18 @@ export default function AdminEvaluationsPage() {
         formOpen,
         resolveEvaluatorById,
     ])
+
+    React.useEffect(() => {
+        if (!viewOpen) {
+            setViewingId(null)
+            return
+        }
+
+        if (viewingId && !selectedViewEvaluation) {
+            setViewOpen(false)
+            setViewingId(null)
+        }
+    }, [selectedViewEvaluation, viewOpen, viewingId])
 
     return (
         <DashboardLayout
@@ -1540,12 +1587,12 @@ export default function AdminEvaluationsPage() {
 
                                                                 <TableCell>
                                                                     <div className="flex flex-wrap items-center justify-end gap-2">
-                                                                        <Button asChild variant="outline" size="sm">
-                                                                            <Link
-                                                                                href={`/dashboard/admin/evaluations/${row.id}`}
-                                                                            >
-                                                                                View
-                                                                            </Link>
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            size="sm"
+                                                                            onClick={() => openViewDialog(row)}
+                                                                        >
+                                                                            View
                                                                         </Button>
 
                                                                         <Button
@@ -1643,6 +1690,153 @@ export default function AdminEvaluationsPage() {
                         </Accordion>
                     )}
                 </div>
+
+                <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+                    <DialogContent className="sm:max-w-2xl">
+                        {selectedViewEvaluation ? (
+                            <>
+                                <DialogHeader>
+                                    <DialogTitle>Evaluation Details</DialogTitle>
+                                    <DialogDescription>
+                                        View full assignment details and trigger quick lifecycle actions without leaving this page.
+                                    </DialogDescription>
+                                </DialogHeader>
+
+                                <div className="space-y-4">
+                                    <div className="rounded-lg border bg-muted/30 p-3">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="text-sm font-medium">Status</span>
+                                            <span
+                                                className={[
+                                                    "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                    statusBadgeClass(selectedViewEvaluation.status),
+                                                ].join(" ")}
+                                            >
+                                                {toTitleCase(normalizeStatus(selectedViewEvaluation.status))}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <div className="rounded-lg border p-3">
+                                            <p className="text-xs font-medium text-muted-foreground">Thesis Group</p>
+                                            <p className="mt-1 text-sm font-medium">
+                                                {resolveGroupNameFromSchedule(selectedViewSchedule)}
+                                            </p>
+                                        </div>
+
+                                        <div className="rounded-lg border p-3">
+                                            <p className="text-xs font-medium text-muted-foreground">Schedule</p>
+                                            <p className="mt-1 text-sm">
+                                                {selectedViewSchedule
+                                                    ? formatDateTime(selectedViewSchedule.scheduled_at)
+                                                    : "Schedule unavailable"}
+                                            </p>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                {(compactString(selectedViewSchedule?.room) ?? "No room assigned")}
+                                                {selectedViewSchedule?.status
+                                                    ? ` • ${toTitleCase(selectedViewSchedule.status)}`
+                                                    : ""}
+                                            </p>
+                                        </div>
+
+                                        <div className="rounded-lg border p-3">
+                                            <p className="text-xs font-medium text-muted-foreground">Evaluator</p>
+                                            <p className="mt-1 text-sm font-medium">
+                                                {compactString(selectedViewEvaluator?.name) ??
+                                                    compactString(selectedViewEvaluator?.email) ??
+                                                    "Unknown Evaluator"}
+                                            </p>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                {[compactString(selectedViewEvaluator?.email), selectedViewEvaluator ? roleLabel(selectedViewEvaluator.role) : null]
+                                                    .filter((part): part is string => !!part)
+                                                    .join(" • ") || "—"}
+                                            </p>
+                                        </div>
+
+                                        <div className="rounded-lg border p-3">
+                                            <p className="text-xs font-medium text-muted-foreground">Timeline</p>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                Created: {formatDateTime(selectedViewEvaluation.created_at)}
+                                            </p>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                Submitted: {formatDateTime(selectedViewEvaluation.submitted_at)}
+                                            </p>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                Locked: {formatDateTime(selectedViewEvaluation.locked_at)}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => {
+                                            setViewOpen(false)
+                                            openEditForm(selectedViewEvaluation)
+                                        }}
+                                    >
+                                        Edit Assignment
+                                    </Button>
+
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                        {normalizeStatus(selectedViewEvaluation.status) !== "pending" ? (
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => void runAction(selectedViewEvaluation, "set-pending")}
+                                                disabled={busyKey === `${selectedViewEvaluation.id}:set-pending`}
+                                            >
+                                                {busyKey === `${selectedViewEvaluation.id}:set-pending`
+                                                    ? "Updating..."
+                                                    : "Set Pending"}
+                                            </Button>
+                                        ) : null}
+
+                                        {normalizeStatus(selectedViewEvaluation.status) === "pending" ? (
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => void runAction(selectedViewEvaluation, "submit")}
+                                                disabled={busyKey === `${selectedViewEvaluation.id}:submit`}
+                                            >
+                                                {busyKey === `${selectedViewEvaluation.id}:submit`
+                                                    ? "Submitting..."
+                                                    : "Submit"}
+                                            </Button>
+                                        ) : null}
+
+                                        {normalizeStatus(selectedViewEvaluation.status) !== "locked" ? (
+                                            <Button
+                                                onClick={() => void runAction(selectedViewEvaluation, "lock")}
+                                                disabled={busyKey === `${selectedViewEvaluation.id}:lock`}
+                                            >
+                                                {busyKey === `${selectedViewEvaluation.id}:lock`
+                                                    ? "Locking..."
+                                                    : "Lock Evaluation"}
+                                            </Button>
+                                        ) : (
+                                            <Button variant="outline" onClick={() => setViewOpen(false)}>
+                                                Close
+                                            </Button>
+                                        )}
+                                    </div>
+                                </DialogFooter>
+                            </>
+                        ) : (
+                            <>
+                                <DialogHeader>
+                                    <DialogTitle>Evaluation Not Available</DialogTitle>
+                                    <DialogDescription>
+                                        This evaluation is no longer available. It may have been deleted or moved.
+                                    </DialogDescription>
+                                </DialogHeader>
+                                <DialogFooter>
+                                    <Button onClick={() => setViewOpen(false)}>Close</Button>
+                                </DialogFooter>
+                            </>
+                        )}
+                    </DialogContent>
+                </Dialog>
             </div>
         </DashboardLayout>
     )
