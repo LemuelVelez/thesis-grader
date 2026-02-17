@@ -674,6 +674,67 @@ function previewCellText(value: unknown): string {
     }
 }
 
+function isLikelyColumnLettersRow(row: string[]): boolean {
+    if (row.length < 2) return false
+    return row.every((cell, idx) => cell.trim().toUpperCase() === XLSX.utils.encode_col(idx))
+}
+
+function normalizePreviewFromRendererRows(rawRows: unknown[][]): {
+    headers: string[]
+    rows: string[][]
+} {
+    const matrix = rawRows
+        .filter((row): row is unknown[] => Array.isArray(row))
+        .map((row) => row.map((value) => previewCellText(value)))
+
+    if (matrix.length === 0) {
+        return { headers: ["No Columns"], rows: [] }
+    }
+
+    let headerIndex = matrix.findIndex((row) =>
+        row.some((cell) => cell.trim().length > 0),
+    )
+
+    if (headerIndex < 0) {
+        return { headers: ["No Columns"], rows: [] }
+    }
+
+    if (
+        isLikelyColumnLettersRow(matrix[headerIndex]) &&
+        matrix[headerIndex + 1] &&
+        matrix[headerIndex + 1].some((cell) => cell.trim().length > 0)
+    ) {
+        headerIndex += 1
+    }
+
+    let headers = matrix[headerIndex].map(
+        (cell, idx) => cell.trim() || `Column ${idx + 1}`,
+    )
+
+    let bodyRows = matrix.slice(headerIndex + 1)
+
+    const widest = Math.max(headers.length, ...bodyRows.map((row) => row.length), 0)
+
+    if (widest > headers.length) {
+        headers = [
+            ...headers,
+            ...Array.from(
+                { length: widest - headers.length },
+                (_, idx) => `Column ${headers.length + idx + 1}`,
+            ),
+        ]
+    }
+
+    bodyRows = bodyRows.map((row) =>
+        Array.from({ length: headers.length }, (_, idx) => row[idx] ?? ""),
+    )
+
+    return {
+        headers: headers.length > 0 ? headers : ["No Columns"],
+        rows: bodyRows,
+    }
+}
+
 export default function StaffReportsPage() {
     const [evaluations, setEvaluations] = React.useState<EvaluationItem[]>([])
     const [rankings, setRankings] = React.useState<RankingItem[]>([])
@@ -1078,49 +1139,14 @@ export default function StaffReportsPage() {
                 })
             })
 
-            const rawCols = Array.isArray(parsed.cols) ? parsed.cols : []
             const rawRows = Array.isArray(parsed.rows) ? parsed.rows : []
-
-            let headers = rawCols
-                .map((col) => toStringSafe(col.name ?? col.key))
-                .filter((value): value is string => Boolean(value))
-
-            let bodyRows = rawRows
-                .filter((row): row is unknown[] => Array.isArray(row))
-                .map((row) => row.map((value) => previewCellText(value)))
-
-            if (headers.length === 0 && bodyRows.length > 0) {
-                headers = bodyRows[0].map(
-                    (cell, idx) => cell || `Column ${idx + 1}`,
-                )
-                bodyRows = bodyRows.slice(1)
-            }
-
-            const widest = Math.max(
-                headers.length,
-                ...bodyRows.map((row) => row.length),
-                0,
-            )
-
-            if (widest > headers.length) {
-                headers = [
-                    ...headers,
-                    ...Array.from(
-                        { length: widest - headers.length },
-                        (_, idx) => `Column ${headers.length + idx + 1}`,
-                    ),
-                ]
-            }
-
-            const paddedRows = bodyRows.map((row) =>
-                Array.from({ length: headers.length }, (_, idx) => row[idx] ?? ""),
-            )
+            const normalized = normalizePreviewFromRendererRows(rawRows)
 
             setExcelPreview({
                 fileName,
                 generatedAt: new Date().toISOString(),
-                headers: headers.length > 0 ? headers : ["No Columns"],
-                rows: paddedRows,
+                headers: normalized.headers,
+                rows: normalized.rows,
             })
 
             toast.success("Excel preview is ready.")
@@ -1157,7 +1183,7 @@ export default function StaffReportsPage() {
     }, [createExportPayload, filteredEvaluations.length])
 
     const previewRows = React.useMemo(
-        () => (excelPreview ? excelPreview.rows.slice(0, 60) : []),
+        () => (excelPreview ? excelPreview.rows.slice(0, 80) : []),
         [excelPreview],
     )
 
@@ -1436,102 +1462,109 @@ export default function StaffReportsPage() {
             <Dialog
                 open={Boolean(excelPreview)}
                 onOpenChange={(open) => {
-                    if (!open) {
-                        setExcelPreview(null)
-                    }
+                    if (!open) setExcelPreview(null)
                 }}
             >
                 {excelPreview ? (
-                    <DialogContent className="w-[95vw] max-w-300 p-0">
-                        <div className="border-b px-6 py-4">
-                            <DialogHeader>
-                                <DialogTitle className="flex items-center gap-2">
-                                    <FileSpreadsheet className="h-5 w-5" />
-                                    Excel Preview
-                                </DialogTitle>
-                                <DialogDescription>
-                                    Previewing export file <span className="font-medium text-foreground">{excelPreview.fileName}</span>{" "}
-                                    • Generated {formatDateTime(excelPreview.generatedAt)}
-                                </DialogDescription>
-                            </DialogHeader>
-                        </div>
-
-                        <div className="px-6 py-4">
-                            <div className="rounded-lg border">
-                                <div className="max-h-[65vh] overflow-auto">
-                                    <Table>
-                                        <TableHeader className="sticky top-0 z-10 bg-background">
-                                            <TableRow>
-                                                {excelPreview.headers.map((header, idx) => (
-                                                    <TableHead
-                                                        key={`${header}-${idx}`}
-                                                        className="min-w-40 whitespace-nowrap"
-                                                    >
-                                                        {header || `Column ${idx + 1}`}
-                                                    </TableHead>
-                                                ))}
-                                            </TableRow>
-                                        </TableHeader>
-
-                                        <TableBody>
-                                            {previewRows.length === 0 ? (
-                                                <TableRow>
-                                                    <TableCell
-                                                        colSpan={excelPreview.headers.length || 1}
-                                                        className="h-20 text-center text-muted-foreground"
-                                                    >
-                                                        No rows available for preview.
-                                                    </TableCell>
-                                                </TableRow>
-                                            ) : (
-                                                previewRows.map((row, rowIndex) => (
-                                                    <TableRow key={`preview-row-${rowIndex}`}>
-                                                        {row.map((cell, cellIndex) => (
-                                                            <TableCell key={`preview-cell-${rowIndex}-${cellIndex}`}>
-                                                                {cell || "—"}
-                                                            </TableCell>
-                                                        ))}
-                                                    </TableRow>
-                                                ))
-                                            )}
-                                        </TableBody>
-                                    </Table>
-                                </div>
+                    <DialogContent className="w-full max-w-7xl overflow-hidden p-0">
+                        <div className="flex max-h-[85vh] flex-col">
+                            <div className="border-b px-6 py-4">
+                                <DialogHeader>
+                                    <DialogTitle className="flex items-center gap-2">
+                                        <FileSpreadsheet className="h-5 w-5" />
+                                        Excel Preview
+                                    </DialogTitle>
+                                    <DialogDescription className="break-all">
+                                        Previewing export file{" "}
+                                        <span className="font-medium text-foreground">{excelPreview.fileName}</span>{" "}
+                                        • Generated {formatDateTime(excelPreview.generatedAt)}
+                                    </DialogDescription>
+                                </DialogHeader>
                             </div>
 
-                            {excelPreview.rows.length > previewRows.length ? (
-                                <p className="mt-2 text-xs text-muted-foreground">
-                                    Showing first {previewRows.length} of {excelPreview.rows.length} row(s).
+                            <div className="min-h-0 flex-1 px-6 py-4">
+                                <div className="h-full rounded-lg border">
+                                    <div className="h-full overflow-auto">
+                                        <div className="min-w-max">
+                                            <Table className="w-full">
+                                                <TableHeader className="sticky top-0 z-10 bg-background">
+                                                    <TableRow>
+                                                        {excelPreview.headers.map((header, idx) => (
+                                                            <TableHead
+                                                                key={`${header}-${idx}`}
+                                                                className="min-w-40 whitespace-nowrap"
+                                                            >
+                                                                {header || `Column ${idx + 1}`}
+                                                            </TableHead>
+                                                        ))}
+                                                    </TableRow>
+                                                </TableHeader>
+
+                                                <TableBody>
+                                                    {previewRows.length === 0 ? (
+                                                        <TableRow>
+                                                            <TableCell
+                                                                colSpan={excelPreview.headers.length || 1}
+                                                                className="h-20 text-center text-muted-foreground"
+                                                            >
+                                                                No rows available for preview.
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ) : (
+                                                        previewRows.map((row, rowIndex) => (
+                                                            <TableRow key={`preview-row-${rowIndex}`}>
+                                                                {row.map((cell, cellIndex) => (
+                                                                    <TableCell
+                                                                        key={`preview-cell-${rowIndex}-${cellIndex}`}
+                                                                        className="max-w-72 truncate align-top"
+                                                                        title={cell || "—"}
+                                                                    >
+                                                                        {cell || "—"}
+                                                                    </TableCell>
+                                                                ))}
+                                                            </TableRow>
+                                                        ))
+                                                    )}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {excelPreview.rows.length > previewRows.length ? (
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                        Showing first {previewRows.length} of {excelPreview.rows.length} row(s).
+                                    </p>
+                                ) : null}
+                            </div>
+
+                            <DialogFooter className="border-t px-6 py-4">
+                                <p className="mr-auto text-xs text-muted-foreground">
+                                    Total rows in preview: {excelPreview.rows.length}
                                 </p>
-                            ) : null}
+
+                                <Button variant="outline" onClick={() => setExcelPreview(null)}>
+                                    Close
+                                </Button>
+
+                                <Button
+                                    onClick={() => void handleDownloadExcel()}
+                                    disabled={downloadLoading || filteredEvaluations.length === 0}
+                                >
+                                    {downloadLoading ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Downloading...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Download className="mr-2 h-4 w-4" />
+                                            Download Excel
+                                        </>
+                                    )}
+                                </Button>
+                            </DialogFooter>
                         </div>
-
-                        <DialogFooter className="border-t px-6 py-4">
-                            <p className="mr-auto text-xs text-muted-foreground">
-                                Total rows in preview: {excelPreview.rows.length}
-                            </p>
-
-                            <Button variant="outline" onClick={() => setExcelPreview(null)}>
-                                Close
-                            </Button>
-
-                            <Button
-                                onClick={() => void handleDownloadExcel()}
-                                disabled={downloadLoading || filteredEvaluations.length === 0}
-                            >
-                                {downloadLoading ? (
-                                    <>
-                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        Downloading...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Download className="mr-2 h-4 w-4" />
-                                        Download Excel
-                                    </>
-                                )}
-                            </Button>
-                        </DialogFooter>
                     </DialogContent>
                 ) : null}
             </Dialog>
