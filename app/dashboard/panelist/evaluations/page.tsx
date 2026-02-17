@@ -6,6 +6,12 @@ import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+    Accordion,
+    AccordionContent,
+    AccordionItem,
+    AccordionTrigger,
+} from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -96,6 +102,18 @@ type DisplayEvaluationItem = EvaluationItem & {
     scheduleMeta: string
     evaluatorName: string
     evaluatorRole: string | null
+}
+
+type GroupedEvaluationSection = {
+    key: string
+    label: string
+    meta: string
+    items: DisplayEvaluationItem[]
+    latestCreatedAt: number
+    pendingCount: number
+    submittedCount: number
+    lockedCount: number
+    otherCount: number
 }
 
 const STATUS_FILTERS = ["all", "pending", "submitted", "locked"] as const
@@ -703,6 +721,55 @@ export default function PanelistEvaluationsPage() {
             .sort((a, b) => toEpoch(b.created_at) - toEpoch(a.created_at))
     }, [displayItems, search, statusFilter])
 
+    const groupedFilteredItems = React.useMemo<GroupedEvaluationSection[]>(() => {
+        const map = new Map<string, GroupedEvaluationSection>()
+
+        for (const item of filteredItems) {
+            const key = toLowerKey(item.schedule_id)
+            const createdAt = toEpoch(item.created_at)
+            const status = item.status.toLowerCase()
+
+            const existing = map.get(key)
+
+            if (!existing) {
+                const section: GroupedEvaluationSection = {
+                    key,
+                    label: item.scheduleName,
+                    meta: item.scheduleMeta,
+                    items: [item],
+                    latestCreatedAt: createdAt,
+                    pendingCount: status === "pending" ? 1 : 0,
+                    submittedCount: status === "submitted" ? 1 : 0,
+                    lockedCount: status === "locked" ? 1 : 0,
+                    otherCount:
+                        status !== "pending" && status !== "submitted" && status !== "locked" ? 1 : 0,
+                }
+
+                map.set(key, section)
+                continue
+            }
+
+            existing.items.push(item)
+            existing.latestCreatedAt = Math.max(existing.latestCreatedAt, createdAt)
+
+            if (existing.meta === "—" && item.scheduleMeta !== "—") {
+                existing.meta = item.scheduleMeta
+            }
+
+            if (status === "pending") existing.pendingCount += 1
+            else if (status === "submitted") existing.submittedCount += 1
+            else if (status === "locked") existing.lockedCount += 1
+            else existing.otherCount += 1
+        }
+
+        return Array.from(map.values())
+            .map((section) => ({
+                ...section,
+                items: [...section.items].sort((a, b) => toEpoch(b.created_at) - toEpoch(a.created_at)),
+            }))
+            .sort((a, b) => b.latestCreatedAt - a.latestCreatedAt)
+    }, [filteredItems])
+
     const totals = React.useMemo(() => {
         let pending = 0
         let submitted = 0
@@ -760,8 +827,7 @@ export default function PanelistEvaluationsPage() {
 
         return [...previewRows]
             .map((row) => {
-                const criterion =
-                    criterionById.get(toLowerKey(row.criterion_id)) ?? null
+                const criterion = criterionById.get(toLowerKey(row.criterion_id)) ?? null
 
                 const criterionLabel =
                     compact(row.criterion_name) ??
@@ -775,11 +841,9 @@ export default function PanelistEvaluationsPage() {
                     const scheduleId = previewItem.schedule_id
                     const isCanonicalGroup =
                         !!subjectId &&
-                        (
-                            (!!canonicalGroupId &&
-                                toLowerKey(subjectId) === toLowerKey(canonicalGroupId)) ||
-                            toLowerKey(subjectId) === toLowerKey(scheduleId)
-                        )
+                        ((!!canonicalGroupId &&
+                            toLowerKey(subjectId) === toLowerKey(canonicalGroupId)) ||
+                            toLowerKey(subjectId) === toLowerKey(scheduleId))
 
                     targetLabel = isCanonicalGroup
                         ? `Group • ${groupLabel}`
@@ -1012,101 +1076,146 @@ export default function PanelistEvaluationsPage() {
                     </Alert>
                 ) : null}
 
-                <Card className="overflow-x-auto">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead className="min-w-56">Evaluation</TableHead>
-                                <TableHead className="min-w-72">Schedule</TableHead>
-                                <TableHead className="min-w-56">Assigned Evaluator</TableHead>
-                                <TableHead className="min-w-32">Status</TableHead>
-                                <TableHead className="min-w-52">Submitted</TableHead>
-                                <TableHead className="min-w-52">Locked</TableHead>
-                                <TableHead className="min-w-44 text-right">Actions</TableHead>
-                            </TableRow>
-                        </TableHeader>
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Evaluations by Group</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {loading ? (
+                            <div className="space-y-2">
+                                {Array.from({ length: 4 }).map((_, i) => (
+                                    <div key={`group-skeleton-${i}`} className="h-14 w-full animate-pulse rounded-md bg-muted/50" />
+                                ))}
+                            </div>
+                        ) : groupedFilteredItems.length === 0 ? (
+                            <div className="flex h-24 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                                No evaluations found.
+                            </div>
+                        ) : (
+                            <Accordion type="multiple" className="w-full space-y-2">
+                                {groupedFilteredItems.map((group) => (
+                                    <AccordionItem
+                                        key={group.key}
+                                        value={group.key}
+                                        className="rounded-lg border px-3"
+                                    >
+                                        <AccordionTrigger className="py-3 hover:no-underline">
+                                            <div className="flex w-full flex-col gap-2 pr-2 text-left sm:flex-row sm:items-center sm:justify-between">
+                                                <div className="space-y-0.5">
+                                                    <p className="text-sm font-semibold">{group.label}</p>
+                                                    <p className="text-xs text-muted-foreground">{group.meta}</p>
+                                                </div>
 
-                        <TableBody>
-                            {loading ? (
-                                Array.from({ length: 6 }).map((_, i) => (
-                                    <TableRow key={`skeleton-${i}`}>
-                                        <TableCell colSpan={7}>
-                                            <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                        </TableCell>
-                                    </TableRow>
-                                ))
-                            ) : filteredItems.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                                        No evaluations found.
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                filteredItems.map((item) => (
-                                    <TableRow key={item.id}>
-                                        <TableCell className="font-medium">
-                                            <div className="space-y-0.5">
-                                                <p>{item.evaluationName}</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    {item.created_at
-                                                        ? `Created ${formatDateTime(item.created_at)}`
-                                                        : "Created date unavailable"}
-                                                </p>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Badge variant="secondary">
+                                                        {group.items.length} evaluation(s)
+                                                    </Badge>
+                                                    {group.pendingCount > 0 ? (
+                                                        <Badge variant={statusVariant("pending")}>
+                                                            Pending {group.pendingCount}
+                                                        </Badge>
+                                                    ) : null}
+                                                    {group.submittedCount > 0 ? (
+                                                        <Badge variant={statusVariant("submitted")}>
+                                                            Submitted {group.submittedCount}
+                                                        </Badge>
+                                                    ) : null}
+                                                    {group.lockedCount > 0 ? (
+                                                        <Badge variant={statusVariant("locked")}>
+                                                            Locked {group.lockedCount}
+                                                        </Badge>
+                                                    ) : null}
+                                                    {group.otherCount > 0 ? (
+                                                        <Badge variant="outline">
+                                                            Others {group.otherCount}
+                                                        </Badge>
+                                                    ) : null}
+                                                </div>
                                             </div>
-                                        </TableCell>
+                                        </AccordionTrigger>
 
-                                        <TableCell>
-                                            <div className="space-y-0.5">
-                                                <p className="font-medium">{item.scheduleName}</p>
-                                                <p className="text-xs text-muted-foreground">{item.scheduleMeta}</p>
+                                        <AccordionContent className="pb-3">
+                                            <div className="overflow-x-auto rounded-md border">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead className="min-w-56">Evaluation</TableHead>
+                                                            <TableHead className="min-w-56">Assigned Evaluator</TableHead>
+                                                            <TableHead className="min-w-32">Status</TableHead>
+                                                            <TableHead className="min-w-52">Submitted</TableHead>
+                                                            <TableHead className="min-w-52">Locked</TableHead>
+                                                            <TableHead className="min-w-44 text-right">Actions</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+
+                                                    <TableBody>
+                                                        {group.items.map((item) => (
+                                                            <TableRow
+                                                                key={item.id}
+                                                                className={previewOpenId === item.id ? "bg-muted/40" : undefined}
+                                                            >
+                                                                <TableCell className="font-medium">
+                                                                    <div className="space-y-0.5">
+                                                                        <p>{item.evaluationName}</p>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            {item.created_at
+                                                                                ? `Created ${formatDateTime(item.created_at)}`
+                                                                                : "Created date unavailable"}
+                                                                        </p>
+                                                                    </div>
+                                                                </TableCell>
+
+                                                                <TableCell>
+                                                                    <div className="space-y-0.5">
+                                                                        <p className="font-medium">{item.evaluatorName}</p>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            {item.evaluatorRole ?? "Panelist"}
+                                                                        </p>
+                                                                    </div>
+                                                                </TableCell>
+
+                                                                <TableCell>
+                                                                    <Badge variant={statusVariant(item.status)}>
+                                                                        {toTitleCase(item.status)}
+                                                                    </Badge>
+                                                                </TableCell>
+
+                                                                <TableCell className="text-muted-foreground">
+                                                                    {formatDateTime(item.submitted_at)}
+                                                                </TableCell>
+
+                                                                <TableCell className="text-muted-foreground">
+                                                                    {formatDateTime(item.locked_at)}
+                                                                </TableCell>
+
+                                                                <TableCell>
+                                                                    <div className="flex items-center justify-end gap-2">
+                                                                        <Button
+                                                                            variant={previewOpenId === item.id ? "default" : "secondary"}
+                                                                            size="sm"
+                                                                            onClick={() => toggleScorePreview(item.id)}
+                                                                        >
+                                                                            {previewOpenId === item.id ? "Hide Preview" : "Preview Scores"}
+                                                                        </Button>
+
+                                                                        <Button asChild variant="outline" size="sm">
+                                                                            <Link href={`/dashboard/panelist/evaluations/${item.id}`}>
+                                                                                Open
+                                                                            </Link>
+                                                                        </Button>
+                                                                    </div>
+                                                                </TableCell>
+                                                            </TableRow>
+                                                        ))}
+                                                    </TableBody>
+                                                </Table>
                                             </div>
-                                        </TableCell>
-
-                                        <TableCell>
-                                            <div className="space-y-0.5">
-                                                <p className="font-medium">{item.evaluatorName}</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    {item.evaluatorRole ?? "Panelist"}
-                                                </p>
-                                            </div>
-                                        </TableCell>
-
-                                        <TableCell>
-                                            <Badge variant={statusVariant(item.status)}>
-                                                {toTitleCase(item.status)}
-                                            </Badge>
-                                        </TableCell>
-
-                                        <TableCell className="text-muted-foreground">
-                                            {formatDateTime(item.submitted_at)}
-                                        </TableCell>
-
-                                        <TableCell className="text-muted-foreground">
-                                            {formatDateTime(item.locked_at)}
-                                        </TableCell>
-
-                                        <TableCell>
-                                            <div className="flex items-center justify-end gap-2">
-                                                <Button
-                                                    variant={previewOpenId === item.id ? "default" : "secondary"}
-                                                    size="sm"
-                                                    onClick={() => toggleScorePreview(item.id)}
-                                                >
-                                                    {previewOpenId === item.id ? "Hide Preview" : "Preview Scores"}
-                                                </Button>
-
-                                                <Button asChild variant="outline" size="sm">
-                                                    <Link href={`/dashboard/panelist/evaluations/${item.id}`}>
-                                                        Open
-                                                    </Link>
-                                                </Button>
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                ))
-                            )}
-                        </TableBody>
-                    </Table>
+                                        </AccordionContent>
+                                    </AccordionItem>
+                                ))}
+                            </Accordion>
+                        )}
+                    </CardContent>
                 </Card>
 
                 {previewOpenId ? (
