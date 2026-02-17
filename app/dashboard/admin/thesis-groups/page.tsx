@@ -1,802 +1,59 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
-import type { ColumnDef } from "@tanstack/react-table"
-import { MoreHorizontal, Plus } from "lucide-react"
+import { Plus } from "lucide-react"
 import { toast } from "sonner"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import DataTable from "@/components/data-table"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import { createThesisGroupColumns } from "@/components/thesis-groups/thesis-group-columns"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+  fetchAllSuccessfulJson,
+  fetchFirstAvailableJson,
+  fetchMembersCountForGroup,
+  requestFirstAvailable,
+  requestFirstAvailableWithPayloadFallback,
+} from "@/components/thesis-groups/thesis-group-api"
+import {
+  CreateStaffUserDialog,
+  CreateThesisGroupDialog,
+  DeleteThesisGroupDialog,
+  EditThesisGroupDialog,
+} from "@/components/thesis-groups/thesis-group-dialogs"
+import {
+  ADVISER_NONE_VALUE,
+  LIST_ENDPOINTS,
+  STAFF_LIST_ENDPOINTS,
+  WRITE_BASE_ENDPOINTS,
+  asRecord,
+  buildTermFromForm,
+  buildTermPreview,
+  buildThesisGroupMutationPayload,
+  dedupeStaffUsers,
+  defaultCreateFormState,
+  defaultEditFormState,
+  extractErrorMessage,
+  isDisabledStaff,
+  isValidEmail,
+  normalizeActionError,
+  normalizeGroup,
+  normalizeStaffUser,
+  parseResponseBodySafe,
+  parseTermToFormFields,
+  sanitizeSelectValue,
+  sortNewest,
+  sortStaff,
+  toNullableTrimmed,
+  unwrapItem,
+  unwrapItems,
+  type StaffUserItem,
+  type ThesisGroupFormState,
+  type ThesisGroupListItem,
+  type UserStatus,
+} from "@/components/thesis-groups/thesis-group-utils"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-
-type ThesisGroupListItem = {
-  id: string
-  title: string
-  program: string | null
-  term: string | null
-  adviserId: string | null
-  manualAdviserInfo: string | null
-  membersCount: number | null
-  createdAt: string | null
-  updatedAt: string | null
-}
-
-type StaffUserItem = {
-  id: string
-  name: string
-  email: string | null
-  status: string | null
-}
-
-type ThesisGroupFormState = {
-  title: string
-  program: string
-  adviserUserId: string
-  semester: string
-  customSemester: string
-  schoolYearStart: string
-}
-
-type FetchResult = {
-  endpoint: string
-  payload: unknown | null
-  status: number
-}
-
-type MutationWithFallbackResult = {
-  result: FetchResult
-  payloadUsed: Record<string, unknown>
-  usedFallback: boolean
-}
-
-type UserStatus = "active" | "disabled"
-
-const LIST_ENDPOINTS = [
-  "/api/thesis-groups",
-  "/api/admin/thesis-groups",
-  "/api/thesis/groups",
-  "/api/admin/thesis/groups",
-] as const
-
-const STAFF_LIST_ENDPOINTS = [
-  "/api/staff",
-  `/api/users?where=${encodeURIComponent(JSON.stringify({ role: "staff" }))}`,
-  "/api/users?role=staff",
-  "/api/users",
-] as const
-
-const WRITE_BASE_ENDPOINTS = [...LIST_ENDPOINTS]
-
-const STANDARD_SEMESTERS = ["1st Semester", "2nd Semester", "Summer"] as const
-const SEMESTER_NONE_VALUE = "__none__"
-const SEMESTER_OTHER_VALUE = "__other__"
-const ADVISER_NONE_VALUE = "__none_adviser__"
-const CREATE_USER_STATUSES: UserStatus[] = ["active", "disabled"]
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
-function toStringOrNull(value: unknown): string | null {
-  if (typeof value !== "string") return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-function toNumberOrNull(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value
-  if (typeof value === "string") {
-    const n = Number(value)
-    if (Number.isFinite(n)) return n
-  }
-  return null
-}
-
-function toNonNegativeCountOrNull(value: unknown): number | null {
-  const n = toNumberOrNull(value)
-  if (n === null) return null
-  if (n < 0) return null
-  return Math.trunc(n)
-}
-
-function unwrapItems(payload: unknown): unknown[] {
-  if (Array.isArray(payload)) return payload
-
-  const rec = asRecord(payload)
-  if (!rec) return []
-
-  const directItems = rec.items
-  if (Array.isArray(directItems)) return directItems
-
-  const directData = rec.data
-  if (Array.isArray(directData)) return directData
-
-  const directGroups = rec.groups
-  if (Array.isArray(directGroups)) return directGroups
-
-  return []
-}
-
-function unwrapItem(payload: unknown): unknown {
-  const rec = asRecord(payload)
-  if (!rec) return payload
-
-  if (rec.item) return rec.item
-  if (rec.data) return rec.data
-
-  return payload
-}
-
-function extractRoleLower(rec: Record<string, unknown>): string | null {
-  const direct = toStringOrNull(rec.role ?? rec.user_role ?? rec.userRole)
-  if (direct) return direct.toLowerCase()
-
-  const userRec = asRecord(rec.user)
-  const nested = userRec ? toStringOrNull(userRec.role ?? userRec.user_role) : null
-  if (nested) return nested.toLowerCase()
-
-  return null
-}
-
-function normalizeGroup(raw: unknown): ThesisGroupListItem | null {
-  const rec = asRecord(raw)
-  if (!rec) return null
-
-  const id = toStringOrNull(rec.id ?? rec.group_id)
-  if (!id) return null
-
-  const title = toStringOrNull(rec.title ?? rec.group_title) ?? `Group ${id.slice(0, 8)}`
-  const program = toStringOrNull(rec.program)
-  const term = toStringOrNull(rec.term)
-  const adviserId = toStringOrNull(rec.adviser_id ?? rec.adviserId)
-  const manualAdviserInfo = toStringOrNull(
-    rec.manual_adviser_info ??
-    rec.manualAdviserInfo ??
-    rec.adviser_name ??
-    rec.adviserName ??
-    rec.adviser
-  )
-
-  const scalarMembersCount = toNonNegativeCountOrNull(
-    rec.members_count ?? rec.member_count ?? rec.membersCount
-  )
-  const membersArrayCandidate =
-    rec.members ?? rec.group_members ?? rec.groupMembers ?? rec.member_list ?? rec.memberList
-
-  const membersCount =
-    scalarMembersCount ?? (Array.isArray(membersArrayCandidate) ? membersArrayCandidate.length : null)
-
-  const createdAt = toStringOrNull(rec.created_at ?? rec.createdAt)
-  const updatedAt = toStringOrNull(rec.updated_at ?? rec.updatedAt)
-
-  return {
-    id,
-    title,
-    program,
-    term,
-    adviserId,
-    manualAdviserInfo,
-    membersCount,
-    createdAt,
-    updatedAt,
-  }
-}
-
-function normalizeStaffUser(raw: unknown): StaffUserItem | null {
-  const rec = asRecord(raw)
-  if (!rec) return null
-
-  const id = toStringOrNull(rec.id ?? rec.user_id)
-  if (!id) return null
-
-  const role = extractRoleLower(rec)
-  if (role && role !== "staff") return null
-
-  const name = toStringOrNull(rec.name ?? rec.full_name) ?? "Unnamed Staff"
-
-  return {
-    id,
-    name,
-    email: toStringOrNull(rec.email),
-    status: toStringOrNull(rec.status),
-  }
-}
-
-function extractMembersCountFromPayload(payload: unknown): number | null {
-  if (Array.isArray(payload)) {
-    return payload.length
-  }
-
-  const rec = asRecord(payload)
-  if (!rec) return null
-
-  const scalarCount = toNonNegativeCountOrNull(
-    rec.count ??
-    rec.total ??
-    rec.totalCount ??
-    rec.membersCount ??
-    rec.members_count ??
-    rec.memberCount ??
-    rec.member_count
-  )
-  if (scalarCount !== null) return scalarCount
-
-  const arrayCandidates: unknown[] = [
-    rec.items,
-    rec.data,
-    rec.members,
-    rec.group_members,
-    rec.groupMembers,
-  ]
-
-  for (const candidate of arrayCandidates) {
-    if (Array.isArray(candidate)) return candidate.length
-  }
-
-  return null
-}
-
-function buildGroupMembersEndpointCandidates(
-  groupId: string,
-  preferredBaseEndpoint: string | null
-): string[] {
-  const bases = preferredBaseEndpoint
-    ? [preferredBaseEndpoint, ...LIST_ENDPOINTS.filter((endpoint) => endpoint !== preferredBaseEndpoint)]
-    : [...LIST_ENDPOINTS]
-
-  const candidates: string[] = []
-  const seen = new Set<string>()
-
-  const push = (endpoint: string) => {
-    const normalized = endpoint.replace(/\/+$/, "")
-    if (seen.has(normalized)) return
-    seen.add(normalized)
-    candidates.push(normalized)
-  }
-
-  for (const base of bases) {
-    push(`${base}/${groupId}/members`)
-  }
-
-  // Defensive aliases in case list and member endpoints are mounted differently.
-  push(`/api/thesis-groups/${groupId}/members`)
-  push(`/api/admin/thesis-groups/${groupId}/members`)
-  push(`/api/thesis/groups/${groupId}/members`)
-  push(`/api/admin/thesis/groups/${groupId}/members`)
-
-  return candidates
-}
-
-async function fetchMembersCountForGroup(
-  groupId: string,
-  preferredBaseEndpoint: string | null,
-  signal: AbortSignal
-): Promise<number | null> {
-  const endpoints = buildGroupMembersEndpointCandidates(groupId, preferredBaseEndpoint)
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-        signal,
-      })
-
-      if (res.status === 404 || res.status === 405) continue
-
-      const payload = await parseResponseBodySafe(res)
-      if (!res.ok) continue
-
-      const count = extractMembersCountFromPayload(payload)
-      if (count !== null) return count
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw error
-    }
-  }
-
-  return null
-}
-
-function dedupeStaffUsers(items: StaffUserItem[]): StaffUserItem[] {
-  const map = new Map<string, StaffUserItem>()
-
-  for (const item of items) {
-    const existing = map.get(item.id)
-    if (!existing) {
-      map.set(item.id, item)
-      continue
-    }
-
-    map.set(item.id, {
-      id: item.id,
-      name:
-        existing.name === "Unnamed Staff" && item.name !== "Unnamed Staff"
-          ? item.name
-          : existing.name,
-      email: existing.email ?? item.email,
-      status: existing.status ?? item.status,
-    })
-  }
-
-  return [...map.values()]
-}
-
-function sortNewest(items: ThesisGroupListItem[]): ThesisGroupListItem[] {
-  return [...items].sort((a, b) => {
-    const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-    const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
-    return tb - ta
-  })
-}
-
-function sortStaff(items: StaffUserItem[]): StaffUserItem[] {
-  return [...items].sort((a, b) => {
-    const nameCompare = a.name.localeCompare(b.name, "en", { sensitivity: "base" })
-    if (nameCompare !== 0) return nameCompare
-    return a.id.localeCompare(b.id)
-  })
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) return "—"
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return value
-  return new Intl.DateTimeFormat("en-PH", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(d)
-}
-
-function toNullableTrimmed(value: string): string | null {
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-function sanitizeSelectValue(value: string, fallback: string): string {
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : fallback
-}
-
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-}
-
-/**
- * Build payload with required adviser link only (manual adviser entry removed).
- */
-function buildThesisGroupMutationPayload(input: {
-  title: string
-  program: string
-  term: string | null
-  adviserId: string
-}): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    title: input.title,
-    adviser_id: input.adviserId,
-    adviserId: input.adviserId,
-  }
-
-  const program = toNullableTrimmed(input.program)
-  if (program !== null) payload.program = program
-
-  if (input.term !== null) payload.term = input.term
-
-  return payload
-}
-
-function normalizeActionError(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : fallback
-  const msg = (raw ?? "").trim()
-
-  if (!msg) return fallback
-
-  if (/adviserid|adviser_id|foreign key|constraint|violates/i.test(msg)) {
-    return "Unable to save adviser assignment due to a server schema mismatch. Please verify adviser user mapping in the API."
-  }
-
-  return msg
-}
-
-function parseResponseBodySafe(res: Response): Promise<unknown | null> {
-  return res.text().then((text) => {
-    if (!text) return null
-    try {
-      return JSON.parse(text) as unknown
-    } catch {
-      return { message: text }
-    }
-  })
-}
-
-function extractErrorMessage(payload: unknown, fallback: string): string {
-  const rec = asRecord(payload)
-  if (!rec) return fallback
-  const error = toStringOrNull(rec.error)
-  if (error) return error
-  const message = toStringOrNull(rec.message)
-  if (message) return message
-  return fallback
-}
-
-function currentYearText(): string {
-  return String(new Date().getFullYear())
-}
-
-function defaultCreateFormState(): ThesisGroupFormState {
-  return {
-    title: "",
-    program: "",
-    adviserUserId: ADVISER_NONE_VALUE,
-    semester: "1st Semester",
-    customSemester: "",
-    schoolYearStart: currentYearText(),
-  }
-}
-
-function defaultEditFormState(): ThesisGroupFormState {
-  return {
-    title: "",
-    program: "",
-    adviserUserId: ADVISER_NONE_VALUE,
-    semester: SEMESTER_NONE_VALUE,
-    customSemester: "",
-    schoolYearStart: currentYearText(),
-  }
-}
-
-function parseTermToFormFields(term: string | null): Pick<
-  ThesisGroupFormState,
-  "semester" | "customSemester" | "schoolYearStart"
-> {
-  if (!term || !term.trim()) {
-    return {
-      semester: SEMESTER_NONE_VALUE,
-      customSemester: "",
-      schoolYearStart: currentYearText(),
-    }
-  }
-
-  const raw = term.trim()
-
-  const ayPattern = /^(.+?)\s+AY\s+(\d{4})\s*-\s*(\d{4})$/i
-  const match = raw.match(ayPattern)
-
-  let semesterLabel = raw
-  let schoolYearStart = ""
-
-  if (match) {
-    semesterLabel = match[1].trim()
-    schoolYearStart = match[2]
-  }
-
-  const known = STANDARD_SEMESTERS.find(
-    (value) => value.toLowerCase() === semesterLabel.toLowerCase()
-  )
-
-  if (known) {
-    return {
-      semester: known,
-      customSemester: "",
-      schoolYearStart: schoolYearStart || currentYearText(),
-    }
-  }
-
-  return {
-    semester: SEMESTER_OTHER_VALUE,
-    customSemester: semesterLabel,
-    schoolYearStart: schoolYearStart || currentYearText(),
-  }
-}
-
-function normalizeSchoolYearStart(raw: string): number | null {
-  const text = raw.trim()
-  if (!/^\d{4}$/.test(text)) return null
-
-  const year = Number(text)
-  if (!Number.isInteger(year)) return null
-  if (year < 1900 || year > 9999) return null
-
-  return year
-}
-
-function buildTermFromForm(form: ThesisGroupFormState): { term: string | null; error: string | null } {
-  if (form.semester === SEMESTER_NONE_VALUE) {
-    return { term: null, error: null }
-  }
-
-  const semesterLabel =
-    form.semester === SEMESTER_OTHER_VALUE ? form.customSemester.trim() : form.semester.trim()
-
-  if (!semesterLabel) {
-    return { term: null, error: "Please specify the semester." }
-  }
-
-  const schoolYearStart = normalizeSchoolYearStart(form.schoolYearStart)
-  if (schoolYearStart === null) {
-    return {
-      term: null,
-      error: "School Year start must be a valid 4-digit year (e.g., 2026).",
-    }
-  }
-
-  const schoolYearEnd = schoolYearStart + 1
-  return {
-    term: `${semesterLabel} AY ${schoolYearStart}-${schoolYearEnd}`,
-    error: null,
-  }
-}
-
-function buildTermPreview(form: ThesisGroupFormState): string {
-  const built = buildTermFromForm(form)
-  if (built.error) {
-    if (form.semester === SEMESTER_NONE_VALUE) return "No term"
-    const semesterLabel =
-      form.semester === SEMESTER_OTHER_VALUE ? form.customSemester.trim() : form.semester
-    return semesterLabel || "No term"
-  }
-  return built.term ?? "No term"
-}
-
-function isDisabledStaff(staff: StaffUserItem): boolean {
-  return (staff.status ?? "").trim().toLowerCase() === "disabled"
-}
-
-function buildCompatibilityPayloadVariants(
-  basePayload: Record<string, unknown>
-): Record<string, unknown>[] {
-  const variants: Record<string, unknown>[] = []
-  const seen = new Set<string>()
-
-  const pushUnique = (candidate: Record<string, unknown>) => {
-    if (!candidate || Object.keys(candidate).length === 0) return
-    const key = JSON.stringify(candidate)
-    if (seen.has(key)) return
-    seen.add(key)
-    variants.push(candidate)
-  }
-
-  // Variant A: send both adviser key styles
-  pushUnique({ ...basePayload })
-
-  // Variant B: snake_case only
-  if (Object.prototype.hasOwnProperty.call(basePayload, "adviserId")) {
-    const next = { ...basePayload }
-    delete next.adviserId
-    pushUnique(next)
-  }
-
-  // Variant C: camelCase only
-  if (Object.prototype.hasOwnProperty.call(basePayload, "adviser_id")) {
-    const next = { ...basePayload }
-    delete next.adviser_id
-    pushUnique(next)
-  }
-
-  return variants
-}
-
-function shouldAttemptPayloadFallback(message: string): boolean {
-  const normalized = message.trim().toLowerCase()
-  if (!normalized) return false
-
-  return (
-    normalized.includes("internal server error") ||
-    normalized.includes("returned 500") ||
-    (normalized.includes("column") && normalized.includes("does not exist")) ||
-    normalized.includes("schema") ||
-    normalized.includes("foreign key") ||
-    normalized.includes("constraint") ||
-    normalized.includes("violates") ||
-    normalized.includes("invalid input syntax")
-  )
-}
-
-async function fetchFirstAvailableJson(
-  endpoints: readonly string[],
-  signal: AbortSignal
-): Promise<FetchResult | null> {
-  let lastError: Error | null = null
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-        signal,
-      })
-
-      if (res.status === 404 || res.status === 405) {
-        continue
-      }
-
-      const payload = await parseResponseBodySafe(res)
-
-      if (!res.ok) {
-        const message = extractErrorMessage(payload, `${endpoint} returned ${res.status}`)
-        lastError = new Error(message)
-        continue
-      }
-
-      return {
-        endpoint,
-        payload,
-        status: res.status,
-      }
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw error
-      }
-      lastError = error instanceof Error ? error : new Error("Request failed")
-    }
-  }
-
-  if (lastError) throw lastError
-  return null
-}
-
-async function fetchAllSuccessfulJson(
-  endpoints: readonly string[],
-  signal: AbortSignal
-): Promise<FetchResult[]> {
-  const results: FetchResult[] = []
-  let lastError: Error | null = null
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-        signal,
-      })
-
-      if (res.status === 404 || res.status === 405) continue
-
-      const payload = await parseResponseBodySafe(res)
-
-      if (!res.ok) {
-        lastError = new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`))
-        continue
-      }
-
-      results.push({
-        endpoint,
-        payload,
-        status: res.status,
-      })
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw error
-      lastError = error instanceof Error ? error : new Error("Request failed")
-    }
-  }
-
-  if (results.length === 0 && lastError) throw lastError
-  return results
-}
-
-/**
- * IMPORTANT for UX:
- * - We only fallback on route-shape incompatibility (404/405).
- * - For validation/auth/server errors on a compatible route, stop immediately
- *   so we don't spam multiple POST/PATCH attempts.
- */
-async function requestFirstAvailable(
-  endpoints: readonly string[],
-  init: RequestInit
-): Promise<FetchResult> {
-  let lastError: Error | null = null
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        ...init,
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          ...(init.headers ?? {}),
-        },
-      })
-
-      if (res.status === 404 || res.status === 405) continue
-
-      const payload = await parseResponseBodySafe(res)
-
-      if (!res.ok) {
-        throw new Error(extractErrorMessage(payload, `${endpoint} returned ${res.status}`))
-      }
-
-      return { endpoint, payload, status: res.status }
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Request failed")
-      break
-    }
-  }
-
-  if (lastError) throw lastError
-  throw new Error("No compatible thesis-group API endpoint found for this action.")
-}
-
-async function requestFirstAvailableWithPayloadFallback(
-  endpoints: readonly string[],
-  method: "POST" | "PATCH" | "PUT",
-  payload: Record<string, unknown>
-): Promise<MutationWithFallbackResult> {
-  const variants = buildCompatibilityPayloadVariants(payload)
-  let lastError: Error | null = null
-
-  for (let index = 0; index < variants.length; index += 1) {
-    const candidate = variants[index] ?? {}
-    try {
-      const result = await requestFirstAvailable(endpoints, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(candidate),
-      })
-
-      return {
-        result,
-        payloadUsed: candidate,
-        usedFallback: index > 0,
-      }
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error("Request failed")
-      lastError = err
-
-      const hasAnotherVariant = index < variants.length - 1
-      if (!hasAnotherVariant) break
-
-      if (!shouldAttemptPayloadFallback(err.message)) break
-    }
-  }
-
-  if (lastError) throw lastError
-  throw new Error("Failed to submit thesis group request.")
-}
 
 export default function AdminThesisGroupsPage() {
   const [groups, setGroups] = React.useState<ThesisGroupListItem[]>([])
@@ -819,10 +76,8 @@ export default function AdminThesisGroupsPage() {
   const [actionError, setActionError] = React.useState<string | null>(null)
 
   const [createForm, setCreateForm] = React.useState<ThesisGroupFormState>(defaultCreateFormState())
-
   const [editTarget, setEditTarget] = React.useState<ThesisGroupListItem | null>(null)
   const [editForm, setEditForm] = React.useState<ThesisGroupFormState>(defaultEditFormState())
-
   const [deleteTarget, setDeleteTarget] = React.useState<ThesisGroupListItem | null>(null)
 
   const [createStaffOpen, setCreateStaffOpen] = React.useState(false)
@@ -884,10 +139,7 @@ export default function AdminThesisGroupsPage() {
   }, [editTarget?.adviserId, takenAdviserIds])
 
   const availableEditStaff = React.useMemo(
-    () =>
-      staffUsers.filter(
-        (staff) => !takenAdviserIdsForEdit.has(staff.id) && !isDisabledStaff(staff)
-      ),
+    () => staffUsers.filter((staff) => !takenAdviserIdsForEdit.has(staff.id) && !isDisabledStaff(staff)),
     [staffUsers, takenAdviserIdsForEdit]
   )
 
@@ -1129,8 +381,9 @@ export default function AdminThesisGroupsPage() {
       )
 
       const successMessage =
-        toStringOrNull(body?.message) ??
-        "Staff user created successfully. Login details were sent to email."
+        typeof body?.message === "string" && body.message.trim()
+          ? body.message
+          : "Staff user created successfully. Login details were sent to email."
 
       toast.success(successMessage, { id: loadingToastId })
       setCreateStaffOpen(false)
@@ -1399,119 +652,14 @@ export default function AdminThesisGroupsPage() {
     }
   }, [deleteTarget, writeBases])
 
-  const columns = React.useMemo<ColumnDef<ThesisGroupListItem>[]>(
-    () => [
-      {
-        accessorKey: "title",
-        header: "Thesis Title",
-        cell: ({ row }) => (
-          <Button asChild variant="ghost" className="h-auto justify-start px-0 py-0 text-left font-medium">
-            <Link href={`/dashboard/admin/thesis-groups/${row.original.id}`}>{row.original.title}</Link>
-          </Button>
-        ),
-      },
-      {
-        accessorKey: "program",
-        header: "Program",
-        cell: ({ row }) => row.original.program ?? "—",
-      },
-      {
-        id: "adviser",
-        header: "Adviser",
-        cell: ({ row }) => {
-          const adviserId = row.original.adviserId
-
-          if (!adviserId && row.original.manualAdviserInfo) {
-            return (
-              <div className="leading-tight">
-                <Badge variant="outline" className="mb-1">
-                  Legacy Manual Adviser
-                </Badge>
-                <div className="text-sm">{row.original.manualAdviserInfo}</div>
-              </div>
-            )
-          }
-
-          if (!adviserId) return "—"
-
-          const staff = staffById.get(adviserId)
-          if (!staff) {
-            return (
-              <div className="space-y-1">
-                <Badge variant="outline">Assigned staff user</Badge>
-                {row.original.manualAdviserInfo ? (
-                  <div className="text-xs text-muted-foreground">{row.original.manualAdviserInfo}</div>
-                ) : null}
-              </div>
-            )
-          }
-
-          return (
-            <div className="leading-tight">
-              <div>{staff.name}</div>
-              {staff.email ? <div className="text-xs text-muted-foreground">{staff.email}</div> : null}
-            </div>
-          )
-        },
-      },
-      {
-        accessorKey: "term",
-        header: "Term",
-        cell: ({ row }) => (row.original.term ? <Badge variant="secondary">{row.original.term}</Badge> : "—"),
-      },
-      {
-        accessorKey: "membersCount",
-        header: "Members",
-        cell: ({ row }) => {
-          if (row.original.membersCount === null) {
-            return membersCountSyncing ? (
-              <Badge variant="outline" className="font-normal">
-                Syncing…
-              </Badge>
-            ) : (
-              "—"
-            )
-          }
-          return String(row.original.membersCount)
-        },
-      },
-      {
-        accessorKey: "updatedAt",
-        header: "Updated",
-        cell: ({ row }) => formatDateTime(row.original.updatedAt),
-      },
-      {
-        id: "actions",
-        header: "Actions",
-        enableHiding: false,
-        cell: ({ row }) => (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="Open actions">
-                <MoreHorizontal className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem asChild>
-                <Link href={`/dashboard/admin/thesis-groups/${row.original.id}`}>Open</Link>
-              </DropdownMenuItem>
-
-              <DropdownMenuItem onClick={() => openEditDialog(row.original)}>Edit</DropdownMenuItem>
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => openDeleteDialog(row.original)}
-              >
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ),
-      },
-    ],
+  const columns = React.useMemo(
+    () =>
+      createThesisGroupColumns({
+        membersCountSyncing,
+        staffById,
+        onEditDialog: openEditDialog,
+        onDeleteDialog: openDeleteDialog,
+      }),
     [membersCountSyncing, openDeleteDialog, openEditDialog, staffById]
   )
 
@@ -1582,531 +730,72 @@ export default function AdminThesisGroupsPage() {
         />
       </div>
 
-      <Dialog
+      <CreateThesisGroupDialog
         open={createOpen}
-        onOpenChange={(open) => {
-          if (!submitting) setCreateOpen(open)
-          if (!open) {
-            resetCreateForm()
-            setActionError(null)
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg max-h-[82vh] p-0">
-          <ScrollArea className="max-h-[82vh]">
-            <div className="p-6">
-              <DialogHeader>
-                <DialogTitle>Create Thesis Group</DialogTitle>
-                <DialogDescription>
-                  Assign an adviser from Staff users and save thesis details.
-                </DialogDescription>
-              </DialogHeader>
+        setOpen={setCreateOpen}
+        submitting={submitting}
+        actionError={actionError}
+        setActionError={setActionError}
+        createForm={createForm}
+        setCreateForm={setCreateForm}
+        createTermPreview={createTermPreview}
+        createAdviserSelectValue={createAdviserSelectValue}
+        staffLoading={staffLoading}
+        staffUsers={staffUsers}
+        takenAdviserIds={takenAdviserIds}
+        availableCreateStaff={availableCreateStaff}
+        onSubmit={onCreateSubmit}
+        openCreateStaffDialog={openCreateStaffDialog}
+        resetCreateForm={resetCreateForm}
+      />
 
-              <form onSubmit={onCreateSubmit} className="mt-4 space-y-4">
-                {actionError ? (
-                  <Alert variant="destructive">
-                    <AlertDescription>{actionError}</AlertDescription>
-                  </Alert>
-                ) : null}
-
-                <div className="space-y-2">
-                  <Label htmlFor="create-title">Thesis Title</Label>
-                  <Input
-                    id="create-title"
-                    value={createForm.title}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, title: event.target.value }))}
-                    placeholder="Enter thesis title"
-                    autoComplete="off"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="create-program">Program</Label>
-                  <Input
-                    id="create-program"
-                    value={createForm.program}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, program: event.target.value }))}
-                    placeholder="e.g., BSIT"
-                    autoComplete="off"
-                  />
-                </div>
-
-                <div className="rounded-lg border p-3 space-y-3">
-                  <div className="space-y-2">
-                    <Label>Semester</Label>
-                    <Select
-                      value={createForm.semester}
-                      onValueChange={(value) =>
-                        setCreateForm((prev) => ({
-                          ...prev,
-                          semester: value,
-                          customSemester: value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
-                        }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select semester" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {STANDARD_SEMESTERS.map((semester) => (
-                          <SelectItem key={`create-sem-${semester}`} value={semester}>
-                            {semester}
-                          </SelectItem>
-                        ))}
-                        <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
-                        <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {createForm.semester === SEMESTER_OTHER_VALUE ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="create-custom-semester">Specify Semester</Label>
-                      <Input
-                        id="create-custom-semester"
-                        value={createForm.customSemester}
-                        onChange={(event) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            customSemester: event.target.value,
-                          }))
-                        }
-                        placeholder="e.g., Midyear"
-                        autoComplete="off"
-                      />
-                    </div>
-                  ) : null}
-
-                  {createForm.semester !== SEMESTER_NONE_VALUE ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="create-school-year-start">School Year (Start)</Label>
-                      <Input
-                        id="create-school-year-start"
-                        value={createForm.schoolYearStart}
-                        onChange={(event) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            schoolYearStart: event.target.value,
-                          }))
-                        }
-                        placeholder="e.g., 2026"
-                        inputMode="numeric"
-                        autoComplete="off"
-                      />
-                      <p className="text-xs text-muted-foreground">Example: 2026 will be saved as AY 2026-2027.</p>
-                    </div>
-                  ) : null}
-
-                  <div className="text-xs text-muted-foreground">
-                    Preview: <span className="font-medium">{createTermPreview}</span>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border p-3 space-y-3">
-                  <div className="space-y-2">
-                    <Label>Adviser (Staff User)</Label>
-                    <Select
-                      value={createAdviserSelectValue}
-                      onValueChange={(value) =>
-                        setCreateForm((prev) => ({
-                          ...prev,
-                          adviserUserId: sanitizeSelectValue(value, ADVISER_NONE_VALUE),
-                        }))
-                      }
-                      disabled={staffLoading}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={staffLoading ? "Loading staff users..." : "Select adviser"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ADVISER_NONE_VALUE} disabled>
-                          No staff adviser selected
-                        </SelectItem>
-
-                        {staffUsers.map((staff) => {
-                          const taken = takenAdviserIds.has(staff.id)
-                          const disabledAccount = isDisabledStaff(staff)
-                          const disabled = taken || disabledAccount
-                          const suffix = taken ? " • Already assigned" : disabledAccount ? " • Disabled" : ""
-                          const label = staff.email
-                            ? `${staff.name} (${staff.email})${suffix}`
-                            : `${staff.name}${suffix}`
-
-                          return (
-                            <SelectItem key={`create-adviser-${staff.id}`} value={staff.id} disabled={disabled}>
-                              {label}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectContent>
-                    </Select>
-
-                    {staffLoading ? (
-                      <p className="text-xs text-muted-foreground">Loading staff users…</p>
-                    ) : availableCreateStaff.length > 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        Select from available Staff users. Assigned/disabled staff are not selectable.
-                      </p>
-                    ) : (
-                      <div className="rounded-md border bg-muted/40 p-3 space-y-2">
-                        <p className="text-xs text-amber-700">
-                          No available staff adviser right now. Create a Staff user to continue.
-                        </p>
-                        <Button type="button" size="sm" variant="secondary" onClick={openCreateStaffDialog}>
-                          <Plus className="mr-2 size-4" />
-                          Create Staff User
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={submitting}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting}>
-                    {submitting ? "Creating..." : "Create Group"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </div>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
+      <EditThesisGroupDialog
         open={editOpen}
-        onOpenChange={(open) => {
-          if (!submitting) setEditOpen(open)
-          if (!open) {
-            setEditTarget(null)
-            setActionError(null)
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg max-h-[74vh] p-0">
-          <ScrollArea className="max-h-[74vh]">
-            <div className="p-6">
-              <DialogHeader>
-                <DialogTitle>Edit Thesis Group</DialogTitle>
-                <DialogDescription>
-                  Update thesis details and assign an available staff adviser with conflict protection.
-                </DialogDescription>
-              </DialogHeader>
+        setOpen={setEditOpen}
+        submitting={submitting}
+        actionError={actionError}
+        setActionError={setActionError}
+        editForm={editForm}
+        setEditForm={setEditForm}
+        editTermPreview={editTermPreview}
+        editAdviserSelectValue={editAdviserSelectValue}
+        editAdviserRawValue={editAdviserRawValue}
+        selectedEditAdviserMissing={selectedEditAdviserMissing}
+        staffLoading={staffLoading}
+        staffUsers={staffUsers}
+        availableEditStaff={availableEditStaff}
+        takenAdviserIdsForEdit={takenAdviserIdsForEdit}
+        editTarget={editTarget}
+        setEditTarget={setEditTarget}
+        onSubmit={onEditSubmit}
+        openCreateStaffDialog={openCreateStaffDialog}
+      />
 
-              <form onSubmit={onEditSubmit} className="mt-4 space-y-4">
-                {actionError ? (
-                  <Alert variant="destructive">
-                    <AlertDescription>{actionError}</AlertDescription>
-                  </Alert>
-                ) : null}
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-title">Thesis Title</Label>
-                  <Input
-                    id="edit-title"
-                    value={editForm.title}
-                    onChange={(event) => setEditForm((prev) => ({ ...prev, title: event.target.value }))}
-                    placeholder="Enter thesis title"
-                    autoComplete="off"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-program">Program</Label>
-                  <Input
-                    id="edit-program"
-                    value={editForm.program}
-                    onChange={(event) => setEditForm((prev) => ({ ...prev, program: event.target.value }))}
-                    placeholder="e.g., BSIT"
-                    autoComplete="off"
-                  />
-                </div>
-
-                <div className="rounded-lg border p-3 space-y-3">
-                  <div className="space-y-2">
-                    <Label>Semester</Label>
-                    <Select
-                      value={editForm.semester}
-                      onValueChange={(value) =>
-                        setEditForm((prev) => ({
-                          ...prev,
-                          semester: value,
-                          customSemester: value === SEMESTER_OTHER_VALUE ? prev.customSemester : "",
-                        }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select semester" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {STANDARD_SEMESTERS.map((semester) => (
-                          <SelectItem key={`edit-sem-${semester}`} value={semester}>
-                            {semester}
-                          </SelectItem>
-                        ))}
-                        <SelectItem value={SEMESTER_OTHER_VALUE}>Others (please specify)</SelectItem>
-                        <SelectItem value={SEMESTER_NONE_VALUE}>No term</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {editForm.semester === SEMESTER_OTHER_VALUE ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="edit-custom-semester">Specify Semester</Label>
-                      <Input
-                        id="edit-custom-semester"
-                        value={editForm.customSemester}
-                        onChange={(event) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            customSemester: event.target.value,
-                          }))
-                        }
-                        placeholder="e.g., Midyear"
-                        autoComplete="off"
-                      />
-                    </div>
-                  ) : null}
-
-                  {editForm.semester !== SEMESTER_NONE_VALUE ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="edit-school-year-start">School Year (Start)</Label>
-                      <Input
-                        id="edit-school-year-start"
-                        value={editForm.schoolYearStart}
-                        onChange={(event) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            schoolYearStart: event.target.value,
-                          }))
-                        }
-                        placeholder="e.g., 2026"
-                        inputMode="numeric"
-                        autoComplete="off"
-                      />
-                      <p className="text-xs text-muted-foreground">Example: 2026 will be saved as AY 2026-2027.</p>
-                    </div>
-                  ) : null}
-
-                  <div className="text-xs text-muted-foreground">
-                    Preview: <span className="font-medium">{editTermPreview}</span>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border p-3 space-y-3">
-                  <div className="space-y-2">
-                    <Label>Adviser (Staff User)</Label>
-                    <Select
-                      value={editAdviserSelectValue}
-                      onValueChange={(value) =>
-                        setEditForm((prev) => ({
-                          ...prev,
-                          adviserUserId: sanitizeSelectValue(value, ADVISER_NONE_VALUE),
-                        }))
-                      }
-                      disabled={staffLoading}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={staffLoading ? "Loading staff users..." : "Select adviser"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ADVISER_NONE_VALUE} disabled>
-                          No staff adviser selected
-                        </SelectItem>
-
-                        {selectedEditAdviserMissing && editAdviserRawValue ? (
-                          <SelectItem value={editAdviserRawValue}>
-                            Current assigned adviser (profile unavailable)
-                          </SelectItem>
-                        ) : null}
-
-                        {staffUsers.map((staff) => {
-                          const selected = editForm.adviserUserId === staff.id
-                          const takenByOtherGroup = takenAdviserIdsForEdit.has(staff.id)
-                          const disabledAccount = isDisabledStaff(staff)
-
-                          const disabled = takenByOtherGroup || (disabledAccount && !selected)
-
-                          const suffix = takenByOtherGroup
-                            ? " • Already assigned"
-                            : disabledAccount && !selected
-                              ? " • Disabled"
-                              : selected
-                                ? " • Current"
-                                : ""
-
-                          const label = staff.email
-                            ? `${staff.name} (${staff.email})${suffix}`
-                            : `${staff.name}${suffix}`
-
-                          return (
-                            <SelectItem key={`edit-adviser-${staff.id}`} value={staff.id} disabled={disabled}>
-                              {label}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectContent>
-                    </Select>
-
-                    {staffLoading ? (
-                      <p className="text-xs text-muted-foreground">Loading staff users…</p>
-                    ) : availableEditStaff.length > 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        Assigned/disabled staff are disabled unless it is the current adviser.
-                      </p>
-                    ) : (
-                      <div className="rounded-md border bg-muted/40 p-3 space-y-2">
-                        <p className="text-xs text-amber-700">
-                          No alternative available staff adviser. Create a Staff user if you need to reassign.
-                        </p>
-                        <Button type="button" size="sm" variant="secondary" onClick={openCreateStaffDialog}>
-                          <Plus className="mr-2 size-4" />
-                          Create Staff User
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)} disabled={submitting}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting}>
-                    {submitting ? "Saving..." : "Save Changes"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </div>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
+      <CreateStaffUserDialog
         open={createStaffOpen}
-        onOpenChange={(open) => {
-          if (!creatingStaffUser) setCreateStaffOpen(open)
-          if (!open) resetCreateStaffForm()
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Create Staff User</DialogTitle>
-            <DialogDescription>
-              A login credential email will be sent automatically after user creation.
-            </DialogDescription>
-          </DialogHeader>
+        setOpen={setCreateStaffOpen}
+        creatingStaffUser={creatingStaffUser}
+        createStaffError={createStaffError}
+        createStaffName={createStaffName}
+        setCreateStaffName={setCreateStaffName}
+        createStaffEmail={createStaffEmail}
+        setCreateStaffEmail={setCreateStaffEmail}
+        createStaffStatus={createStaffStatus}
+        setCreateStaffStatus={setCreateStaffStatus}
+        onSubmit={handleCreateStaffUser}
+        resetCreateStaffForm={resetCreateStaffForm}
+      />
 
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void handleCreateStaffUser()
-            }}
-          >
-            {createStaffError ? (
-              <Alert variant="destructive">
-                <AlertDescription>{createStaffError}</AlertDescription>
-              </Alert>
-            ) : null}
-
-            <div className="space-y-2">
-              <Label htmlFor="create-staff-name">Name</Label>
-              <Input
-                id="create-staff-name"
-                value={createStaffName}
-                onChange={(e) => setCreateStaffName(e.target.value)}
-                placeholder="e.g., Prof. Maria Santos"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="create-staff-email">Email</Label>
-              <Input
-                id="create-staff-email"
-                type="email"
-                value={createStaffEmail}
-                onChange={(e) => setCreateStaffEmail(e.target.value)}
-                placeholder="e.g., maria.santos@example.edu"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select value={createStaffStatus} onValueChange={(value) => setCreateStaffStatus(value as UserStatus)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {CREATE_USER_STATUSES.map((status) => (
-                    <SelectItem key={`staff-status-${status}`} value={status}>
-                      {status === "active" ? "Active" : "Disabled"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setCreateStaffOpen(false)} disabled={creatingStaffUser}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={creatingStaffUser}>
-                {creatingStaffUser ? "Creating..." : "Create Staff User"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog
+      <DeleteThesisGroupDialog
         open={deleteOpen}
-        onOpenChange={(open) => {
-          if (!submitting) setDeleteOpen(open)
-          if (!open) {
-            setDeleteTarget(null)
-            setActionError(null)
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete thesis group?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone.{" "}
-              {deleteTarget ? (
-                <>
-                  You are deleting <span className="font-medium">{deleteTarget.title}</span>.
-                </>
-              ) : null}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          {actionError ? (
-            <Alert variant="destructive">
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={submitting}
-              onClick={(event) => {
-                event.preventDefault()
-                void onDeleteConfirm()
-              }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {submitting ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        setOpen={setDeleteOpen}
+        submitting={submitting}
+        actionError={actionError}
+        setActionError={setActionError}
+        deleteTarget={deleteTarget}
+        setDeleteTarget={setDeleteTarget}
+        onConfirm={onDeleteConfirm}
+      />
     </DashboardLayout>
   )
 }
