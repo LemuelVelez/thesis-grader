@@ -2,13 +2,20 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { CalendarClock, CheckCircle2, Clock3, RefreshCw } from "lucide-react"
+import DashboardLayout from "@/components/dashboard-layout"
 import { toast } from "sonner"
 
-import DashboardLayout from "@/components/dashboard-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import {
     Table,
     TableBody,
@@ -25,6 +32,8 @@ type DefenseScheduleStatus =
     | "cancelled"
     | (string & {})
 
+type StatusFilter = "all" | "scheduled" | "ongoing" | "completed" | "cancelled"
+
 type PanelistLite = {
     id: string
     name: string
@@ -40,8 +49,6 @@ type DefenseScheduleRecord = {
     status: DefenseScheduleStatus
     rubric_template_id: string | null
     rubric_template_name: string | null
-    created_by: string | null
-    created_by_id: string | null
     created_by_name: string | null
     created_by_email: string | null
     created_at: string
@@ -49,38 +56,20 @@ type DefenseScheduleRecord = {
     panelists: PanelistLite[]
 }
 
-type ApiListPayload = {
+type ApiPayload = {
     items?: unknown
     item?: unknown
     error?: string
     message?: string
 }
 
-type ThesisGroupOption = {
-    id: string
-    title: string
-}
+const STATUS_FILTERS: StatusFilter[] = ["all", "scheduled", "ongoing", "completed", "cancelled"]
 
-type RubricTemplateOption = {
-    id: string
-    name: string
-}
-
-const STATUS_FILTERS = ["all", "scheduled", "ongoing", "completed", "cancelled"] as const
-
-const READ_ENDPOINTS = [
+const LIST_ENDPOINTS = [
     "/api/panelist/defense-schedules",
-    "/api/panelist/schedules",
+    "/api/panelist/schedules/defense",
+    "/api/defense-schedules?scope=panelist",
     "/api/defense-schedules",
-    "/api/admin/defense-schedules",
-] as const
-
-const GROUP_ENDPOINTS = ["/api/thesis-groups", "/api/admin/thesis-groups"] as const
-const RUBRIC_ENDPOINTS = [
-    "/api/rubric-templates?active=true",
-    "/api/admin/rubric-templates?active=true",
-    "/api/rubric-templates",
-    "/api/admin/rubric-templates",
 ] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -90,7 +79,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function pickString(source: Record<string, unknown>, keys: string[]): string | null {
     for (const key of keys) {
         const value = source[key]
-        if (typeof value === "string" && value.trim().length > 0) return value
+        if (typeof value === "string" && value.trim().length > 0) {
+            return value
+        }
     }
     return null
 }
@@ -104,109 +95,53 @@ function pickNullableString(source: Record<string, unknown>, keys: string[]): st
     return null
 }
 
-function toTitleCase(value: string): string {
-    if (!value) return ""
-    return value.charAt(0).toUpperCase() + value.slice(1)
-}
+function extractList(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload
+    if (!isRecord(payload)) return []
 
-function formatDateTime(value: string): string {
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return value
-    return date.toLocaleString()
+    const typed = payload as ApiPayload
+    if (Array.isArray(typed.items)) return typed.items
+    if (typed.item !== undefined) return [typed.item]
+
+    if (isRecord(payload.data)) {
+        const data = payload.data
+        if (Array.isArray(data.items)) return data.items
+        if (data.item !== undefined) return [data.item]
+    }
+
+    return []
 }
 
 function normalizePanelists(raw: unknown): PanelistLite[] {
     if (!Array.isArray(raw)) return []
 
-    const output: PanelistLite[] = []
-
-    for (const item of raw) {
-        if (!isRecord(item)) continue
-
-        const id =
-            pickString(item, ["id", "staff_id", "staffId", "user_id", "userId"]) ?? ""
-
-        const name =
-            pickString(item, ["name", "full_name", "staff_name", "staffName", "email"]) ??
-            "Unknown Panelist"
-
-        const email = pickNullableString(item, ["email", "staff_email", "staffEmail"])
-
-        output.push({ id, name, email })
-    }
-
-    return output
-}
-
-function extractList(payload: unknown): unknown[] {
-    if (Array.isArray(payload)) return payload
-    if (!isRecord(payload)) return []
-
-    const typed = payload as ApiListPayload
-    if (Array.isArray(typed.items)) return typed.items
-    if (typed.item !== undefined) return [typed.item]
-
-    return []
+    return raw
+        .map((item) => {
+            if (!isRecord(item)) return null
+            const id = pickString(item, ["id", "staff_id", "user_id", "userId"]) ?? ""
+            const name =
+                pickString(item, ["name", "full_name", "staff_name", "display_name", "email"]) ??
+                "Unknown Panelist"
+            const email = pickNullableString(item, ["email", "staff_email"])
+            return { id, name, email }
+        })
+        .filter((item): item is PanelistLite => !!item)
 }
 
 function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
     if (!isRecord(raw)) return null
 
     const id = pickString(raw, ["id"])
-    if (!id) return null
+    const scheduledAt = pickString(raw, ["scheduled_at", "scheduledAt"])
+    if (!id || !scheduledAt) return null
 
     const groupObject = isRecord(raw.group) ? raw.group : null
     const rubricObject = isRecord(raw.rubric_template) ? raw.rubric_template : null
-    const creatorObject =
-        isRecord(raw.created_by_user)
-            ? raw.created_by_user
-            : isRecord(raw.creator)
-                ? raw.creator
-                : isRecord(raw.createdByUser)
-                    ? raw.createdByUser
-                    : null
-
-    const groupId =
-        pickString(raw, ["group_id", "groupId"]) ??
-        (groupObject ? pickString(groupObject, ["id", "group_id", "groupId"]) : null) ??
-        ""
-
-    const groupTitle =
-        pickNullableString(raw, ["group_title", "groupTitle"]) ??
-        (groupObject ? pickNullableString(groupObject, ["title", "name"]) : null)
-
-    const scheduledAt = pickString(raw, ["scheduled_at", "scheduledAt"])
-    if (!scheduledAt) return null
-
-    const status = (pickString(raw, ["status"]) ?? "scheduled") as DefenseScheduleStatus
-    const room = pickNullableString(raw, ["room"])
-
-    const rubricTemplateId =
-        pickNullableString(raw, ["rubric_template_id", "rubricTemplateId"]) ??
-        (rubricObject ? pickNullableString(rubricObject, ["id"]) : null)
-
-    const rubricTemplateName =
-        pickNullableString(raw, ["rubric_template_name", "rubricTemplateName"]) ??
-        (rubricObject ? pickNullableString(rubricObject, ["name"]) : null)
-
-    const createdById =
-        pickNullableString(raw, ["created_by_id", "createdById", "created_by", "createdBy"]) ??
-        (creatorObject ? pickNullableString(creatorObject, ["id", "user_id", "userId"]) : null)
-
-    const createdByName =
-        pickNullableString(raw, ["created_by_name", "createdByName", "creator_name", "creatorName"]) ??
-        (creatorObject
-            ? pickNullableString(creatorObject, ["name", "full_name", "display_name", "displayName"])
-            : null)
-
-    const createdByEmail =
-        pickNullableString(raw, ["created_by_email", "createdByEmail", "creator_email", "creatorEmail"]) ??
-        (creatorObject ? pickNullableString(creatorObject, ["email"]) : null)
-
-    const createdByDisplay = createdByName ?? createdByEmail ?? createdById
-
-    const createdAt = pickString(raw, ["created_at", "createdAt"]) ?? new Date().toISOString()
-    const updatedAt = pickString(raw, ["updated_at", "updatedAt"]) ?? createdAt
+    const creatorObject = isRecord(raw.created_by_user)
+        ? raw.created_by_user
+        : isRecord(raw.creator)
+            ? raw.creator
+            : null
 
     const primaryPanelists = normalizePanelists(raw.panelists)
     const secondaryPanelists = normalizePanelists(raw.schedule_panelists)
@@ -214,49 +149,47 @@ function normalizeDefenseSchedule(raw: unknown): DefenseScheduleRecord | null {
 
     return {
         id,
-        group_id: groupId,
-        group_title: groupTitle,
+        group_id:
+            pickString(raw, ["group_id", "groupId"]) ??
+            (groupObject ? pickString(groupObject, ["id"]) : null) ??
+            "",
+        group_title:
+            pickNullableString(raw, ["group_title", "groupTitle"]) ??
+            (groupObject ? pickNullableString(groupObject, ["title", "name"]) : null),
         scheduled_at: scheduledAt,
-        room,
-        status,
-        rubric_template_id: rubricTemplateId,
-        rubric_template_name: rubricTemplateName,
-        created_by: createdByDisplay,
-        created_by_id: createdById,
-        created_by_name: createdByName,
-        created_by_email: createdByEmail,
-        created_at: createdAt,
-        updated_at: updatedAt,
+        room: pickNullableString(raw, ["room"]),
+        status: (pickString(raw, ["status"]) ?? "scheduled") as DefenseScheduleStatus,
+        rubric_template_id:
+            pickNullableString(raw, ["rubric_template_id", "rubricTemplateId"]) ??
+            (rubricObject ? pickNullableString(rubricObject, ["id"]) : null),
+        rubric_template_name:
+            pickNullableString(raw, ["rubric_template_name", "rubricTemplateName"]) ??
+            (rubricObject ? pickNullableString(rubricObject, ["name"]) : null),
+        created_by_name:
+            pickNullableString(raw, ["created_by_name", "createdByName"]) ??
+            (creatorObject
+                ? pickNullableString(creatorObject, ["name", "full_name", "display_name"])
+                : null),
+        created_by_email:
+            pickNullableString(raw, ["created_by_email", "createdByEmail"]) ??
+            (creatorObject ? pickNullableString(creatorObject, ["email"]) : null),
+        created_at: pickString(raw, ["created_at", "createdAt"]) ?? new Date().toISOString(),
+        updated_at:
+            pickString(raw, ["updated_at", "updatedAt"]) ??
+            pickString(raw, ["created_at", "createdAt"]) ??
+            new Date().toISOString(),
         panelists,
     }
-}
-
-function normalizeGroupOption(raw: unknown): ThesisGroupOption | null {
-    if (!isRecord(raw)) return null
-    const id = pickString(raw, ["id"])
-    if (!id) return null
-    const title = pickString(raw, ["title", "name"]) ?? id
-    return { id, title }
-}
-
-function normalizeRubricOption(raw: unknown): RubricTemplateOption | null {
-    if (!isRecord(raw)) return null
-    const id = pickString(raw, ["id"])
-    if (!id) return null
-    const name = pickString(raw, ["name"]) ?? id
-    return { id, name }
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
     const seen = new Set<string>()
     const out: T[] = []
-
     for (const item of items) {
         if (seen.has(item.id)) continue
         seen.add(item.id)
         out.push(item)
     }
-
     return out
 }
 
@@ -269,6 +202,64 @@ async function readErrorMessage(res: Response): Promise<string> {
     }
 }
 
+async function fetchDefenseSchedules(): Promise<DefenseScheduleRecord[]> {
+    const errors: string[] = []
+    let hadSuccess = false
+
+    for (const endpoint of LIST_ENDPOINTS) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+
+            if (res.ok) {
+                hadSuccess = true
+                const payload = (await res.json()) as unknown
+                const rows = extractList(payload)
+                    .map(normalizeDefenseSchedule)
+                    .filter((item): item is DefenseScheduleRecord => !!item)
+
+                if (rows.length > 0) return uniqueById(rows)
+                continue
+            }
+
+            if (res.status === 401 || res.status === 403 || res.status === 404) {
+                continue
+            }
+
+            errors.push(await readErrorMessage(res))
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : "Network error")
+        }
+    }
+
+    if (hadSuccess) return []
+    if (errors.length > 0) throw new Error(errors[0] ?? "Failed to load defense schedules.")
+
+    return []
+}
+
+function toTitleCase(value: string): string {
+    if (!value) return ""
+    return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function formatDateTime(value: string): string {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    return date.toLocaleString()
+}
+
+function isToday(value: string): boolean {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return false
+
+    const now = new Date()
+    return (
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate()
+    )
+}
+
 function statusBadgeClass(status: DefenseScheduleStatus): string {
     if (status === "completed") return "border-primary/40 bg-primary/10 text-foreground"
     if (status === "ongoing") return "border-chart-2/40 bg-chart-2/10 text-foreground"
@@ -276,270 +267,177 @@ function statusBadgeClass(status: DefenseScheduleStatus): string {
     return "border-muted-foreground/30 bg-muted text-muted-foreground"
 }
 
-async function fetchDefenseSchedules(): Promise<DefenseScheduleRecord[]> {
-    const errors: string[] = []
-
-    for (const endpoint of READ_ENDPOINTS) {
-        try {
-            const res = await fetch(endpoint, { cache: "no-store" })
-
-            if (res.ok) {
-                const payload = (await res.json()) as unknown
-                return extractList(payload)
-                    .map(normalizeDefenseSchedule)
-                    .filter((item): item is DefenseScheduleRecord => !!item)
-            }
-
-            if (res.status === 401 || res.status === 403 || res.status === 404) continue
-            errors.push(await readErrorMessage(res))
-        } catch (err) {
-            errors.push(err instanceof Error ? err.message : "Network error")
-        }
-    }
-
-    if (errors.length > 0) throw new Error(errors[0] ?? "Failed to fetch defense schedules.")
-    return []
-}
-
-async function fetchThesisGroups(): Promise<ThesisGroupOption[]> {
-    for (const endpoint of GROUP_ENDPOINTS) {
-        try {
-            const res = await fetch(endpoint, { cache: "no-store" })
-            if (!res.ok) {
-                if (res.status === 401 || res.status === 403 || res.status === 404) continue
-                continue
-            }
-
-            const payload = (await res.json()) as unknown
-            const options = extractList(payload)
-                .map(normalizeGroupOption)
-                .filter((item): item is ThesisGroupOption => !!item)
-
-            return uniqueById(options)
-        } catch {
-            // try next
-        }
-    }
-
-    return []
-}
-
-async function fetchRubricTemplates(): Promise<RubricTemplateOption[]> {
-    for (const endpoint of RUBRIC_ENDPOINTS) {
-        try {
-            const res = await fetch(endpoint, { cache: "no-store" })
-            if (!res.ok) {
-                if (res.status === 401 || res.status === 403 || res.status === 404) continue
-                continue
-            }
-
-            const payload = (await res.json()) as unknown
-            const options = extractList(payload)
-                .map(normalizeRubricOption)
-                .filter((item): item is RubricTemplateOption => !!item)
-
-            return uniqueById(options)
-        } catch {
-            // try next
-        }
-    }
-
-    return []
+function panelistPreview(panelists: PanelistLite[]): string {
+    if (panelists.length === 0) return "No panelists yet"
+    if (panelists.length <= 2) return panelists.map((p) => p.name).join(", ")
+    return `${panelists[0]?.name}, ${panelists[1]?.name} +${panelists.length - 2} more`
 }
 
 export default function PanelistDefenseSchedulesPage() {
     const [schedules, setSchedules] = React.useState<DefenseScheduleRecord[]>([])
     const [loading, setLoading] = React.useState(true)
+    const [refreshing, setRefreshing] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
 
-    const [groups, setGroups] = React.useState<ThesisGroupOption[]>([])
-    const [rubrics, setRubrics] = React.useState<RubricTemplateOption[]>([])
-
     const [search, setSearch] = React.useState("")
-    const [statusFilter, setStatusFilter] = React.useState<(typeof STATUS_FILTERS)[number]>("all")
+    const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
 
-    const groupTitleById = React.useMemo(
-        () => new Map(groups.map((group) => [group.id, group.title])),
-        [groups],
-    )
+    const loadSchedules = React.useCallback(async (withToast = false) => {
+        if (withToast) setRefreshing(true)
+        else setLoading(true)
 
-    const rubricNameById = React.useMemo(
-        () => new Map(rubrics.map((rubric) => [rubric.id, rubric.name])),
-        [rubrics],
-    )
-
-    const loadAll = React.useCallback(async (): Promise<boolean> => {
-        setLoading(true)
         setError(null)
 
         try {
-            const [rows, groupRows, rubricRows] = await Promise.all([
-                fetchDefenseSchedules(),
-                fetchThesisGroups(),
-                fetchRubricTemplates(),
-            ])
-
+            const rows = await fetchDefenseSchedules()
             setSchedules(rows)
-            setGroups(groupRows)
-            setRubrics(rubricRows)
-            return true
+            if (withToast) toast.success("Defense schedules refreshed.")
         } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to load defense schedules."
+            const message =
+                err instanceof Error ? err.message : "Failed to load defense schedules."
             setError(message)
             setSchedules([])
-            return false
+            toast.error(message)
         } finally {
-            setLoading(false)
+            if (withToast) setRefreshing(false)
+            else setLoading(false)
         }
     }, [])
 
     React.useEffect(() => {
-        void loadAll()
-    }, [loadAll])
+        void loadSchedules(false)
+    }, [loadSchedules])
 
     const filteredSchedules = React.useMemo(() => {
         const q = search.trim().toLowerCase()
 
-        const base = schedules.filter((row) => {
+        const rows = schedules.filter((row) => {
             if (statusFilter !== "all" && row.status !== statusFilter) return false
             if (!q) return true
-
-            const groupLabel = (row.group_title ?? groupTitleById.get(row.group_id) ?? row.group_id).toLowerCase()
-            const rubricLabel =
-                (row.rubric_template_name ??
-                    (row.rubric_template_id ? rubricNameById.get(row.rubric_template_id) ?? "" : ""))?.toLowerCase() ??
-                ""
-
-            const panelistsText = row.panelists.map((p) => `${p.name} ${p.email ?? ""}`.toLowerCase()).join(" ")
 
             return (
                 row.id.toLowerCase().includes(q) ||
                 row.group_id.toLowerCase().includes(q) ||
-                groupLabel.includes(q) ||
+                (row.group_title ?? "").toLowerCase().includes(q) ||
                 (row.room ?? "").toLowerCase().includes(q) ||
                 row.status.toLowerCase().includes(q) ||
-                rubricLabel.includes(q) ||
-                panelistsText.includes(q)
+                (row.rubric_template_name ?? "").toLowerCase().includes(q) ||
+                row.panelists.some(
+                    (panelist) =>
+                        panelist.name.toLowerCase().includes(q) ||
+                        (panelist.email ?? "").toLowerCase().includes(q),
+                )
             )
         })
 
-        return base.sort((a, b) => {
+        const now = Date.now()
+
+        return rows.sort((a, b) => {
             const aTime = new Date(a.scheduled_at).getTime()
             const bTime = new Date(b.scheduled_at).getTime()
+
+            const aFutureFirst = Number.isNaN(aTime) ? 1 : aTime >= now ? 0 : 1
+            const bFutureFirst = Number.isNaN(bTime) ? 1 : bTime >= now ? 0 : 1
+
+            if (aFutureFirst !== bFutureFirst) return aFutureFirst - bFutureFirst
             return aTime - bTime
         })
-    }, [groupTitleById, rubricNameById, schedules, search, statusFilter])
+    }, [schedules, search, statusFilter])
 
-    const stats = React.useMemo(() => {
-        const now = new Date()
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
-        const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+    const metrics = React.useMemo(() => {
+        const now = Date.now()
 
-        let upcoming = 0
-        let today = 0
-        let completed = 0
+        const total = schedules.length
+        const upcoming = schedules.filter((row) => {
+            const time = new Date(row.scheduled_at).getTime()
+            if (Number.isNaN(time)) return false
+            return time >= now && row.status !== "completed" && row.status !== "cancelled"
+        }).length
+        const today = schedules.filter((row) => isToday(row.scheduled_at)).length
+        const completed = schedules.filter((row) => row.status === "completed").length
 
-        for (const row of schedules) {
-            const when = new Date(row.scheduled_at).getTime()
-            if (!Number.isNaN(when)) {
-                if (when >= now.getTime() && row.status !== "cancelled") upcoming += 1
-                if (when >= startOfToday.getTime() && when <= endOfToday.getTime()) today += 1
-            }
-            if (row.status === "completed") completed += 1
-        }
-
-        return {
-            total: schedules.length,
-            upcoming,
-            today,
-            completed,
-        }
+        return { total, upcoming, today, completed }
     }, [schedules])
-
-    const handleRefresh = React.useCallback(async () => {
-        const ok = await loadAll()
-        if (ok) toast.success("Defense schedules refreshed.")
-        else toast.error("Could not refresh defense schedules.")
-    }, [loadAll])
 
     return (
         <DashboardLayout
             title="My Defense Schedules"
-            description="View your assigned defense schedules, status, and schedule details."
+            description="Track all thesis defense schedules assigned to your panelist account."
         >
             <div className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-lg border bg-card p-4">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Total Schedules</p>
-                        <p className="mt-2 text-2xl font-semibold">{stats.total}</p>
-                    </div>
+                <div className="rounded-lg border bg-card p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex w-full flex-col gap-3 md:flex-row">
+                            <Input
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                placeholder="Search by group, room, status, rubric, or panelist"
+                                className="md:max-w-xl"
+                            />
 
-                    <div className="rounded-lg border bg-card p-4">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Upcoming</p>
-                        <div className="mt-2 flex items-center gap-2">
-                            <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                            <p className="text-2xl font-semibold">{stats.upcoming}</p>
+                            <Select
+                                value={statusFilter}
+                                onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+                            >
+                                <SelectTrigger className="w-full md:w-56">
+                                    <SelectValue placeholder="Filter by status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {STATUS_FILTERS.map((status) => (
+                                        <SelectItem key={status} value={status}>
+                                            {toTitleCase(status)}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
-                    </div>
 
-                    <div className="rounded-lg border bg-card p-4">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Today</p>
-                        <div className="mt-2 flex items-center gap-2">
-                            <Clock3 className="h-4 w-4 text-muted-foreground" />
-                            <p className="text-2xl font-semibold">{stats.today}</p>
-                        </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-card p-4">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Completed</p>
-                        <div className="mt-2 flex items-center gap-2">
-                            <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-                            <p className="text-2xl font-semibold">{stats.completed}</p>
-                        </div>
+                        <Button
+                            variant="outline"
+                            onClick={() => void loadSchedules(true)}
+                            disabled={refreshing}
+                        >
+                            {refreshing ? "Refreshing..." : "Refresh"}
+                        </Button>
                     </div>
                 </div>
 
-                <div className="rounded-lg border bg-card p-4">
-                    <div className="flex flex-col gap-4">
-                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                            <Input
-                                placeholder="Search by group, room, status, rubric, schedule ID, or panelist"
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full lg:max-w-xl"
-                            />
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm text-muted-foreground">Total</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-2xl font-semibold">{metrics.total}</p>
+                        </CardContent>
+                    </Card>
 
-                            <Button variant="outline" onClick={() => void handleRefresh()} disabled={loading}>
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Refresh
-                            </Button>
-                        </div>
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm text-muted-foreground">Upcoming</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-2xl font-semibold">{metrics.upcoming}</p>
+                        </CardContent>
+                    </Card>
 
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {STATUS_FILTERS.map((status) => {
-                                    const active = statusFilter === status
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setStatusFilter(status)}
-                                        >
-                                            {toTitleCase(status)}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
-                        </div>
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm text-muted-foreground">Today</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-2xl font-semibold">{metrics.today}</p>
+                        </CardContent>
+                    </Card>
 
-                        <p className="text-sm text-muted-foreground">
-                            Showing{" "}
-                            <span className="font-semibold text-foreground">{filteredSchedules.length}</span> of{" "}
-                            <span className="font-semibold text-foreground">{schedules.length}</span> schedule(s).
-                        </p>
-                    </div>
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm text-muted-foreground">Completed</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-2xl font-semibold">{metrics.completed}</p>
+                        </CardContent>
+                    </Card>
                 </div>
 
                 {error ? (
@@ -552,20 +450,20 @@ export default function PanelistDefenseSchedulesPage() {
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead className="min-w-48">Schedule</TableHead>
+                                <TableHead className="min-w-44">Schedule</TableHead>
                                 <TableHead className="min-w-56">Group</TableHead>
-                                <TableHead className="min-w-44">Date &amp; Time</TableHead>
-                                <TableHead className="min-w-36">Room</TableHead>
-                                <TableHead className="min-w-32">Status</TableHead>
-                                <TableHead className="min-w-32">Panel Size</TableHead>
+                                <TableHead className="min-w-52">Date &amp; Time</TableHead>
+                                <TableHead className="min-w-40">Room</TableHead>
+                                <TableHead className="min-w-36">Status</TableHead>
+                                <TableHead className="min-w-64">Panel</TableHead>
                                 <TableHead className="min-w-32 text-right">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
 
                         <TableBody>
                             {loading ? (
-                                Array.from({ length: 6 }).map((_, i) => (
-                                    <TableRow key={`loading-${i}`}>
+                                Array.from({ length: 6 }).map((_, index) => (
+                                    <TableRow key={`panelist-skeleton-${index}`}>
                                         <TableCell colSpan={7}>
                                             <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
                                         </TableCell>
@@ -573,20 +471,16 @@ export default function PanelistDefenseSchedulesPage() {
                                 ))
                             ) : filteredSchedules.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                                    <TableCell
+                                        colSpan={7}
+                                        className="h-24 text-center text-muted-foreground"
+                                    >
                                         No defense schedules found.
                                     </TableCell>
                                 </TableRow>
                             ) : (
                                 filteredSchedules.map((row) => {
-                                    const groupLabel =
-                                        row.group_title || groupTitleById.get(row.group_id) || row.group_id || "Unassigned Group"
-
-                                    const rubricLabel =
-                                        row.rubric_template_name ||
-                                        (row.rubric_template_id
-                                            ? rubricNameById.get(row.rubric_template_id) ?? null
-                                            : null)
+                                    const groupTitle = row.group_title || row.group_id || "Unassigned Group"
 
                                     return (
                                         <TableRow key={row.id}>
@@ -594,16 +488,18 @@ export default function PanelistDefenseSchedulesPage() {
                                                 <div className="flex flex-col">
                                                     <span className="font-medium">{row.id}</span>
                                                     <span className="text-xs text-muted-foreground">
-                                                        {rubricLabel ? `Rubric: ${rubricLabel}` : "Rubric: Not set"}
+                                                        Rubric: {row.rubric_template_name || "Not set"}
                                                     </span>
                                                 </div>
                                             </TableCell>
 
                                             <TableCell>
                                                 <div className="flex flex-col">
-                                                    <span className="font-medium">{groupLabel}</span>
+                                                    <span className="font-medium">{groupTitle}</span>
                                                     {row.group_id ? (
-                                                        <span className="text-xs text-muted-foreground">{row.group_id}</span>
+                                                        <span className="text-xs text-muted-foreground">
+                                                            {row.group_id}
+                                                        </span>
                                                     ) : null}
                                                 </div>
                                             </TableCell>
@@ -612,17 +508,24 @@ export default function PanelistDefenseSchedulesPage() {
                                             <TableCell>{row.room || "TBA"}</TableCell>
 
                                             <TableCell>
-                                                <Badge variant="outline" className={statusBadgeClass(row.status)}>
+                                                <Badge
+                                                    variant="outline"
+                                                    className={statusBadgeClass(row.status)}
+                                                >
                                                     {toTitleCase(row.status)}
                                                 </Badge>
                                             </TableCell>
 
-                                            <TableCell>{row.panelists.length}</TableCell>
+                                            <TableCell className="text-sm text-muted-foreground">
+                                                {panelistPreview(row.panelists)}
+                                            </TableCell>
 
                                             <TableCell>
                                                 <div className="flex justify-end">
-                                                    <Button asChild variant="outline" size="sm">
-                                                        <Link href={`/dashboard/panelist/defense-schedules/${row.id}`}>
+                                                    <Button asChild size="sm" variant="outline">
+                                                        <Link
+                                                            href={`/dashboard/panelist/defense-schedules/${row.id}`}
+                                                        >
                                                             View
                                                         </Link>
                                                     </Button>
@@ -635,6 +538,15 @@ export default function PanelistDefenseSchedulesPage() {
                         </TableBody>
                     </Table>
                 </div>
+
+                <p className="text-sm text-muted-foreground">
+                    Showing{" "}
+                    <span className="font-semibold text-foreground">
+                        {filteredSchedules.length}
+                    </span>{" "}
+                    of <span className="font-semibold text-foreground">{schedules.length}</span>{" "}
+                    schedule(s).
+                </p>
             </div>
         </DashboardLayout>
     )
