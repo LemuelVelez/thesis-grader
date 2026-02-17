@@ -74,6 +74,18 @@ function toPercentage(weightedScore: number, weightedMax: number): DbNumeric | n
     return Number(pct.toFixed(2));
 }
 
+/**
+ * ThesisGroupRankingRow.group_title is non-nullable in the model.
+ * This guarantees a safe, readable fallback even when the joined group title is missing.
+ */
+function groupTitleOrFallback(title: unknown, groupId: UUID): string {
+    if (typeof title === 'string') {
+        const trimmed = title.trim();
+        if (trimmed.length > 0) return trimmed;
+    }
+    return `Group ${groupId}`;
+}
+
 function buildCriterionMap(criteria: RubricCriteriaRow[]): Map<string, RubricCriteriaRow> {
     const map = new Map<string, RubricCriteriaRow>();
     for (const row of criteria) {
@@ -253,14 +265,16 @@ export async function computeGroupRankings(
     const groupPairs = await Promise.all(
         groupIds.map(async (groupId) => [groupId, await services.thesis_groups.findById(groupId)] as const),
     );
-    const groupMap = new Map<string, string | null>();
+
+    // Keep map non-nullable for title to satisfy ThesisGroupRankingRow.group_title: string
+    const groupMap = new Map<string, string>();
     for (const [groupId, group] of groupPairs) {
-        groupMap.set(toLowerKey(groupId), group?.title ?? null);
+        groupMap.set(toLowerKey(groupId), groupTitleOrFallback(group?.title, groupId));
     }
 
     const rows: ThesisGroupRankingRow[] = core.map((row) => ({
         group_id: row.target_id,
-        group_title: groupMap.get(toLowerKey(row.target_id)) ?? null,
+        group_title: groupMap.get(toLowerKey(row.target_id)) ?? groupTitleOrFallback(null, row.target_id),
         group_percentage: toPercentage(row.weighted_score, row.weighted_max),
         submitted_evaluations: row.evaluation_ids.size,
         latest_defense_at: row.latest_defense_at,
@@ -275,8 +289,8 @@ export async function computeGroupRankings(
         const tsB = toTimestamp(b.latest_defense_at) ?? Number.NEGATIVE_INFINITY;
         if (tsB !== tsA) return tsB - tsA;
 
-        const textA = (a.group_title ?? a.group_id).toLowerCase();
-        const textB = (b.group_title ?? b.group_id).toLowerCase();
+        const textA = a.group_title.toLowerCase();
+        const textB = b.group_title.toLowerCase();
         return textA.localeCompare(textB);
     });
 
@@ -374,7 +388,11 @@ export async function getGroupRankingsWithFallback(
     try {
         const items = await services.v_thesis_group_rankings.leaderboard(limit);
         if (Array.isArray(items) && items.length > 0) {
-            return items;
+            // Defensive normalization for environments where view can still return null/empty title.
+            return items.map((item) => ({
+                ...item,
+                group_title: groupTitleOrFallback(item.group_title, item.group_id),
+            }));
         }
 
         // If view exists but empty, still fallback to computed to support
@@ -391,7 +409,12 @@ export async function getGroupRankingByGroupIdWithFallback(
 ): Promise<ThesisGroupRankingRow | null> {
     try {
         const item = await services.v_thesis_group_rankings.byGroup(groupId);
-        if (item) return item;
+        if (item) {
+            return {
+                ...item,
+                group_title: groupTitleOrFallback(item.group_title, item.group_id),
+            };
+        }
     } catch {
         // ignore, fallback below
     }
