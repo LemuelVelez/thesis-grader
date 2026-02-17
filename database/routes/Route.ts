@@ -28,11 +28,18 @@ import {
     type EvaluationInsert,
     type EvaluationPatch,
     type EvaluationRow,
+    type EvaluationScoreInsert,
+    type EvaluationScorePatch,
+    type EvaluationScoreRow,
     type EvaluationStatus,
+    type GroupMemberInsert,
     type GroupMemberRow,
     type JsonObject,
     type JsonValue,
     type NotificationType,
+    type RubricCriteriaInsert,
+    type RubricCriteriaPatch,
+    type RubricCriteriaRow,
     type StudentEvalStatus,
     type StudentRow,
     type ThesisRole,
@@ -102,10 +109,15 @@ export type ApiResource =
     | 'users'
     | 'notifications'
     | 'evaluations'
+    | 'evaluation-scores'
     | 'student-evaluations'
     | 'defense-schedules'
     | 'rubric-templates'
+    | 'rubric-criteria'
+    | 'criteria'
+    | 'rubric-template-criteria'
     | 'thesis-groups'
+    | 'group-members'
     | 'audit-logs';
 
 export type ApiRoot = 'root' | 'auth' | ApiResource;
@@ -279,6 +291,10 @@ export function resolveApiRoot(segment: string | undefined): ApiRoot | null {
         case 'evaluations':
             return 'evaluations';
 
+        case 'evaluation-score':
+        case 'evaluation-scores':
+            return 'evaluation-scores';
+
         case 'student-evaluation':
         case 'student-evaluations':
         case 'student-evals':
@@ -294,9 +310,28 @@ export function resolveApiRoot(segment: string | undefined): ApiRoot | null {
         case 'rubrics':
             return 'rubric-templates';
 
+        case 'rubric-criteria':
+        case 'rubric-criterion':
+            return 'rubric-criteria';
+
+        case 'criteria':
+            return 'criteria';
+
+        case 'rubric-template-criteria':
+        case 'rubric-template-criterion':
+        case 'template-criteria':
+        case 'template-criterion':
+            return 'rubric-template-criteria';
+
         case 'thesis-group':
         case 'thesis-groups':
+        case 'group':
+        case 'groups':
             return 'thesis-groups';
+
+        case 'group-member':
+        case 'group-members':
+            return 'group-members';
 
         case 'audit-log':
         case 'audit-logs':
@@ -926,6 +961,57 @@ async function dispatchUsersRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
+    // NEW: /api/users/me and /api/users/me/avatar
+    if (tail[0] === 'me') {
+        const middleware = createMiddlewareController(services);
+        const auth = await middleware.resolve(req);
+        if (!auth) return middleware.unauthorized();
+
+        const id = auth.user.id as UUID;
+
+        if (tail.length === 1) {
+            if (method === 'GET') {
+                const item = await controller.getById(id);
+                if (!item) return json404Entity('User');
+                return json200({ item });
+            }
+
+            if (method === 'PATCH' || method === 'PUT') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const item = await controller.update(
+                    id,
+                    body as Parameters<UserController['update']>[1],
+                );
+                if (!item) return json404Entity('User');
+                return json200({ item });
+            }
+
+            return json405(['GET', 'PATCH', 'PUT', 'OPTIONS']);
+        }
+
+        if (tail.length === 2 && tail[1] === 'avatar') {
+            if (method !== 'PATCH' && method !== 'PUT' && method !== 'POST') {
+                return json405(['PATCH', 'PUT', 'POST', 'OPTIONS']);
+            }
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const value = body.avatarKey ?? body.avatar_key;
+            if (!(typeof value === 'string' || value === null)) {
+                return json400('avatarKey must be a string or null.');
+            }
+
+            const item = await controller.setAvatarKey(id, value);
+            if (!item) return json404Entity('User');
+            return json200({ item });
+        }
+
+        return json404Api();
+    }
+
     const id = tail[0];
     if (!id || !isUuidLike(id)) return json404Api();
 
@@ -1315,6 +1401,345 @@ async function dispatchNotificationsRequest(
     return json404Api();
 }
 
+/* ---------------------------- Evaluation Scores ---------------------------- */
+
+type EvaluationScoresControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: EvaluationScoreInsert | Record<string, unknown>) => Promise<unknown>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: EvaluationScorePatch | Record<string, unknown>,
+    ) => Promise<unknown | null>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
+    listByEvaluation?: (evaluationId: UUID) => Promise<unknown[]>;
+};
+
+function resolveEvaluationScoresController(
+    services: DatabaseServices,
+): EvaluationScoresControllerLike | null {
+    if ((services as Partial<DatabaseServices>).evaluation_scores) {
+        return (services as Partial<DatabaseServices>)
+            .evaluation_scores as unknown as EvaluationScoresControllerLike;
+    }
+
+    const maybeCamel = (
+        services as unknown as {
+            evaluationScores?: EvaluationScoresControllerLike;
+        }
+    ).evaluationScores;
+    if (maybeCamel) return maybeCamel;
+
+    try {
+        const viaRegistry = services.get('evaluation_scores');
+        if (viaRegistry) {
+            return viaRegistry as unknown as EvaluationScoresControllerLike;
+        }
+    } catch {
+        // no-op
+    }
+
+    return null;
+}
+
+function normalizeEvaluationScorePayload(
+    body: Record<string, unknown>,
+    scopedEvaluationId?: UUID,
+): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...body };
+
+    const evalCandidates: unknown[] = [
+        scopedEvaluationId,
+        body.evaluation_id,
+        body.evaluationId,
+        body.eval_id,
+        body.evalId,
+    ];
+
+    for (const c of evalCandidates) {
+        const parsed = toNonEmptyString(c);
+        if (parsed && isUuidLike(parsed)) {
+            out.evaluation_id = parsed;
+            break;
+        }
+    }
+
+    const criterionCandidates: unknown[] = [
+        body.criterion_id,
+        body.criterionId,
+        body.criteria_id,
+        body.criteriaId,
+        body.rubric_criterion_id,
+        body.rubricCriterionId,
+    ];
+
+    for (const c of criterionCandidates) {
+        const parsed = toNonEmptyString(c);
+        if (parsed && isUuidLike(parsed)) {
+            out.criterion_id = parsed;
+            break;
+        }
+    }
+
+    const scoreRaw = body.score;
+    if (typeof scoreRaw === 'string' && scoreRaw.trim().length > 0) {
+        const parsed = Number(scoreRaw);
+        if (Number.isFinite(parsed)) out.score = parsed;
+    } else if (typeof scoreRaw === 'number' && Number.isFinite(scoreRaw)) {
+        out.score = scoreRaw;
+    }
+
+    const commentRaw = body.comment;
+    if (commentRaw === null || typeof commentRaw === 'string') {
+        out.comment = commentRaw;
+    }
+
+    return out;
+}
+
+async function upsertEvaluationScore(
+    controller: EvaluationScoresControllerLike,
+    payload: Record<string, unknown>,
+): Promise<{ item: unknown; created: boolean }> {
+    const evaluationId = toNonEmptyString(payload.evaluation_id);
+    const criterionId = toNonEmptyString(payload.criterion_id);
+
+    if (!evaluationId || !criterionId) {
+        throw new Error('evaluation_id and criterion_id are required.');
+    }
+
+    const where = {
+        evaluation_id: evaluationId,
+        criterion_id: criterionId,
+    };
+
+    if (typeof controller.updateOne === 'function') {
+        const updated = await controller.updateOne(where, payload);
+        if (updated) return { item: updated, created: false };
+    }
+
+    if (typeof controller.create === 'function') {
+        try {
+            const created = await controller.create(payload);
+            return { item: created, created: true };
+        } catch (error) {
+            if (isUniqueViolation(error) && typeof controller.updateOne === 'function') {
+                const updated = await controller.updateOne(where, payload);
+                if (updated) return { item: updated, created: false };
+            }
+            throw error;
+        }
+    }
+
+    throw new Error('Evaluation scores service is unavailable.');
+}
+
+async function listEvaluationScores(
+    controller: EvaluationScoresControllerLike,
+    req: NextRequest,
+    scopedEvaluationId?: UUID,
+): Promise<unknown[]> {
+    const search = req.nextUrl.searchParams;
+    const evaluationIdRaw = scopedEvaluationId ?? (search.get('evaluation_id') ?? search.get('evaluationId') ?? undefined);
+    const evaluationId = evaluationIdRaw && isUuidLike(evaluationIdRaw) ? (evaluationIdRaw as UUID) : undefined;
+    const criterionRaw = toNonEmptyString(search.get('criterion_id') ?? search.get('criterionId'));
+    const criterionId = criterionRaw && isUuidLike(criterionRaw) ? criterionRaw : undefined;
+
+    if (evaluationId && typeof controller.listByEvaluation === 'function' && !criterionId) {
+        return await controller.listByEvaluation(evaluationId);
+    }
+
+    if (typeof controller.findMany !== 'function') {
+        throw new Error('Evaluation scores list endpoint is unavailable.');
+    }
+
+    const query = parseListQuery<Record<string, unknown>>(req);
+    const where = (isRecord(query.where) ? { ...query.where } : {}) as Record<string, unknown>;
+
+    if (evaluationId) where.evaluation_id = evaluationId;
+    if (criterionId) where.criterion_id = criterionId;
+
+    const merged: ListQuery<Record<string, unknown>> = {
+        ...query,
+        where,
+    };
+
+    return await controller.findMany(merged);
+}
+
+async function dispatchEvaluationScoresRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+    scopedEvaluationId?: UUID,
+): Promise<Response> {
+    const controller = resolveEvaluationScoresController(services);
+    if (!controller) return json404Api();
+
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const items = await listEvaluationScores(controller, req, scopedEvaluationId);
+            return json200({ items });
+        }
+
+        if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const scoresNode = body.scores;
+            if (Array.isArray(scoresNode)) {
+                const items: unknown[] = [];
+                const errors: Array<{ index: number; message: string }> = [];
+
+                for (let i = 0; i < scoresNode.length; i += 1) {
+                    const node = scoresNode[i];
+                    if (!isRecord(node)) {
+                        errors.push({ index: i, message: 'Invalid score payload object.' });
+                        continue;
+                    }
+
+                    try {
+                        const payload = normalizeEvaluationScorePayload(node, scopedEvaluationId);
+                        const evaluationId = toNonEmptyString(payload.evaluation_id);
+                        const criterionId = toNonEmptyString(payload.criterion_id);
+                        const score = payload.score;
+
+                        if (!evaluationId || !criterionId) {
+                            errors.push({
+                                index: i,
+                                message: 'evaluation_id and criterion_id are required.',
+                            });
+                            continue;
+                        }
+
+                        if (typeof score !== 'number' || !Number.isFinite(score)) {
+                            errors.push({ index: i, message: 'score must be a finite number.' });
+                            continue;
+                        }
+
+                        const saved = await upsertEvaluationScore(controller, payload);
+                        items.push(saved.item);
+                    } catch (error) {
+                        errors.push({ index: i, message: toErrorMessage(error) });
+                    }
+                }
+
+                return NextResponse.json(
+                    {
+                        items,
+                        saved: items.length,
+                        failed: errors.length,
+                        errors,
+                    },
+                    { status: errors.length > 0 ? 207 : 200 },
+                );
+            }
+
+            const payload = normalizeEvaluationScorePayload(body, scopedEvaluationId);
+            const evaluationId = toNonEmptyString(payload.evaluation_id);
+            const criterionId = toNonEmptyString(payload.criterion_id);
+            const score = payload.score;
+
+            if (!evaluationId || !criterionId) {
+                return json400('evaluation_id and criterion_id are required.');
+            }
+            if (typeof score !== 'number' || !Number.isFinite(score)) {
+                return json400('score must be a finite number.');
+            }
+
+            try {
+                const result = await upsertEvaluationScore(controller, payload);
+                return result.created ? json201({ item: result.item }) : json200({ item: result.item });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json404Api();
+
+            const search = req.nextUrl.searchParams;
+            const evaluationId = toNonEmptyString(
+                scopedEvaluationId ?? search.get('evaluation_id') ?? search.get('evaluationId'),
+            );
+            const criterionId = toNonEmptyString(
+                search.get('criterion_id') ?? search.get('criterionId'),
+            );
+
+            if (!evaluationId || !criterionId) {
+                return json400('evaluation_id and criterion_id are required for delete.');
+            }
+
+            const deleted = await controller.delete({
+                evaluation_id: evaluationId,
+                criterion_id: criterionId,
+            });
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    // /api/evaluation-scores/:criterionId (with scoped evaluation id)
+    if (tail.length === 1 && scopedEvaluationId) {
+        const criterionId = tail[0];
+        if (!criterionId || !isUuidLike(criterionId)) return json404Api();
+
+        if (method === 'GET') {
+            if (typeof controller.findMany !== 'function') return json404Api();
+
+            const items = await controller.findMany({
+                where: {
+                    evaluation_id: scopedEvaluationId,
+                    criterion_id: criterionId as UUID,
+                },
+                limit: 1,
+            } as ListQuery<Record<string, unknown>>);
+
+            const item = items[0] ?? null;
+            if (!item) return json404Entity('Evaluation score');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT' || method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const payload = normalizeEvaluationScorePayload(
+                { ...body, criterion_id: criterionId },
+                scopedEvaluationId,
+            );
+
+            const score = payload.score;
+            if (typeof score !== 'number' || !Number.isFinite(score)) {
+                return json400('score must be a finite number.');
+            }
+
+            try {
+                const result = await upsertEvaluationScore(controller, payload);
+                return result.created ? json201({ item: result.item }) : json200({ item: result.item });
+            } catch (error) {
+                return json400(toErrorMessage(error));
+            }
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json404Api();
+
+            const deleted = await controller.delete({
+                evaluation_id: scopedEvaluationId,
+                criterion_id: criterionId as UUID,
+            });
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
+
 async function dispatchEvaluationsRequest(
     req: NextRequest,
     tail: string[],
@@ -1363,6 +1788,12 @@ async function dispatchEvaluationsRequest(
 
     const id = tail[0];
     if (!id) return json404Api();
+
+    // NEW: /api/evaluations/:id/scores and /api/evaluations/:id/scores/:criterionId
+    if (tail.length >= 2 && tail[1] === 'scores') {
+        if (!isUuidLike(id)) return json404Api();
+        return dispatchEvaluationScoresRequest(req, tail.slice(2), services, id as UUID);
+    }
 
     if (tail.length === 1) {
         if (method === 'GET') {
@@ -1438,6 +1869,374 @@ async function dispatchEvaluationsRequest(
         const item = await controller.lock(id as UUID, lockedAt);
         if (!item) return json404Entity('Evaluation');
         return json200({ item });
+    }
+
+    return json404Api();
+}
+
+/* ------------------------------- Group Members ---------------------------- */
+
+type GroupMembersControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: GroupMemberInsert | Record<string, unknown>) => Promise<unknown>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
+    listByGroup?: (groupId: UUID) => Promise<GroupMemberRow[]>;
+};
+
+function resolveGroupMembersController(
+    services: DatabaseServices,
+): GroupMembersControllerLike | null {
+    if ((services as Partial<DatabaseServices>).group_members) {
+        return (services as Partial<DatabaseServices>)
+            .group_members as unknown as GroupMembersControllerLike;
+    }
+
+    const maybeCamel = (
+        services as unknown as {
+            groupMembers?: GroupMembersControllerLike;
+        }
+    ).groupMembers;
+    if (maybeCamel) return maybeCamel;
+
+    try {
+        const viaRegistry = services.get('group_members');
+        if (viaRegistry) {
+            return viaRegistry as unknown as GroupMembersControllerLike;
+        }
+    } catch {
+        // no-op
+    }
+
+    return null;
+}
+
+function parseGroupIdFromBody(body: Record<string, unknown>): string | null {
+    const candidates: unknown[] = [
+        body.group_id,
+        body.groupId,
+        body.thesis_group_id,
+        body.thesisGroupId,
+    ];
+
+    for (const c of candidates) {
+        const parsed = toNonEmptyString(c);
+        if (parsed) return parsed;
+    }
+
+    return null;
+}
+
+async function dispatchGroupMembersRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = resolveGroupMembersController(services);
+    if (!controller) return json404Api();
+
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const search = req.nextUrl.searchParams;
+            const groupIdRaw = toNonEmptyString(search.get('group_id') ?? search.get('groupId'));
+
+            let members: unknown[] = [];
+
+            if (groupIdRaw && !isUuidLike(groupIdRaw)) {
+                return json400('group_id must be a valid UUID.');
+            }
+
+            if (groupIdRaw && typeof controller.listByGroup === 'function') {
+                members = await controller.listByGroup(groupIdRaw as UUID);
+            } else if (typeof controller.findMany === 'function') {
+                const query = parseListQuery<Record<string, unknown>>(req);
+                const where = (isRecord(query.where) ? { ...query.where } : {}) as Record<string, unknown>;
+                if (groupIdRaw) where.group_id = groupIdRaw;
+
+                members = await controller.findMany({
+                    ...query,
+                    where,
+                });
+            } else {
+                return json404Api();
+            }
+
+            const items = await Promise.all(
+                members.map(async (item) => {
+                    if (
+                        isRecord(item) &&
+                        typeof item.group_id === 'string' &&
+                        typeof item.student_id === 'string'
+                    ) {
+                        return await buildGroupMemberResponse(item as GroupMemberRow, services);
+                    }
+                    return item;
+                }),
+            );
+
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const groupId = parseGroupIdFromBody(body);
+            const studentId = parseGroupMemberStudentIdFromBody(body);
+
+            if (!groupId || !isUuidLike(groupId)) {
+                return json400('group_id is required and must be a valid UUID.');
+            }
+
+            if (!studentId || !isUuidLike(studentId)) {
+                return json400('student_id is required and must be a valid UUID.');
+            }
+
+            if (typeof controller.create !== 'function') return json404Api();
+
+            const item = await controller.create({
+                group_id: groupId,
+                student_id: studentId,
+            });
+
+            return json201({ item });
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json404Api();
+
+            const search = req.nextUrl.searchParams;
+            const groupId = toNonEmptyString(search.get('group_id') ?? search.get('groupId'));
+            const studentId = toNonEmptyString(search.get('student_id') ?? search.get('studentId'));
+
+            if (!groupId || !isUuidLike(groupId)) {
+                return json400('group_id is required and must be a valid UUID.');
+            }
+
+            if (!studentId || !isUuidLike(studentId)) {
+                return json400('student_id is required and must be a valid UUID.');
+            }
+
+            const deleted = await controller.delete({
+                group_id: groupId,
+                student_id: studentId,
+            });
+
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'POST', 'DELETE', 'OPTIONS']);
+    }
+
+    return json404Api();
+}
+
+/* ----------------------------- Rubric Criteria ---------------------------- */
+
+type RubricCriteriaControllerLike = {
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+    create?: (input: RubricCriteriaInsert | Record<string, unknown>) => Promise<unknown>;
+    findById?: (id: UUID) => Promise<unknown | null>;
+    updateOne?: (
+        where: Record<string, unknown>,
+        patch: RubricCriteriaPatch | Record<string, unknown>,
+    ) => Promise<unknown | null>;
+    delete?: (where: Record<string, unknown>) => Promise<number>;
+    listByTemplate?: (templateId: UUID) => Promise<unknown[]>;
+};
+
+function resolveRubricCriteriaController(
+    services: DatabaseServices,
+): RubricCriteriaControllerLike | null {
+    if ((services as Partial<DatabaseServices>).rubric_criteria) {
+        return (services as Partial<DatabaseServices>)
+            .rubric_criteria as unknown as RubricCriteriaControllerLike;
+    }
+
+    const maybeCamel = (
+        services as unknown as {
+            rubricCriteria?: RubricCriteriaControllerLike;
+        }
+    ).rubricCriteria;
+    if (maybeCamel) return maybeCamel;
+
+    try {
+        const viaRegistry = services.get('rubric_criteria');
+        if (viaRegistry) {
+            return viaRegistry as unknown as RubricCriteriaControllerLike;
+        }
+    } catch {
+        // no-op
+    }
+
+    return null;
+}
+
+function normalizeRubricCriteriaPayload(
+    body: Record<string, unknown>,
+): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...body };
+
+    const templateIdCandidates: unknown[] = [
+        body.template_id,
+        body.templateId,
+        body.rubric_template_id,
+        body.rubricTemplateId,
+    ];
+
+    for (const c of templateIdCandidates) {
+        const parsed = toNonEmptyString(c);
+        if (parsed && isUuidLike(parsed)) {
+            out.template_id = parsed;
+            break;
+        }
+    }
+
+    if (typeof body.criterion === 'string') {
+        out.criterion = body.criterion.trim();
+    }
+
+    if (typeof body.description === 'string') {
+        out.description = body.description.trim();
+    } else if (body.description === null) {
+        out.description = null;
+    }
+
+    if (typeof body.weight === 'string') {
+        const num = Number(body.weight);
+        if (Number.isFinite(num)) out.weight = num;
+    } else if (typeof body.weight === 'number' && Number.isFinite(body.weight)) {
+        out.weight = body.weight;
+    }
+
+    if (typeof body.min_score === 'string') {
+        const num = Number(body.min_score);
+        if (Number.isFinite(num)) out.min_score = num;
+    } else if (typeof body.min_score === 'number' && Number.isFinite(body.min_score)) {
+        out.min_score = body.min_score;
+    }
+
+    if (typeof body.max_score === 'string') {
+        const num = Number(body.max_score);
+        if (Number.isFinite(num)) out.max_score = num;
+    } else if (typeof body.max_score === 'number' && Number.isFinite(body.max_score)) {
+        out.max_score = body.max_score;
+    }
+
+    return out;
+}
+
+async function dispatchRubricCriteriaAliasesRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = resolveRubricCriteriaController(services);
+    if (!controller) return json404Api();
+
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method === 'GET') {
+            const search = req.nextUrl.searchParams;
+            const templateIdRaw = toNonEmptyString(
+                search.get('template_id') ?? search.get('templateId') ?? search.get('rubric_template_id'),
+            );
+
+            if (templateIdRaw && !isUuidLike(templateIdRaw)) {
+                return json400('template_id must be a valid UUID.');
+            }
+
+            if (templateIdRaw && typeof controller.listByTemplate === 'function') {
+                const items = await controller.listByTemplate(templateIdRaw as UUID);
+                return json200({ items });
+            }
+
+            if (typeof controller.findMany !== 'function') return json404Api();
+
+            const query = parseListQuery<RubricCriteriaRow>(req) as ListQuery<Record<string, unknown>>;
+            const where = (isRecord(query.where) ? { ...query.where } : {}) as Record<string, unknown>;
+
+            if (templateIdRaw) where.template_id = templateIdRaw;
+
+            const items = await controller.findMany({
+                ...query,
+                where,
+            });
+
+            return json200({ items });
+        }
+
+        if (method === 'POST') {
+            if (typeof controller.create !== 'function') return json404Api();
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const payload = normalizeRubricCriteriaPayload(body);
+            const templateId = toNonEmptyString(payload.template_id);
+            const criterion = toNonEmptyString(payload.criterion);
+
+            if (!templateId || !isUuidLike(templateId)) {
+                return json400('template_id is required and must be a valid UUID.');
+            }
+
+            if (!criterion) {
+                return json400('criterion is required.');
+            }
+
+            const item = await controller.create(payload);
+            return json201({ item });
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    const id = tail[0];
+    if (!id || !isUuidLike(id)) return json404Api();
+
+    if (tail.length === 1) {
+        if (method === 'GET') {
+            if (typeof controller.findById === 'function') {
+                const item = await controller.findById(id as UUID);
+                if (!item) return json404Entity('Rubric criterion');
+                return json200({ item });
+            }
+
+            if (typeof controller.findMany !== 'function') return json404Api();
+
+            const items = await controller.findMany({
+                where: { id: id as UUID },
+                limit: 1,
+            } as ListQuery<Record<string, unknown>>);
+
+            const item = items[0] ?? null;
+            if (!item) return json404Entity('Rubric criterion');
+            return json200({ item });
+        }
+
+        if (method === 'PATCH' || method === 'PUT') {
+            if (typeof controller.updateOne !== 'function') return json404Api();
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const payload = normalizeRubricCriteriaPayload(body);
+            const item = await controller.updateOne({ id: id as UUID }, payload);
+            if (!item) return json404Entity('Rubric criterion');
+            return json200({ item });
+        }
+
+        if (method === 'DELETE') {
+            if (typeof controller.delete !== 'function') return json404Api();
+
+            const deleted = await controller.delete({ id: id as UUID });
+            if (deleted === 0) return json404Entity('Rubric criterion');
+            return json200({ deleted });
+        }
+
+        return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
     return json404Api();
@@ -1801,16 +2600,23 @@ export async function dispatchApiRequest(
                 panelistEvaluations: '/api/panelist/evaluations/*',
                 panelistStudentEvaluations: '/api/panelist/student-evaluations/*',
                 users: '/api/users/*',
+                usersMe: '/api/users/me',
                 notifications: '/api/notifications/*',
                 evaluations: '/api/evaluations/*',
+                evaluationScores: '/api/evaluation-scores/*',
                 studentEvaluations: '/api/student-evaluations/*',
                 adminStudentEvaluations: '/api/admin/student-evaluations/*',
                 studentScopedEvaluations: '/api/student/evaluations/*',
                 defenseSchedules: '/api/defense-schedules/*',
                 defenseSchedulePanelists: '/api/defense-schedule-panelists/*',
                 rubricTemplates: '/api/rubric-templates/*',
+                rubricCriteria: '/api/rubric-criteria/*',
+                criteriaAlias: '/api/criteria/*',
+                rubricTemplateCriteria: '/api/rubric-template-criteria/*',
                 thesisGroups: '/api/thesis-groups/*',
                 thesisLegacyGroups: '/api/thesis/groups/*',
+                groupsAlias: '/api/groups/*',
+                groupMembers: '/api/group-members/*',
                 auditLogs: '/api/audit-logs/*',
             },
         });
@@ -1850,7 +2656,7 @@ export async function dispatchApiRequest(
             tail[0] === 'student-evaluation'
         );
 
-    // NEW: explicit panelist aliases so /api/panelist/evaluations does not 404.
+    // explicit panelist aliases so /api/panelist/evaluations does not 404
     const isPanelistEvaluationsAlias =
         root === 'panelist' &&
         (
@@ -1858,7 +2664,7 @@ export async function dispatchApiRequest(
             tail[0] === 'evaluation'
         );
 
-    // NEW: keep student-eval flow explicitly separate even under /panelist/* aliases.
+    // keep student-eval flow explicitly separate even under /panelist/* aliases
     const isPanelistStudentEvaluationsAlias =
         root === 'panelist' &&
         (
@@ -1894,7 +2700,7 @@ export async function dispatchApiRequest(
         return dispatchStudentEvaluationsRequest(req, studentEvalTail, services);
     }
 
-    // NEW: map /api/panelist/evaluations/* to panelist-evaluation service flow.
+    // map /api/panelist/evaluations/* to panelist-evaluation service flow
     if (isPanelistEvaluationsAlias) {
         const panelistEvalTail = tail.slice(1);
         return dispatchEvaluationsRequest(req, panelistEvalTail, services);
@@ -1922,16 +2728,27 @@ export async function dispatchApiRequest(
         case 'evaluations':
             return dispatchEvaluationsRequest(req, tail, services);
 
+        case 'evaluation-scores':
+            return dispatchEvaluationScoresRequest(req, tail, services);
+
         case 'defense-schedules':
             return dispatchDefenseSchedulesRequest(req, tail, services);
 
         case 'rubric-templates':
             return dispatchRubricTemplatesRequest(req, tail, services);
 
+        case 'rubric-criteria':
+        case 'criteria':
+        case 'rubric-template-criteria':
+            return dispatchRubricCriteriaAliasesRequest(req, tail, services);
+
         case 'thesis-groups':
             return dispatchThesisGroupsRequest(req, tail, services, {
                 autoCreateMissingStudentProfile: true,
             });
+
+        case 'group-members':
+            return dispatchGroupMembersRequest(req, tail, services);
 
         case 'audit-logs':
             return dispatchAuditLogsRequest(req, tail, services);

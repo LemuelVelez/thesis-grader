@@ -95,7 +95,13 @@ export interface ThesisGroupRow {
     updated_at: ISODateTime;
 }
 
-export interface GroupMemberRow {
+/**
+ * NOTE:
+ * Extending Record<string, unknown> keeps required fields strongly typed
+ * while allowing safe structural overlap with generic JSON-like records.
+ * This prevents TS2352 when narrowing from Record<string, unknown>.
+ */
+export interface GroupMemberRow extends Record<string, unknown> {
     group_id: UUID;
     student_id: UUID;
 }
