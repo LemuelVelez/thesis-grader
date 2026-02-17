@@ -41,6 +41,51 @@ type StudentRankingRecord = {
 type RankingItem = GroupRankingRecord | StudentRankingRecord
 
 const LIMIT_OPTIONS = [10, 25, 50, 100] as const
+const GROUP_FALLBACK_LIMIT = 500
+
+const DEFENSE_DATE_KEYS: string[] = [
+    "latest_defense_at",
+    "latestDefenseAt",
+    "latest_defense_datetime",
+    "latestDefenseDatetime",
+    "latest_defense_date",
+    "latestDefenseDate",
+    "last_defense_at",
+    "lastDefenseAt",
+    "defense_datetime",
+    "defenseDateTime",
+    "defense_at",
+    "defenseAt",
+    "schedule_datetime",
+    "scheduleDatetime",
+    "scheduled_at",
+    "scheduledAt",
+    "latest_evaluation_at",
+    "latestEvaluationAt",
+    "evaluated_at",
+    "evaluatedAt",
+    "updated_at",
+    "updatedAt",
+    "created_at",
+    "createdAt",
+]
+
+const DEFENSE_CONTAINER_KEYS: string[] = [
+    "latest_defense",
+    "latestDefense",
+    "defense_schedule",
+    "defenseSchedule",
+    "schedule",
+    "group",
+    "thesis_group",
+    "thesisGroup",
+]
+
+const DEFENSE_ARRAY_KEYS: string[] = [
+    "defense_schedules",
+    "defenseSchedules",
+    "schedules",
+]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -77,6 +122,105 @@ function toSubmittedEvaluations(value: unknown): number {
     const parsed = toNumberSafe(value) ?? 0
     const normalized = Math.floor(parsed)
     return normalized < 0 ? 0 : normalized
+}
+
+function toEpoch(value: string | null): number {
+    if (!value) return 0
+    const d = new Date(value)
+    const ms = d.getTime()
+    return Number.isNaN(ms) ? 0 : ms
+}
+
+function normalizeDateCandidate(value: unknown): string | null {
+    if (value === null || value === undefined) return null
+
+    if (typeof value === "string") {
+        const trimmed = value.trim()
+        return trimmed.length > 0 ? trimmed : null
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        const ms = value > 10_000_000_000 ? value : value * 1000
+        const d = new Date(ms)
+        if (Number.isNaN(d.getTime())) return null
+        return d.toISOString()
+    }
+
+    return null
+}
+
+function pickDateFromRecord(record: Record<string, unknown>): string | null {
+    for (const key of DEFENSE_DATE_KEYS) {
+        const candidate = normalizeDateCandidate(record[key])
+        if (candidate) return candidate
+    }
+    return null
+}
+
+function extractLatestFromArray(arr: unknown[], depth: number): string | null {
+    let latestValue: string | null = null
+    let latestEpoch = 0
+
+    for (const entry of arr) {
+        let candidate: string | null = null
+
+        if (isRecord(entry)) {
+            candidate = extractLatestDefenseAt(entry, depth + 1)
+        } else {
+            candidate = normalizeDateCandidate(entry)
+        }
+
+        if (!candidate) continue
+
+        const epoch = toEpoch(candidate)
+        if (epoch > latestEpoch) {
+            latestEpoch = epoch
+            latestValue = candidate
+            continue
+        }
+
+        if (!latestValue) {
+            latestValue = candidate
+        }
+    }
+
+    return latestValue
+}
+
+function extractLatestDefenseAt(raw: Record<string, unknown>, depth = 0): string | null {
+    if (depth > 3) return null
+
+    const direct = pickDateFromRecord(raw)
+    if (direct) return direct
+
+    for (const key of DEFENSE_CONTAINER_KEYS) {
+        const nested = raw[key]
+
+        if (isRecord(nested)) {
+            const nestedValue = extractLatestDefenseAt(nested, depth + 1)
+            if (nestedValue) return nestedValue
+        }
+
+        if (Array.isArray(nested)) {
+            const nestedArrayValue = extractLatestFromArray(nested, depth + 1)
+            if (nestedArrayValue) return nestedArrayValue
+        }
+    }
+
+    for (const key of DEFENSE_ARRAY_KEYS) {
+        const arr = raw[key]
+        if (!Array.isArray(arr)) continue
+        const arrayValue = extractLatestFromArray(arr, depth + 1)
+        if (arrayValue) return arrayValue
+    }
+
+    const defenseDate = toStringSafe(raw.defense_date ?? raw.defenseDate ?? raw.schedule_date ?? raw.scheduleDate)
+    const defenseTime = toStringSafe(raw.defense_time ?? raw.defenseTime ?? raw.schedule_time ?? raw.scheduleTime)
+
+    if (defenseDate && defenseTime) return `${defenseDate}T${defenseTime}`
+    if (defenseDate) return defenseDate
+
+    return null
 }
 
 function formatPercent(value: number | null): string {
@@ -117,7 +261,7 @@ function normalizeGroupRanking(raw: unknown): GroupRankingRecord | null {
             raw.evaluations_count ??
             raw.evaluationsCount,
         ),
-        latest_defense_at: toNullableString(raw.latest_defense_at ?? raw.latestDefenseAt),
+        latest_defense_at: extractLatestDefenseAt(raw),
         rank: toRank(raw.rank),
     }
 }
@@ -141,7 +285,7 @@ function normalizeStudentRanking(raw: unknown): StudentRankingRecord | null {
             raw.evaluations_count ??
             raw.evaluationsCount,
         ),
-        latest_defense_at: toNullableString(raw.latest_defense_at ?? raw.latestDefenseAt),
+        latest_defense_at: extractLatestDefenseAt(raw),
         rank: toRank(raw.rank),
     }
 }
@@ -191,6 +335,56 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     return `Request failed (${res.status})`
 }
 
+async function fetchGroupLatestDefenseMap(): Promise<Map<string, string>> {
+    try {
+        const params = new URLSearchParams({
+            limit: String(GROUP_FALLBACK_LIMIT),
+            target: "group",
+        })
+
+        const res = await fetch(`/api/admin/rankings?${params.toString()}`, {
+            cache: "no-store",
+        })
+
+        const payload = (await res.json().catch(() => null)) as unknown
+        if (!res.ok) return new Map()
+
+        const groups = extractItems(payload)
+            .map(normalizeGroupRanking)
+            .filter((item): item is GroupRankingRecord => item !== null)
+
+        const map = new Map<string, string>()
+        for (const group of groups) {
+            if (!group.group_id || !group.latest_defense_at) continue
+            map.set(group.group_id, group.latest_defense_at)
+        }
+
+        return map
+    } catch {
+        return new Map()
+    }
+}
+
+function applyStudentLatestDefenseFallback(
+    students: StudentRankingRecord[],
+    groupLatestById: Map<string, string>,
+): StudentRankingRecord[] {
+    if (groupLatestById.size === 0) return students
+
+    return students.map((student) => {
+        if (student.latest_defense_at) return student
+        if (!student.group_id) return student
+
+        const groupLatest = groupLatestById.get(student.group_id)
+        if (!groupLatest) return student
+
+        return {
+            ...student,
+            latest_defense_at: groupLatest,
+        }
+    })
+}
+
 export default function AdminRankingsPage() {
     const [target, setTarget] = React.useState<RankingTarget>("group")
     const [rankings, setRankings] = React.useState<RankingItem[]>([])
@@ -223,14 +417,28 @@ export default function AdminRankingsPage() {
                 }
 
                 const rawItems = extractItems(payload)
+
                 const parsed =
                     target === "group"
                         ? rawItems
                             .map(normalizeGroupRanking)
                             .filter((item): item is GroupRankingRecord => item !== null)
-                        : rawItems
-                            .map(normalizeStudentRanking)
-                            .filter((item): item is StudentRankingRecord => item !== null)
+                        : await (async () => {
+                            let students = rawItems
+                                .map(normalizeStudentRanking)
+                                .filter((item): item is StudentRankingRecord => item !== null)
+
+                            const hasMissingLatestDefense = students.some(
+                                (item) => !item.latest_defense_at && !!item.group_id,
+                            )
+
+                            if (hasMissingLatestDefense) {
+                                const fallbackMap = await fetchGroupLatestDefenseMap()
+                                students = applyStudentLatestDefenseFallback(students, fallbackMap)
+                            }
+
+                            return students
+                        })()
 
                 parsed.sort((a, b) => {
                     const rankDiff = a.rank - b.rank

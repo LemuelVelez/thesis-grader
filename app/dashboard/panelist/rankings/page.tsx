@@ -50,6 +50,51 @@ const ENDPOINT_CANDIDATES = [
 ] as const
 
 const LIMIT_OPTIONS = [10, 25, 50, 100, 200] as const
+const GROUP_FALLBACK_LIMIT = 500
+
+const DEFENSE_DATE_KEYS: string[] = [
+    "latest_defense_at",
+    "latestDefenseAt",
+    "latest_defense_datetime",
+    "latestDefenseDatetime",
+    "latest_defense_date",
+    "latestDefenseDate",
+    "last_defense_at",
+    "lastDefenseAt",
+    "defense_datetime",
+    "defenseDateTime",
+    "defense_at",
+    "defenseAt",
+    "schedule_datetime",
+    "scheduleDatetime",
+    "scheduled_at",
+    "scheduledAt",
+    "latest_evaluation_at",
+    "latestEvaluationAt",
+    "evaluated_at",
+    "evaluatedAt",
+    "updated_at",
+    "updatedAt",
+    "created_at",
+    "createdAt",
+]
+
+const DEFENSE_CONTAINER_KEYS: string[] = [
+    "latest_defense",
+    "latestDefense",
+    "defense_schedule",
+    "defenseSchedule",
+    "schedule",
+    "group",
+    "thesis_group",
+    "thesisGroup",
+]
+
+const DEFENSE_ARRAY_KEYS: string[] = [
+    "defense_schedules",
+    "defenseSchedules",
+    "schedules",
+]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -95,6 +140,98 @@ function toEpoch(value: string | null): number {
     return Number.isNaN(ms) ? 0 : ms
 }
 
+function normalizeDateCandidate(value: unknown): string | null {
+    if (value === null || value === undefined) return null
+
+    if (typeof value === "string") {
+        const trimmed = value.trim()
+        return trimmed.length > 0 ? trimmed : null
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        const ms = value > 10_000_000_000 ? value : value * 1000
+        const d = new Date(ms)
+        if (Number.isNaN(d.getTime())) return null
+        return d.toISOString()
+    }
+
+    return null
+}
+
+function pickDateFromRecord(record: Record<string, unknown>): string | null {
+    for (const key of DEFENSE_DATE_KEYS) {
+        const candidate = normalizeDateCandidate(record[key])
+        if (candidate) return candidate
+    }
+    return null
+}
+
+function extractLatestFromArray(arr: unknown[], depth: number): string | null {
+    let latestValue: string | null = null
+    let latestEpoch = 0
+
+    for (const entry of arr) {
+        let candidate: string | null = null
+
+        if (isRecord(entry)) {
+            candidate = extractLatestDefenseAt(entry, depth + 1)
+        } else {
+            candidate = normalizeDateCandidate(entry)
+        }
+
+        if (!candidate) continue
+
+        const epoch = toEpoch(candidate)
+        if (epoch > latestEpoch) {
+            latestEpoch = epoch
+            latestValue = candidate
+            continue
+        }
+
+        if (!latestValue) {
+            latestValue = candidate
+        }
+    }
+
+    return latestValue
+}
+
+function extractLatestDefenseAt(raw: Record<string, unknown>, depth = 0): string | null {
+    if (depth > 3) return null
+
+    const direct = pickDateFromRecord(raw)
+    if (direct) return direct
+
+    for (const key of DEFENSE_CONTAINER_KEYS) {
+        const nested = raw[key]
+
+        if (isRecord(nested)) {
+            const nestedValue = extractLatestDefenseAt(nested, depth + 1)
+            if (nestedValue) return nestedValue
+        }
+
+        if (Array.isArray(nested)) {
+            const nestedArrayValue = extractLatestFromArray(nested, depth + 1)
+            if (nestedArrayValue) return nestedArrayValue
+        }
+    }
+
+    for (const key of DEFENSE_ARRAY_KEYS) {
+        const arr = raw[key]
+        if (!Array.isArray(arr)) continue
+        const arrayValue = extractLatestFromArray(arr, depth + 1)
+        if (arrayValue) return arrayValue
+    }
+
+    const defenseDate = toStringSafe(raw.defense_date ?? raw.defenseDate ?? raw.schedule_date ?? raw.scheduleDate)
+    const defenseTime = toStringSafe(raw.defense_time ?? raw.defenseTime ?? raw.schedule_time ?? raw.scheduleTime)
+
+    if (defenseDate && defenseTime) return `${defenseDate}T${defenseTime}`
+    if (defenseDate) return defenseDate
+
+    return null
+}
+
 function formatDateTime(value: string | null): string {
     if (!value) return "—"
     const d = new Date(value)
@@ -136,6 +273,17 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     return `Request failed (${res.status})`
 }
 
+function buildRankingUrl(endpoint: string, target: RankingTarget, limit: number): string {
+    const params = new URLSearchParams({
+        limit: String(limit),
+        target,
+    })
+
+    return endpoint.includes("?")
+        ? `${endpoint}&${params.toString()}`
+        : `${endpoint}?${params.toString()}`
+}
+
 function normalizeGroupRanking(raw: unknown): GroupRankingItem | null {
     if (!isRecord(raw)) return null
 
@@ -153,7 +301,7 @@ function normalizeGroupRanking(raw: unknown): GroupRankingItem | null {
             raw.evaluations_count ??
             raw.evaluationsCount,
         ),
-        latest_defense_at: toNullableString(raw.latest_defense_at ?? raw.latestDefenseAt),
+        latest_defense_at: extractLatestDefenseAt(raw),
         rank: toRank(raw.rank),
     }
 }
@@ -177,9 +325,52 @@ function normalizeStudentRanking(raw: unknown): StudentRankingItem | null {
             raw.evaluations_count ??
             raw.evaluationsCount,
         ),
-        latest_defense_at: toNullableString(raw.latest_defense_at ?? raw.latestDefenseAt),
+        latest_defense_at: extractLatestDefenseAt(raw),
         rank: toRank(raw.rank),
     }
+}
+
+async function fetchGroupLatestDefenseMap(endpoint: string): Promise<Map<string, string>> {
+    try {
+        const url = buildRankingUrl(endpoint, "group", GROUP_FALLBACK_LIMIT)
+        const res = await fetch(url, { cache: "no-store" })
+        const payload = (await res.json().catch(() => null)) as unknown
+        if (!res.ok) return new Map()
+
+        const groups = extractArrayPayload(payload)
+            .map(normalizeGroupRanking)
+            .filter((item): item is GroupRankingItem => item !== null)
+
+        const map = new Map<string, string>()
+        for (const group of groups) {
+            if (!group.group_id || !group.latest_defense_at) continue
+            map.set(group.group_id, group.latest_defense_at)
+        }
+
+        return map
+    } catch {
+        return new Map()
+    }
+}
+
+function applyStudentLatestDefenseFallback(
+    students: StudentRankingItem[],
+    groupLatestById: Map<string, string>,
+): StudentRankingItem[] {
+    if (groupLatestById.size === 0) return students
+
+    return students.map((student) => {
+        if (student.latest_defense_at) return student
+        if (!student.group_id) return student
+
+        const groupLatest = groupLatestById.get(student.group_id)
+        if (!groupLatest) return student
+
+        return {
+            ...student,
+            latest_defense_at: groupLatest,
+        }
+    })
 }
 
 function isGroupRanking(item: RankingItem): item is GroupRankingItem {
@@ -234,13 +425,7 @@ export default function PanelistRankingsPage() {
 
             for (const endpoint of ENDPOINT_CANDIDATES) {
                 try {
-                    const params = new URLSearchParams({
-                        limit: String(limit),
-                        target,
-                    })
-                    const url = endpoint.includes("?")
-                        ? `${endpoint}&${params.toString()}`
-                        : `${endpoint}?${params.toString()}`
+                    const url = buildRankingUrl(endpoint, target, limit)
 
                     const res = await fetch(url, { cache: "no-store" })
                     const payload = (await res.json().catch(() => null)) as unknown
@@ -250,16 +435,30 @@ export default function PanelistRankingsPage() {
                         continue
                     }
 
-                    const parsed =
-                        target === "group"
-                            ? extractArrayPayload(payload)
-                                .map(normalizeGroupRanking)
-                                .filter((item): item is GroupRankingItem => item !== null)
-                            : extractArrayPayload(payload)
-                                .map(normalizeStudentRanking)
-                                .filter((item): item is StudentRankingItem => item !== null)
+                    if (target === "group") {
+                        const parsed = extractArrayPayload(payload)
+                            .map(normalizeGroupRanking)
+                            .filter((item): item is GroupRankingItem => item !== null)
 
-                    setRankings(parsed)
+                        setRankings(parsed)
+                        loaded = true
+                        break
+                    }
+
+                    let parsedStudents = extractArrayPayload(payload)
+                        .map(normalizeStudentRanking)
+                        .filter((item): item is StudentRankingItem => item !== null)
+
+                    const hasMissingLatestDefense = parsedStudents.some(
+                        (item) => !item.latest_defense_at && !!item.group_id,
+                    )
+
+                    if (hasMissingLatestDefense) {
+                        const fallbackMap = await fetchGroupLatestDefenseMap(endpoint)
+                        parsedStudents = applyStudentLatestDefenseFallback(parsedStudents, fallbackMap)
+                    }
+
+                    setRankings(parsedStudents)
                     loaded = true
                     break
                 } catch (err) {
