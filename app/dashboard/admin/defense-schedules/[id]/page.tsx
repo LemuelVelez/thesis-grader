@@ -3,59 +3,13 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import {
-    CalendarIcon,
-    Loader2,
-    PencilLine,
-    Plus,
-    Trash2,
-    UserPlus,
-} from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
-import { Badge } from "@/components/ui/badge"
+import { DefenseScheduleEditDeleteDialogs } from "@/components/defense-schedules/defense-schedule-edit-delete-dialogs"
+import { DefenseScheduleOverviewSection } from "@/components/defense-schedules/defense-schedule-overview-section"
+import { DefenseSchedulePanelistDialogs } from "@/components/defense-schedules/defense-schedule-panelist-dialogs"
+import { DefenseSchedulePanelistsSection } from "@/components/defense-schedules/defense-schedule-panelists-section"
 import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-    Popover,
-    PopoverContent,
-    PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
 
 type DefenseScheduleStatus =
@@ -1623,6 +1577,61 @@ export default function AdminDefenseScheduleDetailsPage() {
         }
     }, [schedule, deleteBusy, router])
 
+    const handleAddPanelistOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && addPanelistBusy) return
+            setAddPanelistOpen(open)
+        },
+        [addPanelistBusy],
+    )
+
+    const handleEditPanelistOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && editPanelistBusy) return
+            setEditPanelistOpen(open)
+            if (!open) setEditingPanelist(null)
+        },
+        [editPanelistBusy],
+    )
+
+    const handleCreatePanelistUserOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && createPanelistBusy) return
+            setCreatePanelistUserOpen(open)
+
+            if (!open) {
+                setCreatePanelistForceAssign(false)
+                setCreatePanelistAssignMode(schedule ? "assign" : "directory")
+            }
+        },
+        [createPanelistBusy, schedule],
+    )
+
+    const handleRemovePanelistOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && removePanelistBusy) return
+            setRemovePanelistOpen(open)
+            if (!open) setRemovingPanelist(null)
+        },
+        [removePanelistBusy],
+    )
+
+    const handleEditOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && editBusy) return
+            setEditOpen(open)
+        },
+        [editBusy],
+    )
+
+    const handleDeleteOpenChange = React.useCallback(
+        (open: boolean) => {
+            if (!open && deleteBusy) return
+            setDeleteOpen(open)
+        },
+        [deleteBusy],
+    )
+
     return (
         <DashboardLayout
             title="Defense Schedule Details"
@@ -1676,830 +1685,95 @@ export default function AdminDefenseScheduleDetailsPage() {
                     </div>
                 ) : (
                     <>
-                        <div className="rounded-lg border bg-card p-4">
-                            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                                <div className="space-y-1">
-                                    <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                        Schedule ID
-                                    </p>
-                                    <p className="font-semibold">{schedule.id}</p>
-                                    <p className="text-sm text-muted-foreground">
-                                        Updated: {formatDateTime(schedule.updated_at)}
-                                    </p>
-                                </div>
+                        <DefenseScheduleOverviewSection
+                            schedule={schedule}
+                            resolvedGroupTitle={resolvedGroupTitle}
+                            resolvedRubricName={resolvedRubricName}
+                            resolvedCreatedBy={resolvedCreatedBy}
+                            resolvedCreatedBySubline={resolvedCreatedBySubline}
+                            statusActions={STATUS_ACTIONS}
+                            busyStatus={busyStatus}
+                            onSetStatus={handleSetStatus}
+                            formatDateTime={formatDateTime}
+                            toTitleCase={toTitleCase}
+                            statusBadgeClass={statusBadgeClass}
+                        />
 
-                                <div>
-                                    <Badge
-                                        variant="outline"
-                                        className={statusBadgeClass(schedule.status)}
-                                    >
-                                        {toTitleCase(schedule.status)}
-                                    </Badge>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                            <div className="rounded-lg border bg-card p-4">
-                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                    Group
-                                </p>
-                                <p className="mt-1 font-medium">{resolvedGroupTitle}</p>
-                                {schedule.group_id ? (
-                                    <p className="mt-1 text-sm text-muted-foreground">{schedule.group_id}</p>
-                                ) : null}
-                            </div>
-
-                            <div className="rounded-lg border bg-card p-4">
-                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                    Schedule
-                                </p>
-                                <p className="mt-1 font-medium">{formatDateTime(schedule.scheduled_at)}</p>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    Room: {schedule.room || "TBA"}
-                                </p>
-                            </div>
-
-                            <div className="rounded-lg border bg-card p-4">
-                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                    Rubric Template
-                                </p>
-                                <p className="mt-1 font-medium">{resolvedRubricName}</p>
-                            </div>
-
-                            <div className="rounded-lg border bg-card p-4">
-                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                    Created By
-                                </p>
-                                <p className="mt-1 font-medium">{resolvedCreatedBy}</p>
-                                {resolvedCreatedBySubline ? (
-                                    <p className="mt-1 text-sm text-muted-foreground">
-                                        {resolvedCreatedBySubline}
-                                    </p>
-                                ) : null}
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    Created: {formatDateTime(schedule.created_at)}
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="rounded-lg border bg-card p-4">
-                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                Update Status
-                            </p>
-                            <div className="mt-3 flex flex-wrap gap-2">
-                                {STATUS_ACTIONS.map((status) => {
-                                    const active = schedule.status === status
-                                    const disabled = !!busyStatus
-
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            disabled={disabled}
-                                            onClick={() => void handleSetStatus(status)}
-                                        >
-                                            {busyStatus === status ? "Updating..." : toTitleCase(status)}
-                                        </Button>
-                                    )
-                                })}
-                            </div>
-                        </div>
-
-                        <div className="rounded-lg border bg-card p-4">
-                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                        Panelists
-                                    </p>
-                                    <p className="text-sm text-muted-foreground">
-                                        {schedule.panelists.length} assigned
-                                    </p>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        disabled={panelistMutationBusy}
-                                        onClick={openAddPanelistDialog}
-                                    >
-                                        {addPanelistBusy ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        ) : (
-                                            <Plus className="mr-2 h-4 w-4" />
-                                        )}
-                                        Add Panelist
-                                    </Button>
-
-                                    {!hasPanelistUsers ? (
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            disabled={panelistMutationBusy}
-                                            onClick={() => openCreatePanelistUserDialog("assign")}
-                                        >
-                                            <UserPlus className="mr-2 h-4 w-4" />
-                                            Create Panelist User
-                                        </Button>
-                                    ) : null}
-                                </div>
-                            </div>
-
-                            {!hasPanelistUsers ? (
-                                <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
-                                    No users with the <span className="font-medium">panelist</span> role were found.
-                                    Click <span className="font-medium">Add Panelist</span> to instantly create and assign one.
-                                </div>
-                            ) : null}
-
-                            <div className="overflow-x-auto rounded-md border">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead className="min-w-56">Name</TableHead>
-                                            <TableHead className="min-w-56">Email</TableHead>
-                                            <TableHead className="min-w-48">ID</TableHead>
-                                            <TableHead className="min-w-48 text-right">Actions</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {schedule.panelists.length === 0 ? (
-                                            <TableRow>
-                                                <TableCell colSpan={4} className="h-16 text-center text-muted-foreground">
-                                                    No panelists assigned.
-                                                </TableCell>
-                                            </TableRow>
-                                        ) : (
-                                            schedule.panelists.map((panelist) => (
-                                                <TableRow key={`${panelist.id}-${panelist.name}`}>
-                                                    <TableCell className="font-medium">{panelist.name}</TableCell>
-                                                    <TableCell>{panelist.email || "—"}</TableCell>
-                                                    <TableCell className="text-muted-foreground">
-                                                        {panelist.id || "—"}
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <div className="flex flex-wrap items-center justify-end gap-2">
-                                                            <Button
-                                                                type="button"
-                                                                size="sm"
-                                                                variant="outline"
-                                                                disabled={panelistMutationBusy || !panelist.id}
-                                                                onClick={() => openEditPanelistDialog(panelist)}
-                                                            >
-                                                                <PencilLine className="mr-1.5 h-3.5 w-3.5" />
-                                                                Edit
-                                                            </Button>
-
-                                                            <Button
-                                                                type="button"
-                                                                size="sm"
-                                                                variant="outline"
-                                                                className="text-destructive hover:text-destructive"
-                                                                disabled={panelistMutationBusy || !panelist.id}
-                                                                onClick={() => openRemovePanelistDialog(panelist)}
-                                                            >
-                                                                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                                                                Remove
-                                                            </Button>
-                                                        </div>
-                                                    </TableCell>
-                                                </TableRow>
-                                            ))
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                        </div>
+                        <DefenseSchedulePanelistsSection
+                            panelists={schedule.panelists}
+                            hasPanelistUsers={hasPanelistUsers}
+                            panelistMutationBusy={panelistMutationBusy}
+                            addPanelistBusy={addPanelistBusy}
+                            onOpenAddPanelistDialog={openAddPanelistDialog}
+                            onOpenCreatePanelistUserDialog={() => openCreatePanelistUserDialog("assign")}
+                            onOpenEditPanelistDialog={openEditPanelistDialog}
+                            onOpenRemovePanelistDialog={openRemovePanelistDialog}
+                        />
                     </>
                 )}
             </div>
 
-            <Dialog
-                open={addPanelistOpen}
-                onOpenChange={(open) => {
-                    if (!open && addPanelistBusy) return
-                    setAddPanelistOpen(open)
-                }}
-            >
-                <DialogContent className="sm:max-w-lg">
-                    <DialogHeader>
-                        <DialogTitle>Add Panelist</DialogTitle>
-                        <DialogDescription>
-                            Assign a panelist user to this defense schedule.
-                        </DialogDescription>
-                    </DialogHeader>
+            <DefenseSchedulePanelistDialogs
+                scheduleExists={!!schedule}
+                addPanelistOpen={addPanelistOpen}
+                onAddPanelistOpenChange={handleAddPanelistOpenChange}
+                addPanelistBusy={addPanelistBusy}
+                addPanelistUserId={addPanelistUserId}
+                setAddPanelistUserId={setAddPanelistUserId}
+                unassignedPanelistOptions={unassignedPanelistOptions}
+                onAddPanelist={handleAddPanelist}
+                editPanelistOpen={editPanelistOpen}
+                onEditPanelistOpenChange={handleEditPanelistOpenChange}
+                editPanelistBusy={editPanelistBusy}
+                editingPanelist={editingPanelist}
+                editPanelistUserId={editPanelistUserId}
+                setEditPanelistUserId={setEditPanelistUserId}
+                editPanelistOptions={editPanelistOptions}
+                onUpdatePanelist={handleUpdatePanelist}
+                createPanelistUserOpen={createPanelistUserOpen}
+                onCreatePanelistUserOpenChange={handleCreatePanelistUserOpenChange}
+                createPanelistBusy={createPanelistBusy}
+                createPanelistName={createPanelistName}
+                setCreatePanelistName={setCreatePanelistName}
+                createPanelistEmail={createPanelistEmail}
+                setCreatePanelistEmail={setCreatePanelistEmail}
+                createPanelistStatus={createPanelistStatus}
+                setCreatePanelistStatus={setCreatePanelistStatus}
+                createPanelistAssignMode={createPanelistAssignMode}
+                setCreatePanelistAssignMode={setCreatePanelistAssignMode}
+                createPanelistForceAssign={createPanelistForceAssign}
+                createPanelistStatuses={CREATE_PANELIST_STATUSES}
+                toTitleCase={toTitleCase}
+                onCreatePanelistUser={handleCreatePanelistUser}
+                removePanelistOpen={removePanelistOpen}
+                onRemovePanelistOpenChange={handleRemovePanelistOpenChange}
+                removePanelistBusy={removePanelistBusy}
+                removingPanelist={removingPanelist}
+                onRemovePanelist={handleRemovePanelist}
+                onOpenCreatePanelistUserDialog={openCreatePanelistUserDialog}
+            />
 
-                    <div className="grid gap-3 py-2">
-                        {unassignedPanelistOptions.length > 0 ? (
-                            <div className="grid gap-2">
-                                <Label htmlFor="add-panelist-user">Panelist User</Label>
-                                <Select
-                                    value={addPanelistUserId}
-                                    onValueChange={setAddPanelistUserId}
-                                >
-                                    <SelectTrigger id="add-panelist-user" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder="Select panelist user" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {unassignedPanelistOptions.map((user) => (
-                                            <SelectItem
-                                                key={user.id}
-                                                value={user.id}
-                                                textValue={`${user.name} ${user.email ?? ""}`}
-                                            >
-                                                <div className="flex flex-col">
-                                                    <span className="truncate">{user.name}</span>
-                                                    <span className="text-xs text-muted-foreground">
-                                                        {user.email || user.id}
-                                                    </span>
-                                                </div>
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        ) : (
-                            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                                <p>
-                                    No available panelist user can be assigned right now.
-                                </p>
-                                <Button
-                                    type="button"
-                                    className="mt-3"
-                                    variant="secondary"
-                                    onClick={() => {
-                                        setAddPanelistOpen(false)
-                                        openCreatePanelistUserDialog("assign", { forceAssign: true })
-                                    }}
-                                >
-                                    <UserPlus className="mr-2 h-4 w-4" />
-                                    Create & Assign Panelist User
-                                </Button>
-                            </div>
-                        )}
-                    </div>
-
-                    <DialogFooter>
-                        <Button
-                            variant="outline"
-                            onClick={() => setAddPanelistOpen(false)}
-                            disabled={addPanelistBusy}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            onClick={() => void handleAddPanelist()}
-                            disabled={addPanelistBusy || unassignedPanelistOptions.length === 0}
-                        >
-                            {addPanelistBusy ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Adding...
-                                </>
-                            ) : (
-                                "Add Panelist"
-                            )}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog
-                open={editPanelistOpen}
-                onOpenChange={(open) => {
-                    if (!open && editPanelistBusy) return
-                    setEditPanelistOpen(open)
-                    if (!open) setEditingPanelist(null)
-                }}
-            >
-                <DialogContent className="sm:max-w-lg">
-                    <DialogHeader>
-                        <DialogTitle>Edit Panelist Assignment</DialogTitle>
-                        <DialogDescription>
-                            Replace the currently assigned panelist for this slot.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="grid gap-3 py-2">
-                        <div className="rounded-md border bg-muted/30 p-3">
-                            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                Current Panelist
-                            </p>
-                            <p className="mt-1 font-medium">
-                                {editingPanelist?.name || "—"}
-                            </p>
-                            <p className="text-sm text-muted-foreground">
-                                {editingPanelist?.email || editingPanelist?.id || "—"}
-                            </p>
-                        </div>
-
-                        {editPanelistOptions.length > 0 ? (
-                            <div className="grid gap-2">
-                                <Label htmlFor="replace-panelist-user">Replace With</Label>
-                                <Select
-                                    value={editPanelistUserId}
-                                    onValueChange={setEditPanelistUserId}
-                                >
-                                    <SelectTrigger id="replace-panelist-user" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder="Select replacement panelist" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {editPanelistOptions.map((user) => (
-                                            <SelectItem
-                                                key={user.id}
-                                                value={user.id}
-                                                textValue={`${user.name} ${user.email ?? ""}`}
-                                            >
-                                                <div className="flex flex-col">
-                                                    <span className="truncate">{user.name}</span>
-                                                    <span className="text-xs text-muted-foreground">
-                                                        {user.email || user.id}
-                                                    </span>
-                                                </div>
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        ) : (
-                            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                                <p>No panelist users are available.</p>
-                                <Button
-                                    type="button"
-                                    className="mt-3"
-                                    variant="secondary"
-                                    onClick={() => {
-                                        setEditPanelistOpen(false)
-                                        openCreatePanelistUserDialog("assign", { forceAssign: true })
-                                    }}
-                                >
-                                    <UserPlus className="mr-2 h-4 w-4" />
-                                    Create Panelist User
-                                </Button>
-                            </div>
-                        )}
-                    </div>
-
-                    <DialogFooter>
-                        <Button
-                            variant="outline"
-                            onClick={() => {
-                                setEditPanelistOpen(false)
-                                setEditingPanelist(null)
-                            }}
-                            disabled={editPanelistBusy}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            onClick={() => void handleUpdatePanelist()}
-                            disabled={
-                                editPanelistBusy ||
-                                !editingPanelist ||
-                                !editPanelistUserId ||
-                                editPanelistUserId === editingPanelist.id
-                            }
-                        >
-                            {editPanelistBusy ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Updating...
-                                </>
-                            ) : (
-                                "Save Assignment"
-                            )}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog
-                open={createPanelistUserOpen}
-                onOpenChange={(open) => {
-                    if (!open && createPanelistBusy) return
-                    setCreatePanelistUserOpen(open)
-
-                    if (!open) {
-                        setCreatePanelistForceAssign(false)
-                        setCreatePanelistAssignMode(schedule ? "assign" : "directory")
-                    }
-                }}
-            >
-                <DialogContent className="sm:max-w-lg">
-                    <DialogHeader>
-                        <DialogTitle>Create Panelist User</DialogTitle>
-                        <DialogDescription>
-                            Create a new user with the panelist role and optionally assign to this schedule.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="grid gap-4 py-2">
-                        <div className="grid gap-2">
-                            <Label htmlFor="create-panelist-name">Name</Label>
-                            <Input
-                                id="create-panelist-name"
-                                placeholder="e.g. Prof. Jane Doe"
-                                value={createPanelistName}
-                                onChange={(e) => setCreatePanelistName(e.target.value)}
-                            />
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label htmlFor="create-panelist-email">Email</Label>
-                            <Input
-                                id="create-panelist-email"
-                                type="email"
-                                placeholder="e.g. jane.panelist@example.com"
-                                value={createPanelistEmail}
-                                onChange={(e) => setCreatePanelistEmail(e.target.value)}
-                                autoComplete="off"
-                            />
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                            <div className="grid gap-2">
-                                <Label>Status</Label>
-                                <Select
-                                    value={String(createPanelistStatus)}
-                                    onValueChange={(value) => setCreatePanelistStatus(value as UserStatus)}
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="Select status" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {CREATE_PANELIST_STATUSES.map((status) => (
-                                            <SelectItem key={status} value={status}>
-                                                {toTitleCase(status)}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
-                            {schedule && !createPanelistForceAssign ? (
-                                <div className="grid gap-2">
-                                    <Label>After Create</Label>
-                                    <Select
-                                        value={createPanelistAssignMode}
-                                        onValueChange={(value) =>
-                                            setCreatePanelistAssignMode(
-                                                value === "directory" ? "directory" : "assign",
-                                            )
-                                        }
-                                    >
-                                        <SelectTrigger className="w-full">
-                                            <SelectValue placeholder="Select action" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="assign">Create and assign now</SelectItem>
-                                            <SelectItem value="directory">Create only</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            ) : null}
-                        </div>
-
-                        {schedule && createPanelistForceAssign ? (
-                            <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                                This user will be created and automatically assigned to the current defense schedule.
-                            </div>
-                        ) : null}
-
-                        <p className="text-xs text-muted-foreground">
-                            The new account role will be set to{" "}
-                            <span className="font-medium">Panelist</span>. Login details will be sent to the email.
-                        </p>
-                    </div>
-
-                    <DialogFooter>
-                        <Button
-                            variant="outline"
-                            onClick={() => setCreatePanelistUserOpen(false)}
-                            disabled={createPanelistBusy}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            onClick={() => void handleCreatePanelistUser()}
-                            disabled={createPanelistBusy}
-                        >
-                            {createPanelistBusy ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Creating...
-                                </>
-                            ) : createPanelistForceAssign ? (
-                                "Create & Add Panelist"
-                            ) : (
-                                "Create Panelist User"
-                            )}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <AlertDialog
-                open={removePanelistOpen}
-                onOpenChange={(open) => {
-                    if (!open && removePanelistBusy) return
-                    setRemovePanelistOpen(open)
-                    if (!open) setRemovingPanelist(null)
-                }}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Remove panelist from this schedule?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            {removingPanelist
-                                ? `This will remove ${removingPanelist.name} from the panel list of this defense schedule.`
-                                : "This will remove the selected panelist from this schedule."}
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={removePanelistBusy}>
-                            Cancel
-                        </AlertDialogCancel>
-                        <AlertDialogAction
-                            disabled={removePanelistBusy}
-                            onClick={(e) => {
-                                e.preventDefault()
-                                void handleRemovePanelist()
-                            }}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                            {removePanelistBusy ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Removing...
-                                </>
-                            ) : (
-                                "Remove Panelist"
-                            )}
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <Dialog
-                open={editOpen}
-                onOpenChange={(open) => {
-                    if (!open && editBusy) return
-                    setEditOpen(open)
-                }}
-            >
-                <DialogContent className="sm:max-w-2xl">
-                    <DialogHeader>
-                        <DialogTitle>Edit Defense Schedule</DialogTitle>
-                        <DialogDescription>
-                            Update schedule details and save changes.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="grid gap-4 py-2">
-                        <div className="grid gap-2">
-                            <Label htmlFor="edit_group_id">Thesis Group</Label>
-                            {groupSelectOptions.length > 0 ? (
-                                <Select
-                                    value={editForm.group_id}
-                                    onValueChange={(value) =>
-                                        setEditForm((prev) => ({ ...prev, group_id: value }))
-                                    }
-                                >
-                                    <SelectTrigger id="edit_group_id" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder={metaLoading ? "Loading groups..." : "Select a group"} />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {groupSelectOptions.map((group) => (
-                                            <SelectItem key={group.id} value={group.id} textValue={group.title}>
-                                                <span className="block max-w-130 truncate" title={group.title}>
-                                                    {group.title}
-                                                </span>
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            ) : (
-                                <Input
-                                    id="edit_group_id"
-                                    placeholder="Enter thesis group UUID"
-                                    value={editForm.group_id}
-                                    onChange={(e) =>
-                                        setEditForm((prev) => ({ ...prev, group_id: e.target.value }))
-                                    }
-                                />
-                            )}
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label>Schedule Date</Label>
-                            <Popover>
-                                <PopoverTrigger asChild>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className={[
-                                            "w-full justify-start text-left font-normal",
-                                            !editForm.scheduled_date ? "text-muted-foreground" : "",
-                                        ].join(" ")}
-                                    >
-                                        <CalendarIcon className="mr-2 h-4 w-4" />
-                                        {editForm.scheduled_date
-                                            ? formatCalendarDate(editForm.scheduled_date)
-                                            : "Pick a date"}
-                                    </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-auto p-0" align="start">
-                                    <Calendar
-                                        mode="single"
-                                        selected={editForm.scheduled_date}
-                                        onSelect={(date) =>
-                                            setEditForm((prev) => ({
-                                                ...prev,
-                                                scheduled_date: date ?? undefined,
-                                            }))
-                                        }
-                                        initialFocus
-                                    />
-                                </PopoverContent>
-                            </Popover>
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label>Schedule Time</Label>
-                            <div className="grid grid-cols-3 gap-2">
-                                <Select
-                                    value={editForm.scheduled_hour}
-                                    onValueChange={(value) =>
-                                        setEditForm((prev) => ({ ...prev, scheduled_hour: value }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="Hour" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {HOUR_OPTIONS.map((hour) => (
-                                            <SelectItem key={hour} value={hour}>
-                                                {hour}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-
-                                <Select
-                                    value={editForm.scheduled_minute}
-                                    onValueChange={(value) =>
-                                        setEditForm((prev) => ({ ...prev, scheduled_minute: value }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="Minute" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {MINUTE_OPTIONS.map((minute) => (
-                                            <SelectItem key={minute} value={minute}>
-                                                {minute}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-
-                                <Select
-                                    value={editForm.scheduled_period}
-                                    onValueChange={(value) =>
-                                        setEditForm((prev) => ({
-                                            ...prev,
-                                            scheduled_period: value as Meridiem,
-                                        }))
-                                    }
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="AM/PM" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="AM">AM</SelectItem>
-                                        <SelectItem value="PM">PM</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        </div>
-
-                        <div className="grid gap-2">
-                            <Label htmlFor="edit_room">Room</Label>
-                            <Input
-                                id="edit_room"
-                                placeholder="e.g. CCS Faculty Office or AVR 1"
-                                value={editForm.room}
-                                onChange={(e) =>
-                                    setEditForm((prev) => ({ ...prev, room: e.target.value }))
-                                }
-                            />
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-2 md:gap-4">
-                            <div className="grid gap-2">
-                                <Label htmlFor="edit_status">Status</Label>
-                                <Select
-                                    value={editForm.status}
-                                    onValueChange={(value) =>
-                                        setEditForm((prev) => ({ ...prev, status: value as DefenseScheduleStatus }))
-                                    }
-                                >
-                                    <SelectTrigger id="edit_status" className="w-full [&>span]:truncate">
-                                        <SelectValue placeholder="Select status" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {STATUS_ACTIONS.map((status) => (
-                                            <SelectItem key={status} value={status}>
-                                                {toTitleCase(status)}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
-                            <div className="grid gap-2">
-                                <Label htmlFor="edit_rubric_template_id">Rubric Template</Label>
-                                {rubricSelectOptions.length > 0 ? (
-                                    <Select
-                                        value={editForm.rubric_template_id || RUBRIC_NONE_VALUE}
-                                        onValueChange={(value) =>
-                                            setEditForm((prev) => ({
-                                                ...prev,
-                                                rubric_template_id: value === RUBRIC_NONE_VALUE ? "" : value,
-                                            }))
-                                        }
-                                    >
-                                        <SelectTrigger id="edit_rubric_template_id" className="w-full [&>span]:truncate">
-                                            <SelectValue placeholder={metaLoading ? "Loading rubrics..." : "Select rubric"} />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value={RUBRIC_NONE_VALUE}>None</SelectItem>
-                                            {rubricSelectOptions.map((rubric) => (
-                                                <SelectItem key={rubric.id} value={rubric.id} textValue={rubric.name}>
-                                                    <span className="block max-w-50 truncate" title={rubric.name}>
-                                                        {rubric.name}
-                                                    </span>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                ) : (
-                                    <Input
-                                        id="edit_rubric_template_id"
-                                        placeholder="Optional rubric template UUID"
-                                        value={editForm.rubric_template_id}
-                                        onChange={(e) =>
-                                            setEditForm((prev) => ({ ...prev, rubric_template_id: e.target.value }))
-                                        }
-                                    />
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editBusy}>
-                            Cancel
-                        </Button>
-                        <Button onClick={() => void handleSaveEdit()} disabled={editBusy}>
-                            {editBusy ? "Saving..." : "Save Changes"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <AlertDialog
-                open={deleteOpen}
-                onOpenChange={(open) => {
-                    if (!open && deleteBusy) return
-                    setDeleteOpen(open)
-                }}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Delete defense schedule?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            This action cannot be undone and will permanently remove this schedule.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={deleteBusy}>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                            disabled={deleteBusy}
-                            onClick={(e) => {
-                                e.preventDefault()
-                                void handleDelete()
-                            }}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                            {deleteBusy ? "Deleting..." : "Delete Schedule"}
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
+            <DefenseScheduleEditDeleteDialogs
+                editOpen={editOpen}
+                onEditOpenChange={handleEditOpenChange}
+                editBusy={editBusy}
+                editForm={editForm}
+                setEditForm={setEditForm}
+                groupSelectOptions={groupSelectOptions}
+                rubricSelectOptions={rubricSelectOptions}
+                metaLoading={metaLoading}
+                statusActions={STATUS_ACTIONS}
+                hourOptions={HOUR_OPTIONS}
+                minuteOptions={MINUTE_OPTIONS}
+                rubricNoneValue={RUBRIC_NONE_VALUE}
+                toTitleCase={toTitleCase}
+                formatCalendarDate={formatCalendarDate}
+                onSaveEdit={handleSaveEdit}
+                deleteOpen={deleteOpen}
+                onDeleteOpenChange={handleDeleteOpenChange}
+                deleteBusy={deleteBusy}
+                onDelete={handleDelete}
+            />
         </DashboardLayout>
     )
 }
