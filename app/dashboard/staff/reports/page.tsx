@@ -36,6 +36,23 @@ type RankingItem = {
     latest_defense_at: string | null
 }
 
+type UserMini = {
+    id: string
+    name: string
+}
+
+type DefenseScheduleMini = {
+    id: string
+    group_id: string | null
+    scheduled_at: string | null
+    room: string | null
+}
+
+type ThesisGroupMini = {
+    id: string
+    title: string
+}
+
 type StatusFilter = "all" | "pending" | "submitted" | "locked"
 
 type ExcelPreview = {
@@ -61,6 +78,33 @@ const RANKING_ENDPOINT_CANDIDATES = [
     "/api/admin/rankings?limit=20",
     "/api/admin/rankings",
     "/api/rankings?limit=20",
+]
+
+const USERS_LIST_ENDPOINT_CANDIDATES = [
+    "/api/users?limit=1000&orderBy=name&orderDirection=asc",
+    "/api/users?limit=1000",
+]
+
+const DEFENSE_SCHEDULES_LIST_ENDPOINT_CANDIDATES = [
+    "/api/defense-schedules?limit=1000&orderBy=scheduled_at&orderDirection=desc",
+    "/api/defense-schedules?limit=1000",
+]
+
+const THESIS_GROUPS_LIST_ENDPOINT_CANDIDATES = [
+    "/api/thesis-groups?limit=1000&orderBy=title&orderDirection=asc",
+    "/api/thesis-groups?limit=1000",
+    "/api/groups?limit=1000",
+]
+
+const USER_BY_ID_ENDPOINT_FACTORIES = [(id: string) => `/api/users/${id}`]
+
+const DEFENSE_SCHEDULE_BY_ID_ENDPOINT_FACTORIES = [
+    (id: string) => `/api/defense-schedules/${id}`,
+]
+
+const THESIS_GROUP_BY_ID_ENDPOINT_FACTORIES = [
+    (id: string) => `/api/thesis-groups/${id}`,
+    (id: string) => `/api/groups/${id}`,
 ]
 
 const EXCEL_MIME =
@@ -155,6 +199,20 @@ function extractArrayPayload(payload: unknown): unknown[] {
     return []
 }
 
+function extractObjectPayload(payload: unknown): Record<string, unknown> | null {
+    if (!isRecord(payload)) return null
+
+    if (isRecord(payload.item)) return payload.item
+    if (isRecord(payload.data)) return payload.data
+    if (isRecord(payload.result)) return payload.result
+    if (isRecord(payload.user)) return payload.user
+    if (isRecord(payload.group)) return payload.group
+    if (isRecord(payload.schedule)) return payload.schedule
+    if (isRecord(payload.evaluation)) return payload.evaluation
+
+    return payload
+}
+
 function normalizeEvaluation(raw: unknown): EvaluationItem | null {
     if (!isRecord(raw)) return null
 
@@ -217,6 +275,46 @@ function normalizeRanking(raw: unknown): RankingItem | null {
     }
 }
 
+function normalizeUserMini(raw: unknown): UserMini | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.user) ? raw.user : raw
+
+    const id = toStringSafe(source.id ?? raw.id)
+    const name = toStringSafe(source.name ?? raw.name)
+
+    if (!id || !name) return null
+    return { id, name }
+}
+
+function normalizeDefenseScheduleMini(raw: unknown): DefenseScheduleMini | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.schedule) ? raw.schedule : raw
+
+    const id = toStringSafe(source.id ?? raw.id)
+    if (!id) return null
+
+    return {
+        id,
+        group_id: toStringSafe(source.group_id ?? source.groupId ?? raw.group_id),
+        scheduled_at: toNullableString(source.scheduled_at ?? source.scheduledAt ?? raw.scheduled_at),
+        room: toNullableString(source.room ?? raw.room),
+    }
+}
+
+function normalizeThesisGroupMini(raw: unknown): ThesisGroupMini | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.group) ? raw.group : raw
+
+    const id = toStringSafe(source.id ?? raw.id)
+    if (!id) return null
+
+    const title =
+        toStringSafe(source.title ?? source.group_title ?? source.groupTitle ?? raw.title) ??
+        "Untitled Group"
+
+    return { id, title }
+}
+
 async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
     if (isRecord(payload)) {
         const error = toStringSafe(payload.error)
@@ -234,6 +332,81 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     }
 
     return `Request failed (${res.status})`
+}
+
+async function fetchFirstSuccessfulArray(endpoints: string[]): Promise<unknown[]> {
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            const payload = (await res.json().catch(() => null)) as unknown
+            if (!res.ok) continue
+            const parsed = extractArrayPayload(payload)
+            if (parsed.length > 0) return parsed
+        } catch {
+            // try next endpoint
+        }
+    }
+    return []
+}
+
+async function fetchEntityByIdFromFactories(
+    id: string,
+    factories: Array<(id: string) => string>,
+): Promise<Record<string, unknown> | null> {
+    for (const makeUrl of factories) {
+        try {
+            const res = await fetch(makeUrl(id), { cache: "no-store" })
+            const payload = (await res.json().catch(() => null)) as unknown
+            if (!res.ok) continue
+            const item = extractObjectPayload(payload)
+            if (item) return item
+        } catch {
+            // try next endpoint
+        }
+    }
+    return null
+}
+
+function formatScheduleLabel(
+    groupTitle: string | null,
+    scheduledAt: string | null,
+    room: string | null,
+): string {
+    const chunks: string[] = [groupTitle ?? "Defense Schedule"]
+
+    if (scheduledAt) {
+        const when = formatDateTime(scheduledAt)
+        if (when !== "—") {
+            chunks.push(when)
+        }
+    }
+
+    if (room) {
+        chunks.push(room)
+    }
+
+    return chunks.join(" • ")
+}
+
+function getEvaluatorDisplayName(
+    evaluatorId: string,
+    evaluatorNameMap: Record<string, string>,
+): string {
+    return evaluatorNameMap[evaluatorId] ?? "Unknown Evaluator"
+}
+
+function getScheduleDisplayName(
+    scheduleId: string,
+    scheduleNameMap: Record<string, string>,
+): string {
+    return scheduleNameMap[scheduleId] ?? "Defense Schedule"
+}
+
+function getRankingGroupDisplayName(
+    item: RankingItem,
+    groupNameMap: Record<string, string>,
+): string {
+    return groupNameMap[item.group_id] ?? item.group_title ?? "Untitled Group"
 }
 
 function thinBorder(color = "D1D5DB") {
@@ -302,21 +475,25 @@ function rankingDataStyle(
     }
 }
 
-function createEvaluationsSheet(items: EvaluationItem[]): XLSX.WorkSheet {
+function createEvaluationsSheet(
+    items: EvaluationItem[],
+    scheduleNameMap: Record<string, string>,
+    evaluatorNameMap: Record<string, string>,
+): XLSX.WorkSheet {
     const rows = [
         [
-            "Evaluation ID",
-            "Schedule ID",
-            "Evaluator ID",
+            "No.",
+            "Schedule",
+            "Evaluator",
             "Status",
             "Created At",
             "Submitted At",
             "Locked At",
         ],
-        ...items.map((item) => [
-            item.id,
-            item.schedule_id,
-            item.evaluator_id,
+        ...items.map((item, idx) => [
+            idx + 1,
+            getScheduleDisplayName(item.schedule_id, scheduleNameMap),
+            getEvaluatorDisplayName(item.evaluator_id, evaluatorNameMap),
             toTitleCase(item.status),
             formatDateTime(item.created_at),
             formatDateTime(item.submitted_at),
@@ -327,9 +504,9 @@ function createEvaluationsSheet(items: EvaluationItem[]): XLSX.WorkSheet {
     const ws = XLSX.utils.aoa_to_sheet(rows)
 
     ws["!cols"] = [
-        { wch: 28 },
-        { wch: 24 },
-        { wch: 24 },
+        { wch: 8 },
+        { wch: 48 },
+        { wch: 30 },
         { wch: 14 },
         { wch: 24 },
         { wch: 24 },
@@ -363,7 +540,7 @@ function createEvaluationsSheet(items: EvaluationItem[]): XLSX.WorkSheet {
                 continue
             }
 
-            const align = c >= 4 ? "center" : "left"
+            const align = c === 0 || c >= 4 ? "center" : "left"
             cell.s = evaluationDataStyle(striped, align)
         }
     }
@@ -371,20 +548,21 @@ function createEvaluationsSheet(items: EvaluationItem[]): XLSX.WorkSheet {
     return ws
 }
 
-function createRankingsSheet(items: RankingItem[]): XLSX.WorkSheet {
+function createRankingsSheet(
+    items: RankingItem[],
+    groupNameMap: Record<string, string>,
+): XLSX.WorkSheet {
     const rows = [
         [
             "Rank",
-            "Group ID",
-            "Group Title",
+            "Group",
             "Percentage",
             "Submitted Evaluations",
             "Latest Defense",
         ],
         ...items.map((item) => [
             item.rank > 0 ? item.rank : "—",
-            item.group_id,
-            item.group_title,
+            getRankingGroupDisplayName(item, groupNameMap),
             formatPercent(item.group_percentage),
             item.submitted_evaluations,
             formatDateTime(item.latest_defense_at),
@@ -395,8 +573,7 @@ function createRankingsSheet(items: RankingItem[]): XLSX.WorkSheet {
 
     ws["!cols"] = [
         { wch: 12 },
-        { wch: 22 },
-        { wch: 38 },
+        { wch: 50 },
         { wch: 16 },
         { wch: 24 },
         { wch: 24 },
@@ -423,7 +600,7 @@ function createRankingsSheet(items: RankingItem[]): XLSX.WorkSheet {
             }
 
             const striped = r % 2 === 0
-            const align = c === 0 || c === 3 || c === 4 ? "center" : "left"
+            const align = c === 0 || c === 2 || c === 3 ? "center" : "left"
             cell.s = rankingDataStyle(striped, align)
 
             if (c === 0) {
@@ -457,10 +634,19 @@ function createRankingsSheet(items: RankingItem[]): XLSX.WorkSheet {
 function buildWorkbook(
     evaluations: EvaluationItem[],
     rankings: RankingItem[],
+    maps: {
+        evaluatorNameMap: Record<string, string>
+        scheduleNameMap: Record<string, string>
+        groupNameMap: Record<string, string>
+    },
 ): XLSX.WorkBook {
     const wb = XLSX.utils.book_new()
-    const evaluationsSheet = createEvaluationsSheet(evaluations)
-    const rankingsSheet = createRankingsSheet(rankings)
+    const evaluationsSheet = createEvaluationsSheet(
+        evaluations,
+        maps.scheduleNameMap,
+        maps.evaluatorNameMap,
+    )
+    const rankingsSheet = createRankingsSheet(rankings, maps.groupNameMap)
 
     XLSX.utils.book_append_sheet(wb, evaluationsSheet, "Evaluations")
     XLSX.utils.book_append_sheet(wb, rankingsSheet, "Rankings")
@@ -484,6 +670,11 @@ export default function StaffReportsPage() {
     const [evaluations, setEvaluations] = React.useState<EvaluationItem[]>([])
     const [rankings, setRankings] = React.useState<RankingItem[]>([])
 
+    const [evaluatorNameMap, setEvaluatorNameMap] = React.useState<Record<string, string>>({})
+    const [scheduleNameMap, setScheduleNameMap] = React.useState<Record<string, string>>({})
+    const [groupNameMap, setGroupNameMap] = React.useState<Record<string, string>>({})
+    const [resolvingNames, setResolvingNames] = React.useState(false)
+
     const [loading, setLoading] = React.useState(true)
     const [error, setError] = React.useState<string | null>(null)
     const [rankingError, setRankingError] = React.useState<string | null>(null)
@@ -495,6 +686,178 @@ export default function StaffReportsPage() {
     const [downloadLoading, setDownloadLoading] = React.useState(false)
     const [excelPreview, setExcelPreview] = React.useState<ExcelPreview | null>(null)
 
+    const hydrateDisplayNames = React.useCallback(
+        async (evaluationItems: EvaluationItem[], rankingItems: RankingItem[]) => {
+            const evaluatorIds = Array.from(
+                new Set(evaluationItems.map((item) => item.evaluator_id)),
+            )
+            const scheduleIds = Array.from(
+                new Set(evaluationItems.map((item) => item.schedule_id)),
+            )
+            const rankingGroupIds = Array.from(
+                new Set(rankingItems.map((item) => item.group_id)),
+            )
+
+            if (
+                evaluatorIds.length === 0 &&
+                scheduleIds.length === 0 &&
+                rankingGroupIds.length === 0
+            ) {
+                setEvaluatorNameMap({})
+                setScheduleNameMap({})
+                setGroupNameMap({})
+                return
+            }
+
+            setResolvingNames(true)
+
+            try {
+                const nextEvaluatorMap: Record<string, string> = {}
+                const nextScheduleMap: Record<string, string> = {}
+                const nextGroupMap: Record<string, string> = {}
+
+                const evaluatorIdSet = new Set(evaluatorIds)
+                const scheduleIdSet = new Set(scheduleIds)
+
+                // 1) Resolve evaluators (users)
+                if (evaluatorIds.length > 0) {
+                    const users = (await fetchFirstSuccessfulArray(USERS_LIST_ENDPOINT_CANDIDATES))
+                        .map(normalizeUserMini)
+                        .filter((row): row is UserMini => row !== null)
+
+                    for (const user of users) {
+                        if (evaluatorIdSet.has(user.id)) {
+                            nextEvaluatorMap[user.id] = user.name
+                        }
+                    }
+
+                    const missingEvaluatorIds = evaluatorIds.filter(
+                        (id) => !nextEvaluatorMap[id],
+                    )
+
+                    if (missingEvaluatorIds.length > 0) {
+                        await Promise.all(
+                            missingEvaluatorIds.map(async (id) => {
+                                const entity = await fetchEntityByIdFromFactories(
+                                    id,
+                                    USER_BY_ID_ENDPOINT_FACTORIES,
+                                )
+                                if (!entity) return
+                                const user = normalizeUserMini(entity)
+                                if (user?.name) {
+                                    nextEvaluatorMap[id] = user.name
+                                }
+                            }),
+                        )
+                    }
+                }
+
+                // 2) Resolve schedules
+                const scheduleById: Record<string, DefenseScheduleMini> = {}
+
+                if (scheduleIds.length > 0) {
+                    const schedules = (await fetchFirstSuccessfulArray(DEFENSE_SCHEDULES_LIST_ENDPOINT_CANDIDATES))
+                        .map(normalizeDefenseScheduleMini)
+                        .filter((row): row is DefenseScheduleMini => row !== null)
+
+                    for (const schedule of schedules) {
+                        if (scheduleIdSet.has(schedule.id)) {
+                            scheduleById[schedule.id] = schedule
+                        }
+                    }
+
+                    const missingScheduleIds = scheduleIds.filter(
+                        (id) => !scheduleById[id],
+                    )
+
+                    if (missingScheduleIds.length > 0) {
+                        await Promise.all(
+                            missingScheduleIds.map(async (id) => {
+                                const entity = await fetchEntityByIdFromFactories(
+                                    id,
+                                    DEFENSE_SCHEDULE_BY_ID_ENDPOINT_FACTORIES,
+                                )
+                                if (!entity) return
+                                const schedule = normalizeDefenseScheduleMini(entity)
+                                if (schedule) {
+                                    scheduleById[id] = schedule
+                                }
+                            }),
+                        )
+                    }
+                }
+
+                // 3) Resolve group titles from ranking + schedules
+                const groupIdSet = new Set<string>(rankingGroupIds)
+                for (const schedule of Object.values(scheduleById)) {
+                    if (schedule.group_id) {
+                        groupIdSet.add(schedule.group_id)
+                    }
+                }
+
+                const groupIds = Array.from(groupIdSet)
+
+                if (groupIds.length > 0) {
+                    const groupIdLookup = new Set(groupIds)
+
+                    const groups = (await fetchFirstSuccessfulArray(THESIS_GROUPS_LIST_ENDPOINT_CANDIDATES))
+                        .map(normalizeThesisGroupMini)
+                        .filter((row): row is ThesisGroupMini => row !== null)
+
+                    for (const group of groups) {
+                        if (groupIdLookup.has(group.id)) {
+                            nextGroupMap[group.id] = group.title
+                        }
+                    }
+
+                    const missingGroupIds = groupIds.filter((id) => !nextGroupMap[id])
+
+                    if (missingGroupIds.length > 0) {
+                        await Promise.all(
+                            missingGroupIds.map(async (id) => {
+                                const entity = await fetchEntityByIdFromFactories(
+                                    id,
+                                    THESIS_GROUP_BY_ID_ENDPOINT_FACTORIES,
+                                )
+                                if (!entity) return
+                                const group = normalizeThesisGroupMini(entity)
+                                if (group?.title) {
+                                    nextGroupMap[id] = group.title
+                                }
+                            }),
+                        )
+                    }
+                }
+
+                // 4) Build schedule labels using resolved group titles
+                for (const scheduleId of scheduleIds) {
+                    const schedule = scheduleById[scheduleId]
+                    if (!schedule) {
+                        nextScheduleMap[scheduleId] = "Defense Schedule"
+                        continue
+                    }
+
+                    const groupTitle = schedule.group_id
+                        ? nextGroupMap[schedule.group_id] ?? null
+                        : null
+
+                    nextScheduleMap[scheduleId] = formatScheduleLabel(
+                        groupTitle,
+                        schedule.scheduled_at,
+                        schedule.room,
+                    )
+                }
+
+                setEvaluatorNameMap(nextEvaluatorMap)
+                setScheduleNameMap(nextScheduleMap)
+                setGroupNameMap(nextGroupMap)
+            } finally {
+                setResolvingNames(false)
+            }
+        },
+        [],
+    )
+
     const loadReports = React.useCallback(
         async ({ silent = false }: { silent?: boolean } = {}) => {
             setLoading(true)
@@ -505,6 +868,9 @@ export default function StaffReportsPage() {
             let rankingLoaded = false
             let latestEvalError = "Unable to load evaluation report data."
             let latestRankingError = "Unable to load rankings."
+
+            let loadedEvaluations: EvaluationItem[] = []
+            let loadedRankings: RankingItem[] = []
 
             for (const endpoint of EVALUATION_ENDPOINT_CANDIDATES) {
                 try {
@@ -525,6 +891,7 @@ export default function StaffReportsPage() {
                             return tb - ta
                         })
 
+                    loadedEvaluations = parsed
                     setEvaluations(parsed)
                     evalLoaded = true
                     break
@@ -537,7 +904,10 @@ export default function StaffReportsPage() {
             }
 
             if (!evalLoaded) {
+                loadedEvaluations = []
                 setEvaluations([])
+                setEvaluatorNameMap({})
+                setScheduleNameMap({})
                 setError(
                     `${latestEvalError} No evaluation endpoint responded successfully.`,
                 )
@@ -558,6 +928,7 @@ export default function StaffReportsPage() {
                         .filter((item): item is RankingItem => item !== null)
                         .sort((a, b) => a.rank - b.rank)
 
+                    loadedRankings = parsed
                     setRankings(parsed)
                     rankingLoaded = true
                     break
@@ -568,10 +939,16 @@ export default function StaffReportsPage() {
             }
 
             if (!rankingLoaded) {
+                loadedRankings = []
                 setRankings([])
+                setGroupNameMap({})
                 setRankingError(
                     `${latestRankingError} Rankings table will remain empty until a rankings endpoint is available.`,
                 )
+            }
+
+            if (evalLoaded || rankingLoaded) {
+                await hydrateDisplayNames(loadedEvaluations, loadedRankings)
             }
 
             if (!silent) {
@@ -586,7 +963,7 @@ export default function StaffReportsPage() {
 
             setLoading(false)
         },
-        [],
+        [hydrateDisplayNames],
     )
 
     React.useEffect(() => {
@@ -605,14 +982,24 @@ export default function StaffReportsPage() {
 
             if (!q) return true
 
+            const evaluatorName = getEvaluatorDisplayName(
+                item.evaluator_id,
+                evaluatorNameMap,
+            ).toLowerCase()
+
+            const scheduleName = getScheduleDisplayName(
+                item.schedule_id,
+                scheduleNameMap,
+            ).toLowerCase()
+
             return (
                 item.id.toLowerCase().includes(q) ||
-                item.schedule_id.toLowerCase().includes(q) ||
-                item.evaluator_id.toLowerCase().includes(q) ||
+                scheduleName.includes(q) ||
+                evaluatorName.includes(q) ||
                 item.status.toLowerCase().includes(q)
             )
         })
-    }, [evaluations, search, statusFilter])
+    }, [evaluations, evaluatorNameMap, scheduleNameMap, search, statusFilter])
 
     const totals = React.useMemo(() => {
         let pending = 0
@@ -641,10 +1028,14 @@ export default function StaffReportsPage() {
 
     const createExportPayload = React.useCallback(() => {
         const fileName = `staff-reports-${new Date().toISOString().slice(0, 10)}.xlsx`
-        const workbook = buildWorkbook(filteredEvaluations, rankings)
+        const workbook = buildWorkbook(filteredEvaluations, rankings, {
+            evaluatorNameMap,
+            scheduleNameMap,
+            groupNameMap,
+        })
 
         return { fileName, workbook }
-    }, [filteredEvaluations, rankings])
+    }, [filteredEvaluations, rankings, evaluatorNameMap, scheduleNameMap, groupNameMap])
 
     const handlePreviewExcel = React.useCallback(async () => {
         if (filteredEvaluations.length === 0) {
@@ -772,7 +1163,7 @@ export default function StaffReportsPage() {
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center">
                             <Input
-                                placeholder="Search by evaluation ID, schedule ID, evaluator ID, or status"
+                                placeholder="Search by schedule, evaluator name, status, or evaluation reference"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 className="w-full md:max-w-xl"
@@ -868,6 +1259,12 @@ export default function StaffReportsPage() {
                             </span>{" "}
                             evaluation record(s).
                         </p>
+
+                        {resolvingNames ? (
+                            <p className="text-xs text-muted-foreground">
+                                Resolving related names for schedules and evaluators...
+                            </p>
+                        ) : null}
                     </div>
                 </div>
 
@@ -956,9 +1353,9 @@ export default function StaffReportsPage() {
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead className="min-w-52">Evaluation ID</TableHead>
-                                <TableHead className="min-w-48">Schedule ID</TableHead>
-                                <TableHead className="min-w-48">Evaluator ID</TableHead>
+                                <TableHead className="min-w-16">#</TableHead>
+                                <TableHead className="min-w-72">Schedule</TableHead>
+                                <TableHead className="min-w-56">Evaluator</TableHead>
                                 <TableHead className="min-w-32">Status</TableHead>
                                 <TableHead className="min-w-44">Created</TableHead>
                                 <TableHead className="min-w-44">Submitted</TableHead>
@@ -982,11 +1379,17 @@ export default function StaffReportsPage() {
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                filteredEvaluations.map((item) => (
+                                filteredEvaluations.map((item, idx) => (
                                     <TableRow key={item.id}>
-                                        <TableCell className="font-medium">{item.id}</TableCell>
-                                        <TableCell>{item.schedule_id}</TableCell>
-                                        <TableCell>{item.evaluator_id}</TableCell>
+                                        <TableCell className="font-medium">{idx + 1}</TableCell>
+                                        <TableCell className="max-w-136">
+                                            <span className="block truncate">
+                                                {getScheduleDisplayName(item.schedule_id, scheduleNameMap)}
+                                            </span>
+                                        </TableCell>
+                                        <TableCell>
+                                            {getEvaluatorDisplayName(item.evaluator_id, evaluatorNameMap)}
+                                        </TableCell>
                                         <TableCell>
                                             <span
                                                 className={[
@@ -1055,12 +1458,9 @@ export default function StaffReportsPage() {
                                                 {item.rank > 0 ? item.rank : "—"}
                                             </TableCell>
                                             <TableCell>
-                                                <div className="flex flex-col gap-1">
-                                                    <span className="font-medium">{item.group_title}</span>
-                                                    <span className="text-xs text-muted-foreground">
-                                                        ID: {item.group_id}
-                                                    </span>
-                                                </div>
+                                                <span className="font-medium">
+                                                    {getRankingGroupDisplayName(item, groupNameMap)}
+                                                </span>
                                             </TableCell>
                                             <TableCell>{formatPercent(item.group_percentage)}</TableCell>
                                             <TableCell>{item.submitted_evaluations}</TableCell>
