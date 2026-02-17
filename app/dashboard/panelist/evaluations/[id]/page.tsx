@@ -137,6 +137,7 @@ const CRITERIA_ENDPOINTS = [
 ] as const
 
 const NO_SCORE_SELECT_VALUE = "__none__"
+const PANEL_NOTES_STORAGE_PREFIX = "panelist-evaluation-notes:"
 
 const GROUP_MEMBER_ENDPOINT_BUILDERS = [
     (groupId: string) => `/api/groups/${encodeURIComponent(groupId)}/members`,
@@ -676,6 +677,12 @@ export default function PanelistEvaluationDetailsPage() {
 
     const [selectedTargetKey, setSelectedTargetKey] = React.useState("")
     const [notes, setNotes] = React.useState("")
+    const [notesHydrated, setNotesHydrated] = React.useState(false)
+
+    const notesStorageKey = React.useMemo(
+        () => (id ? `${PANEL_NOTES_STORAGE_PREFIX}${id}` : ""),
+        [id],
+    )
 
     const loadDetails = React.useCallback(
         async (options?: { showSuccessToast?: boolean; showErrorToast?: boolean }) => {
@@ -1094,6 +1101,32 @@ export default function PanelistEvaluationDetailsPage() {
         }
     }, [selectedTargetKey, targets])
 
+    React.useEffect(() => {
+        if (!notesStorageKey || typeof window === "undefined") {
+            setNotes("")
+            setNotesHydrated(false)
+            return
+        }
+
+        try {
+            const stored = window.localStorage.getItem(notesStorageKey)
+            setNotes(stored ?? "")
+        } catch {
+            setNotes("")
+        } finally {
+            setNotesHydrated(true)
+        }
+    }, [notesStorageKey])
+
+    React.useEffect(() => {
+        if (!notesHydrated || !notesStorageKey || typeof window === "undefined") return
+        try {
+            window.localStorage.setItem(notesStorageKey, notes)
+        } catch {
+            // ignore storage failures
+        }
+    }, [notes, notesHydrated, notesStorageKey])
+
     const updateDraftScore = React.useCallback(
         (target: EvaluationTarget, criterion: CriterionOption, score: number | null) => {
             setDraftScores((prev) => {
@@ -1237,6 +1270,11 @@ export default function PanelistEvaluationDetailsPage() {
         toast.success(`Cleared draft scores for ${selectedTarget.label}.`)
     }, [criteria, selectedTarget])
 
+    const clearLocalNotes = React.useCallback(() => {
+        setNotes("")
+        toast.success("Private notes cleared for this evaluation.")
+    }, [])
+
     const persistScoreDraft = React.useCallback(
         async (draft: DraftScore): Promise<{ ok: boolean; serverId: string | null; message?: string }> => {
             if (!id) {
@@ -1255,17 +1293,22 @@ export default function PanelistEvaluationDetailsPage() {
                 comment: comment ?? null,
             }
 
-            const subjectVariants =
+            const canonicalTargetPayload: Record<string, unknown> = {
+                target_type: draft.subject_type,
+                target_id: draft.subject_id,
+                subject_type: draft.subject_type,
+                subject_id: draft.subject_id,
+            }
+
+            const legacyTargetVariants =
                 draft.subject_type === "student"
                     ? [
                         { student_id: draft.subject_id },
                         { subject_type: "student", subject_id: draft.subject_id },
-                        { target_type: "student", target_id: draft.subject_id },
                     ]
                     : [
                         { group_id: draft.subject_id },
                         { subject_type: "group", subject_id: draft.subject_id },
-                        { target_type: "group", target_id: draft.subject_id },
                     ]
 
             const attempts: Array<{ url: string; method: "PATCH" | "POST"; body: Record<string, unknown> }> = []
@@ -1285,14 +1328,43 @@ export default function PanelistEvaluationDetailsPage() {
                     method: "PATCH",
                     body: {
                         ...basePayload,
-                        ...subjectVariants[0],
+                        ...canonicalTargetPayload,
                     },
                 })
             }
 
-            for (const variant of subjectVariants) {
+            // Primary canonical flow (new schema)
+            attempts.push({
+                url: `/api/evaluations/${encodeURIComponent(id)}/scores`,
+                method: "POST",
+                body: {
+                    ...basePayload,
+                    ...canonicalTargetPayload,
+                },
+            })
+
+            attempts.push({
+                url: "/api/evaluation-scores",
+                method: "POST",
+                body: {
+                    ...basePayload,
+                    ...canonicalTargetPayload,
+                },
+            })
+
+            attempts.push({
+                url: "/api/evaluation-scores",
+                method: "PATCH",
+                body: {
+                    ...basePayload,
+                    ...canonicalTargetPayload,
+                },
+            })
+
+            // Backward compatibility fallbacks
+            for (const variant of legacyTargetVariants) {
                 attempts.push({
-                    url: "/api/evaluation-scores",
+                    url: `/api/evaluations/${encodeURIComponent(id)}/scores`,
                     method: "POST",
                     body: {
                         ...basePayload,
@@ -1301,7 +1373,7 @@ export default function PanelistEvaluationDetailsPage() {
                 })
 
                 attempts.push({
-                    url: `/api/evaluations/${encodeURIComponent(id)}/scores`,
+                    url: "/api/evaluation-scores",
                     method: "POST",
                     body: {
                         ...basePayload,
@@ -1700,15 +1772,31 @@ export default function PanelistEvaluationDetailsPage() {
                                         <Separator className="my-3" />
 
                                         <div className="space-y-2">
-                                            <p className="text-xs font-medium text-muted-foreground">
-                                                Local panel notes (not sent to API)
-                                            </p>
+                                            <div className="flex items-center justify-between gap-2">
+                                                <p className="text-xs font-medium text-muted-foreground">
+                                                    Private panel notes (saved on this device)
+                                                </p>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={clearLocalNotes}
+                                                    disabled={notes.trim().length === 0}
+                                                >
+                                                    Clear notes
+                                                </Button>
+                                            </div>
                                             <Textarea
                                                 value={notes}
                                                 onChange={(e) => setNotes(e.target.value)}
                                                 placeholder="Write quick reminders while scoring."
                                                 className="min-h-24"
                                             />
+                                            <p className="text-[11px] text-muted-foreground">
+                                                {notesHydrated
+                                                    ? "Auto-saved locally per evaluation."
+                                                    : "Preparing private notes storage..."}
+                                            </p>
                                         </div>
                                     </CardContent>
                                 </Card>

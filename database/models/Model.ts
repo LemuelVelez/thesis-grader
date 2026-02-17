@@ -1,7 +1,7 @@
 /**
  * Central database model types for Thesis Grader
  * Based on migrations:
- * 001..009 in database/migration
+ * 001..010 in database/migration
  */
 
 export type UUID = string;
@@ -44,6 +44,9 @@ export const NOTIFICATION_TYPES = [
     'evaluation_locked',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+export const EVALUATION_TARGET_TYPES = ['group', 'student'] as const;
+export type EvaluationTargetType = (typeof EVALUATION_TARGET_TYPES)[number];
 
 /**
  * Text statuses in schema (not strict SQL enum columns)
@@ -155,8 +158,15 @@ export interface EvaluationRow {
 }
 
 export interface EvaluationScoreRow {
+    /**
+     * Added in migration 010 to support PATCH /api/evaluation-scores/:id
+     * and unique scoring per target (group/student) per criterion.
+     */
+    id: UUID;
     evaluation_id: UUID;
     criterion_id: UUID;
+    target_type: EvaluationTargetType | null;
+    target_id: UUID | null;
     score: number;
     comment: string | null;
 }
@@ -305,7 +315,10 @@ export type EvaluationInsert = Optional<
     'id' | 'status' | 'submitted_at' | 'locked_at' | 'created_at'
 >;
 
-export type EvaluationScoreInsert = Optional<EvaluationScoreRow, 'comment'>;
+export type EvaluationScoreInsert = Optional<
+    EvaluationScoreRow,
+    'id' | 'comment' | 'target_type' | 'target_id'
+>;
 
 export type AuditLogInsert = Optional<AuditLogRow, 'id' | 'actor_id' | 'entity_id' | 'details' | 'created_at'>;
 
@@ -342,7 +355,7 @@ export type DefenseSchedulePatch = Partial<Omit<DefenseScheduleRow, 'id' | 'crea
 export type RubricTemplatePatch = Partial<Omit<RubricTemplateRow, 'id' | 'created_at'>>;
 export type RubricCriteriaPatch = Partial<Omit<RubricCriteriaRow, 'id' | 'template_id' | 'created_at'>>;
 export type EvaluationPatch = Partial<Omit<EvaluationRow, 'id' | 'schedule_id' | 'evaluator_id' | 'created_at'>>;
-export type EvaluationScorePatch = Partial<Omit<EvaluationScoreRow, 'evaluation_id' | 'criterion_id'>>;
+export type EvaluationScorePatch = Partial<Omit<EvaluationScoreRow, 'id' | 'evaluation_id' | 'criterion_id'>>;
 export type AuditLogPatch = Partial<Omit<AuditLogRow, 'id' | 'created_at'>>;
 export type StudentPatch = Partial<Omit<StudentRow, 'user_id' | 'created_at'>>;
 export type StaffProfilePatch = Partial<Omit<StaffProfileRow, 'user_id' | 'created_at'>>;
