@@ -1,6 +1,9 @@
 "use client"
 
 import * as React from "react"
+import { toast } from "sonner"
+import { Download, FileSpreadsheet, RefreshCw, X } from "lucide-react"
+import * as XLSX from "xlsx-js-style"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
@@ -35,6 +38,17 @@ type RankingItem = {
 
 type StatusFilter = "all" | "pending" | "submitted" | "locked"
 
+type ExcelPreview = {
+    fileName: string
+    generatedAt: string
+    headers: string[]
+    rows: string[][]
+}
+
+type StyledCell = XLSX.CellObject & {
+    s?: Record<string, unknown>
+}
+
 const STATUS_FILTERS = ["all", "pending", "submitted", "locked"] as const
 
 const EVALUATION_ENDPOINT_CANDIDATES = [
@@ -48,6 +62,9 @@ const RANKING_ENDPOINT_CANDIDATES = [
     "/api/admin/rankings",
     "/api/rankings?limit=20",
 ]
+
+const EXCEL_MIME =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -144,8 +161,12 @@ function normalizeEvaluation(raw: unknown): EvaluationItem | null {
     const source = isRecord(raw.evaluation) ? raw.evaluation : raw
 
     const id = toStringSafe(source.id ?? raw.id)
-    const schedule_id = toStringSafe(source.schedule_id ?? source.scheduleId ?? raw.schedule_id)
-    const evaluator_id = toStringSafe(source.evaluator_id ?? source.evaluatorId ?? raw.evaluator_id)
+    const schedule_id = toStringSafe(
+        source.schedule_id ?? source.scheduleId ?? raw.schedule_id,
+    )
+    const evaluator_id = toStringSafe(
+        source.evaluator_id ?? source.evaluatorId ?? raw.evaluator_id,
+    )
 
     if (!id || !schedule_id || !evaluator_id) return null
 
@@ -185,7 +206,9 @@ function normalizeRanking(raw: unknown): RankingItem | null {
             source.group_percentage ?? source.groupPercentage ?? raw.group_percentage,
         ),
         submitted_evaluations: toIntSafe(
-            source.submitted_evaluations ?? source.submittedEvaluations ?? raw.submitted_evaluations,
+            source.submitted_evaluations ??
+            source.submittedEvaluations ??
+            raw.submitted_evaluations,
             0,
         ),
         latest_defense_at: toNullableString(
@@ -213,11 +236,248 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     return `Request failed (${res.status})`
 }
 
-function escapeCsv(value: string): string {
-    if (value.includes('"') || value.includes(",") || value.includes("\n")) {
-        return `"${value.replaceAll('"', '""')}"`
+function thinBorder(color = "D1D5DB") {
+    return {
+        top: { style: "thin", color: { rgb: color } },
+        bottom: { style: "thin", color: { rgb: color } },
+        left: { style: "thin", color: { rgb: color } },
+        right: { style: "thin", color: { rgb: color } },
     }
-    return value
+}
+
+function headerStyle(fillRgb: string): Record<string, unknown> {
+    return {
+        font: { bold: true, color: { rgb: "FFFFFF" } },
+        fill: { patternType: "solid", fgColor: { rgb: fillRgb } },
+        border: thinBorder("C7D2FE"),
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    }
+}
+
+function evaluationDataStyle(
+    striped: boolean,
+    align: "left" | "center" = "left",
+): Record<string, unknown> {
+    return {
+        font: { color: { rgb: "111827" } },
+        fill: {
+            patternType: "solid",
+            fgColor: { rgb: striped ? "F8FAFC" : "FFFFFF" },
+        },
+        border: thinBorder(),
+        alignment: { horizontal: align, vertical: "center", wrapText: true },
+    }
+}
+
+function statusDataStyle(status: string): Record<string, unknown> {
+    const normalized = status.trim().toLowerCase()
+    const palette: Record<string, { bg: string; fg: string }> = {
+        submitted: { bg: "DBEAFE", fg: "1D4ED8" },
+        locked: { bg: "D1FAE5", fg: "047857" },
+        pending: { bg: "FEF3C7", fg: "B45309" },
+    }
+
+    const selected = palette[normalized] ?? { bg: "E5E7EB", fg: "374151" }
+
+    return {
+        font: { bold: true, color: { rgb: selected.fg } },
+        fill: { patternType: "solid", fgColor: { rgb: selected.bg } },
+        border: thinBorder(),
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    }
+}
+
+function rankingDataStyle(
+    striped: boolean,
+    align: "left" | "center" = "left",
+): Record<string, unknown> {
+    return {
+        font: { color: { rgb: "111827" } },
+        fill: {
+            patternType: "solid",
+            fgColor: { rgb: striped ? "F8FAFC" : "FFFFFF" },
+        },
+        border: thinBorder(),
+        alignment: { horizontal: align, vertical: "center", wrapText: true },
+    }
+}
+
+function createEvaluationsSheet(items: EvaluationItem[]): XLSX.WorkSheet {
+    const rows = [
+        [
+            "Evaluation ID",
+            "Schedule ID",
+            "Evaluator ID",
+            "Status",
+            "Created At",
+            "Submitted At",
+            "Locked At",
+        ],
+        ...items.map((item) => [
+            item.id,
+            item.schedule_id,
+            item.evaluator_id,
+            toTitleCase(item.status),
+            formatDateTime(item.created_at),
+            formatDateTime(item.submitted_at),
+            formatDateTime(item.locked_at),
+        ]),
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [
+        { wch: 28 },
+        { wch: 24 },
+        { wch: 24 },
+        { wch: 14 },
+        { wch: 24 },
+        { wch: 24 },
+        { wch: 24 },
+    ]
+
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("2563EB")
+                continue
+            }
+
+            const striped = r % 2 === 0
+
+            if (c === 3) {
+                cell.s = statusDataStyle(String(cell.v ?? ""))
+                continue
+            }
+
+            const align = c >= 4 ? "center" : "left"
+            cell.s = evaluationDataStyle(striped, align)
+        }
+    }
+
+    return ws
+}
+
+function createRankingsSheet(items: RankingItem[]): XLSX.WorkSheet {
+    const rows = [
+        [
+            "Rank",
+            "Group ID",
+            "Group Title",
+            "Percentage",
+            "Submitted Evaluations",
+            "Latest Defense",
+        ],
+        ...items.map((item) => [
+            item.rank > 0 ? item.rank : "—",
+            item.group_id,
+            item.group_title,
+            formatPercent(item.group_percentage),
+            item.submitted_evaluations,
+            formatDateTime(item.latest_defense_at),
+        ]),
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [
+        { wch: 12 },
+        { wch: 22 },
+        { wch: 38 },
+        { wch: 16 },
+        { wch: 24 },
+        { wch: 24 },
+    ]
+
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("7C3AED")
+                continue
+            }
+
+            const striped = r % 2 === 0
+            const align = c === 0 || c === 3 || c === 4 ? "center" : "left"
+            cell.s = rankingDataStyle(striped, align)
+
+            if (c === 0) {
+                const rankValue = Number(cell.v)
+                if (rankValue === 1) {
+                    cell.s = {
+                        ...rankingDataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "854D0E" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "FEF9C3" } },
+                    }
+                } else if (rankValue === 2) {
+                    cell.s = {
+                        ...rankingDataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "334155" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "E2E8F0" } },
+                    }
+                } else if (rankValue === 3) {
+                    cell.s = {
+                        ...rankingDataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "7C2D12" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "FFEDD5" } },
+                    }
+                }
+            }
+        }
+    }
+
+    return ws
+}
+
+function buildWorkbook(
+    evaluations: EvaluationItem[],
+    rankings: RankingItem[],
+): XLSX.WorkBook {
+    const wb = XLSX.utils.book_new()
+    const evaluationsSheet = createEvaluationsSheet(evaluations)
+    const rankingsSheet = createRankingsSheet(rankings)
+
+    XLSX.utils.book_append_sheet(wb, evaluationsSheet, "Evaluations")
+    XLSX.utils.book_append_sheet(wb, rankingsSheet, "Rankings")
+
+    return wb
+}
+
+function previewCellText(value: unknown): string {
+    if (value === null || value === undefined) return ""
+    if (typeof value === "string") return value
+    if (typeof value === "number" || typeof value === "boolean") return String(value)
+
+    try {
+        return JSON.stringify(value)
+    } catch {
+        return String(value)
+    }
 }
 
 export default function StaffReportsPage() {
@@ -228,99 +488,109 @@ export default function StaffReportsPage() {
     const [error, setError] = React.useState<string | null>(null)
     const [rankingError, setRankingError] = React.useState<string | null>(null)
 
-    const [evaluationSource, setEvaluationSource] = React.useState<string | null>(null)
-    const [rankingSource, setRankingSource] = React.useState<string | null>(null)
-
     const [search, setSearch] = React.useState("")
     const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
 
-    const loadReports = React.useCallback(async () => {
-        setLoading(true)
-        setError(null)
-        setRankingError(null)
+    const [previewLoading, setPreviewLoading] = React.useState(false)
+    const [downloadLoading, setDownloadLoading] = React.useState(false)
+    const [excelPreview, setExcelPreview] = React.useState<ExcelPreview | null>(null)
 
-        let evalLoaded = false
-        let rankingLoaded = false
-        let latestEvalError = "Unable to load evaluation report data."
-        let latestRankingError = "Unable to load rankings."
+    const loadReports = React.useCallback(
+        async ({ silent = false }: { silent?: boolean } = {}) => {
+            setLoading(true)
+            setError(null)
+            setRankingError(null)
 
-        for (const endpoint of EVALUATION_ENDPOINT_CANDIDATES) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
+            let evalLoaded = false
+            let rankingLoaded = false
+            let latestEvalError = "Unable to load evaluation report data."
+            let latestRankingError = "Unable to load rankings."
 
-                if (!res.ok) {
-                    latestEvalError = await readErrorMessage(res, payload)
-                    continue
+            for (const endpoint of EVALUATION_ENDPOINT_CANDIDATES) {
+                try {
+                    const res = await fetch(endpoint, { cache: "no-store" })
+                    const payload = (await res.json().catch(() => null)) as unknown
+
+                    if (!res.ok) {
+                        latestEvalError = await readErrorMessage(res, payload)
+                        continue
+                    }
+
+                    const parsed = extractArrayPayload(payload)
+                        .map(normalizeEvaluation)
+                        .filter((item): item is EvaluationItem => item !== null)
+                        .sort((a, b) => {
+                            const ta = a.created_at ? new Date(a.created_at).getTime() : 0
+                            const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+                            return tb - ta
+                        })
+
+                    setEvaluations(parsed)
+                    evalLoaded = true
+                    break
+                } catch (err) {
+                    latestEvalError =
+                        err instanceof Error
+                            ? err.message
+                            : "Unable to load evaluation report data."
                 }
-
-                const parsed = extractArrayPayload(payload)
-                    .map(normalizeEvaluation)
-                    .filter((item): item is EvaluationItem => item !== null)
-                    .sort((a, b) => {
-                        const ta = a.created_at ? new Date(a.created_at).getTime() : 0
-                        const tb = b.created_at ? new Date(b.created_at).getTime() : 0
-                        return tb - ta
-                    })
-
-                setEvaluations(parsed)
-                setEvaluationSource(endpoint)
-                evalLoaded = true
-                break
-            } catch (err) {
-                latestEvalError =
-                    err instanceof Error
-                        ? err.message
-                        : "Unable to load evaluation report data."
             }
-        }
 
-        if (!evalLoaded) {
-            setEvaluations([])
-            setEvaluationSource(null)
-            setError(
-                `${latestEvalError} No evaluation endpoint responded successfully.`,
-            )
-        }
+            if (!evalLoaded) {
+                setEvaluations([])
+                setError(
+                    `${latestEvalError} No evaluation endpoint responded successfully.`,
+                )
+            }
 
-        for (const endpoint of RANKING_ENDPOINT_CANDIDATES) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
+            for (const endpoint of RANKING_ENDPOINT_CANDIDATES) {
+                try {
+                    const res = await fetch(endpoint, { cache: "no-store" })
+                    const payload = (await res.json().catch(() => null)) as unknown
 
-                if (!res.ok) {
-                    latestRankingError = await readErrorMessage(res, payload)
-                    continue
+                    if (!res.ok) {
+                        latestRankingError = await readErrorMessage(res, payload)
+                        continue
+                    }
+
+                    const parsed = extractArrayPayload(payload)
+                        .map(normalizeRanking)
+                        .filter((item): item is RankingItem => item !== null)
+                        .sort((a, b) => a.rank - b.rank)
+
+                    setRankings(parsed)
+                    rankingLoaded = true
+                    break
+                } catch (err) {
+                    latestRankingError =
+                        err instanceof Error ? err.message : "Unable to load rankings."
                 }
-
-                const parsed = extractArrayPayload(payload)
-                    .map(normalizeRanking)
-                    .filter((item): item is RankingItem => item !== null)
-                    .sort((a, b) => a.rank - b.rank)
-
-                setRankings(parsed)
-                setRankingSource(endpoint)
-                rankingLoaded = true
-                break
-            } catch (err) {
-                latestRankingError =
-                    err instanceof Error ? err.message : "Unable to load rankings."
             }
-        }
 
-        if (!rankingLoaded) {
-            setRankings([])
-            setRankingSource(null)
-            setRankingError(
-                `${latestRankingError} Rankings table will remain empty until a rankings endpoint is available.`,
-            )
-        }
+            if (!rankingLoaded) {
+                setRankings([])
+                setRankingError(
+                    `${latestRankingError} Rankings table will remain empty until a rankings endpoint is available.`,
+                )
+            }
 
-        setLoading(false)
-    }, [])
+            if (!silent) {
+                if (evalLoaded && rankingLoaded) {
+                    toast.success("Reports refreshed successfully.")
+                } else if (evalLoaded || rankingLoaded) {
+                    toast.warning("Reports refreshed with partial data.")
+                } else {
+                    toast.error("Unable to refresh reports.")
+                }
+            }
+
+            setLoading(false)
+        },
+        [],
+    )
 
     React.useEffect(() => {
-        void loadReports()
+        void loadReports({ silent: true })
     }, [loadReports])
 
     const filteredEvaluations = React.useMemo(() => {
@@ -369,45 +639,128 @@ export default function StaffReportsPage() {
         }
     }, [evaluations])
 
-    const exportCsv = React.useCallback(() => {
-        if (filteredEvaluations.length === 0) return
+    const createExportPayload = React.useCallback(() => {
+        const fileName = `staff-reports-${new Date().toISOString().slice(0, 10)}.xlsx`
+        const workbook = buildWorkbook(filteredEvaluations, rankings)
 
-        const headers = [
-            "evaluation_id",
-            "schedule_id",
-            "evaluator_id",
-            "status",
-            "created_at",
-            "submitted_at",
-            "locked_at",
-        ]
+        return { fileName, workbook }
+    }, [filteredEvaluations, rankings])
 
-        const lines = filteredEvaluations.map((item) => [
-            item.id,
-            item.schedule_id,
-            item.evaluator_id,
-            item.status,
-            item.created_at ?? "",
-            item.submitted_at ?? "",
-            item.locked_at ?? "",
-        ])
+    const handlePreviewExcel = React.useCallback(async () => {
+        if (filteredEvaluations.length === 0) {
+            toast.info("No evaluation records to preview.")
+            return
+        }
 
-        const csv = [headers, ...lines]
-            .map((row) => row.map((cell) => escapeCsv(String(cell))).join(","))
-            .join("\n")
+        setPreviewLoading(true)
 
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
-        const url = URL.createObjectURL(blob)
+        try {
+            const { fileName, workbook } = createExportPayload()
 
-        const anchor = document.createElement("a")
-        anchor.href = url
-        anchor.download = `staff-reports-${new Date().toISOString().slice(0, 10)}.csv`
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
+            const workbookBytes = XLSX.write(workbook, {
+                bookType: "xlsx",
+                type: "array",
+            })
 
-        URL.revokeObjectURL(url)
-    }, [filteredEvaluations])
+            const file = new File([workbookBytes], fileName, { type: EXCEL_MIME })
+
+            const excelRendererModule = await import("react-excel-renderer")
+
+            const parsed = await new Promise<{
+                cols?: Array<{ name?: string; key?: string }>
+                rows?: unknown[][]
+            }>((resolve, reject) => {
+                excelRendererModule.ExcelRenderer(file, (err, resp) => {
+                    if (err) {
+                        reject(err)
+                        return
+                    }
+                    resolve((resp ?? {}) as { cols?: Array<{ name?: string; key?: string }>; rows?: unknown[][] })
+                })
+            })
+
+            const rawCols = Array.isArray(parsed.cols) ? parsed.cols : []
+            const rawRows = Array.isArray(parsed.rows) ? parsed.rows : []
+
+            let headers = rawCols
+                .map((col) => toStringSafe(col.name ?? col.key))
+                .filter((value): value is string => Boolean(value))
+
+            let bodyRows = rawRows
+                .filter((row): row is unknown[] => Array.isArray(row))
+                .map((row) => row.map((value) => previewCellText(value)))
+
+            if (headers.length === 0 && bodyRows.length > 0) {
+                headers = bodyRows[0].map(
+                    (cell, idx) => cell || `Column ${idx + 1}`,
+                )
+                bodyRows = bodyRows.slice(1)
+            }
+
+            const widest = Math.max(
+                headers.length,
+                ...bodyRows.map((row) => row.length),
+                0,
+            )
+
+            if (widest > headers.length) {
+                headers = [
+                    ...headers,
+                    ...Array.from(
+                        { length: widest - headers.length },
+                        (_, idx) => `Column ${headers.length + idx + 1}`,
+                    ),
+                ]
+            }
+
+            const paddedRows = bodyRows.map((row) =>
+                Array.from({ length: headers.length }, (_, idx) => row[idx] ?? ""),
+            )
+
+            setExcelPreview({
+                fileName,
+                generatedAt: new Date().toISOString(),
+                headers: headers.length > 0 ? headers : ["No Columns"],
+                rows: paddedRows,
+            })
+
+            toast.success("Excel preview is ready.")
+        } catch (err) {
+            toast.error(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to preview the Excel export.",
+            )
+        } finally {
+            setPreviewLoading(false)
+        }
+    }, [createExportPayload, filteredEvaluations.length])
+
+    const handleDownloadExcel = React.useCallback(async () => {
+        if (filteredEvaluations.length === 0) {
+            toast.info("No evaluation records to export.")
+            return
+        }
+
+        setDownloadLoading(true)
+
+        try {
+            const { fileName, workbook } = createExportPayload()
+            XLSX.writeFile(workbook, fileName)
+            toast.success("Excel export downloaded.")
+        } catch (err) {
+            toast.error(
+                err instanceof Error ? err.message : "Failed to download Excel export.",
+            )
+        } finally {
+            setDownloadLoading(false)
+        }
+    }, [createExportPayload, filteredEvaluations.length])
+
+    const previewRows = React.useMemo(
+        () => (excelPreview ? excelPreview.rows.slice(0, 40) : []),
+        [excelPreview],
+    )
 
     return (
         <DashboardLayout
@@ -425,25 +778,41 @@ export default function StaffReportsPage() {
                                 className="w-full md:max-w-xl"
                             />
 
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     variant="outline"
-                                    onClick={() => void loadReports()}
+                                    onClick={() => void loadReports({ silent: false })}
                                     disabled={loading}
                                 >
+                                    <RefreshCw
+                                        className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                                    />
                                     Refresh
                                 </Button>
+
                                 <Button
-                                    onClick={exportCsv}
-                                    disabled={loading || filteredEvaluations.length === 0}
+                                    variant="outline"
+                                    onClick={() => void handlePreviewExcel()}
+                                    disabled={loading || previewLoading || filteredEvaluations.length === 0}
                                 >
-                                    Export CSV
+                                    <FileSpreadsheet className="mr-2 h-4 w-4" />
+                                    {previewLoading ? "Preparing Preview..." : "Preview Excel"}
+                                </Button>
+
+                                <Button
+                                    onClick={() => void handleDownloadExcel()}
+                                    disabled={loading || downloadLoading || filteredEvaluations.length === 0}
+                                >
+                                    <Download className="mr-2 h-4 w-4" />
+                                    {downloadLoading ? "Downloading..." : "Download Excel"}
                                 </Button>
                             </div>
                         </div>
 
                         <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
+                            <p className="text-xs font-medium text-muted-foreground">
+                                Filter by status
+                            </p>
                             <div className="flex flex-wrap gap-2">
                                 {STATUS_FILTERS.map((status) => {
                                     const active = statusFilter === status
@@ -499,11 +868,6 @@ export default function StaffReportsPage() {
                             </span>{" "}
                             evaluation record(s).
                         </p>
-
-                        <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                            {evaluationSource ? <p>Evaluation source: {evaluationSource}</p> : null}
-                            {rankingSource ? <p>Ranking source: {rankingSource}</p> : null}
-                        </div>
                     </div>
                 </div>
 
@@ -516,6 +880,75 @@ export default function StaffReportsPage() {
                 {rankingError ? (
                     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700">
                         {rankingError}
+                    </div>
+                ) : null}
+
+                {excelPreview ? (
+                    <div className="rounded-lg border bg-card p-4">
+                        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <h2 className="text-sm font-semibold">Excel Preview</h2>
+                                <p className="text-xs text-muted-foreground">
+                                    Previewing the exported workbook first sheet ({excelPreview.fileName}) •
+                                    Generated {formatDateTime(excelPreview.generatedAt)}
+                                </p>
+                            </div>
+
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setExcelPreview(null)}
+                            >
+                                <X className="mr-2 h-4 w-4" />
+                                Close Preview
+                            </Button>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-lg border">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        {excelPreview.headers.map((header, idx) => (
+                                            <TableHead
+                                                key={`${header}-${idx}`}
+                                                className="min-w-40"
+                                            >
+                                                {header || `Column ${idx + 1}`}
+                                            </TableHead>
+                                        ))}
+                                    </TableRow>
+                                </TableHeader>
+
+                                <TableBody>
+                                    {previewRows.length === 0 ? (
+                                        <TableRow>
+                                            <TableCell
+                                                colSpan={excelPreview.headers.length || 1}
+                                                className="h-20 text-center text-muted-foreground"
+                                            >
+                                                No rows available for preview.
+                                            </TableCell>
+                                        </TableRow>
+                                    ) : (
+                                        previewRows.map((row, rowIndex) => (
+                                            <TableRow key={`preview-row-${rowIndex}`}>
+                                                {row.map((cell, cellIndex) => (
+                                                    <TableCell key={`preview-cell-${rowIndex}-${cellIndex}`}>
+                                                        {cell || "—"}
+                                                    </TableCell>
+                                                ))}
+                                            </TableRow>
+                                        ))
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </div>
+
+                        {excelPreview.rows.length > previewRows.length ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                                Showing first {previewRows.length} of {excelPreview.rows.length} row(s).
+                            </p>
+                        ) : null}
                     </div>
                 ) : null}
 
