@@ -735,6 +735,25 @@ function normalizePreviewFromRendererRows(rawRows: unknown[][]): {
     }
 }
 
+function normalizePreviewFromWorksheet(sheet: XLSX.WorkSheet): {
+    headers: string[]
+    rows: string[][]
+} {
+    const matrix = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+    }) as unknown[][]
+
+    return normalizePreviewFromRendererRows(matrix)
+}
+
+function looksCollapsedPreview(preview: { headers: string[]; rows: string[][] }): boolean {
+    if (preview.headers.length <= 1) return true
+    if (preview.rows.length === 0) return false
+    return preview.rows.every((row) => row.length <= 1)
+}
+
 export default function StaffReportsPage() {
     const [evaluations, setEvaluations] = React.useState<EvaluationItem[]>([])
     const [rankings, setRankings] = React.useState<RankingItem[]>([])
@@ -1140,7 +1159,18 @@ export default function StaffReportsPage() {
             })
 
             const rawRows = Array.isArray(parsed.rows) ? parsed.rows : []
-            const normalized = normalizePreviewFromRendererRows(rawRows)
+            let normalized = normalizePreviewFromRendererRows(rawRows)
+
+            if (looksCollapsedPreview(normalized)) {
+                const firstSheetName = workbook.SheetNames[0]
+                const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : undefined
+                if (firstSheet) {
+                    const fallback = normalizePreviewFromWorksheet(firstSheet)
+                    if (!looksCollapsedPreview(fallback)) {
+                        normalized = fallback
+                    }
+                }
+            }
 
             setExcelPreview({
                 fileName,
@@ -1466,7 +1496,7 @@ export default function StaffReportsPage() {
                 }}
             >
                 {excelPreview ? (
-                    <DialogContent className="w-full max-w-7xl overflow-hidden p-0">
+                    <DialogContent className="w-full overflow-hidden p-0">
                         <div className="flex max-h-[85vh] flex-col">
                             <div className="border-b px-6 py-4">
                                 <DialogHeader>
@@ -1484,50 +1514,48 @@ export default function StaffReportsPage() {
 
                             <div className="min-h-0 flex-1 px-6 py-4">
                                 <div className="h-full rounded-lg border">
-                                    <div className="h-full overflow-auto">
-                                        <div className="min-w-max">
-                                            <Table className="w-full">
-                                                <TableHeader className="sticky top-0 z-10 bg-background">
-                                                    <TableRow>
-                                                        {excelPreview.headers.map((header, idx) => (
-                                                            <TableHead
-                                                                key={`${header}-${idx}`}
-                                                                className="min-w-40 whitespace-nowrap"
-                                                            >
-                                                                {header || `Column ${idx + 1}`}
-                                                            </TableHead>
-                                                        ))}
-                                                    </TableRow>
-                                                </TableHeader>
+                                    <div className="max-w-112.5">
+                                        <Table>
+                                            <TableHeader className="sticky top-0 z-10 bg-background">
+                                                <TableRow>
+                                                    {excelPreview.headers.map((header, idx) => (
+                                                        <TableHead
+                                                            key={`${header}-${idx}`}
+                                                            className="whitespace-pre-wrap wrap-break-word align-top"
+                                                        >
+                                                            {header || `Column ${idx + 1}`}
+                                                        </TableHead>
+                                                    ))}
+                                                </TableRow>
+                                            </TableHeader>
 
-                                                <TableBody>
-                                                    {previewRows.length === 0 ? (
-                                                        <TableRow>
-                                                            <TableCell
-                                                                colSpan={excelPreview.headers.length || 1}
-                                                                className="h-20 text-center text-muted-foreground"
-                                                            >
-                                                                No rows available for preview.
-                                                            </TableCell>
+                                            <TableBody>
+                                                {previewRows.length === 0 ? (
+                                                    <TableRow>
+                                                        <TableCell
+                                                            colSpan={excelPreview.headers.length || 1}
+                                                            className="h-20 text-center text-muted-foreground"
+                                                        >
+                                                            No rows available for preview.
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ) : (
+                                                    previewRows.map((row, rowIndex) => (
+                                                        <TableRow key={`preview-row-${rowIndex}`}>
+                                                            {row.map((cell, cellIndex) => (
+                                                                <TableCell
+                                                                    key={`preview-cell-${rowIndex}-${cellIndex}`}
+                                                                    className="min-w-72 max-w-96 align-top whitespace-pre-wrap wrap-break-word leading-relaxed"
+                                                                    title={cell || "—"}
+                                                                >
+                                                                    {cell || "—"}
+                                                                </TableCell>
+                                                            ))}
                                                         </TableRow>
-                                                    ) : (
-                                                        previewRows.map((row, rowIndex) => (
-                                                            <TableRow key={`preview-row-${rowIndex}`}>
-                                                                {row.map((cell, cellIndex) => (
-                                                                    <TableCell
-                                                                        key={`preview-cell-${rowIndex}-${cellIndex}`}
-                                                                        className="max-w-72 truncate align-top"
-                                                                        title={cell || "—"}
-                                                                    >
-                                                                        {cell || "—"}
-                                                                    </TableCell>
-                                                                ))}
-                                                            </TableRow>
-                                                        ))
-                                                    )}
-                                                </TableBody>
-                                            </Table>
-                                        </div>
+                                                    ))
+                                                )}
+                                            </TableBody>
+                                        </Table>
                                     </div>
                                 </div>
 
