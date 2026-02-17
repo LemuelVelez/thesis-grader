@@ -19,6 +19,15 @@ function stripUndefined<T extends object>(input: T): Partial<T> {
     return out;
 }
 
+function normalizeNullableText(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
 export type CreatePanelistInput = Omit<UserInsert, 'role'> & {
     expertise?: string | null;
 };
@@ -45,14 +54,17 @@ export class PanelistController {
 
     async create(input: CreatePanelistInput): Promise<PanelistAccount> {
         return this.services.transaction<PanelistAccount>(async (tx) => {
+            const { expertise: rawExpertise, ...userInput } = input;
+            const expertise = normalizeNullableText(rawExpertise);
+
             const user = await tx.users.create({
-                ...input,
+                ...userInput,
                 role: 'panelist',
             });
 
             await tx.panelist_profiles.create({
                 user_id: user.id,
-                expertise: input.expertise ?? null,
+                expertise: expertise ?? null,
             });
 
             const profile = await tx.panelist_profiles.findByUserId(user.id);
@@ -78,6 +90,11 @@ export class PanelistController {
     async update(userId: UUID, input: UpdatePanelistInput): Promise<PanelistAccount | null> {
         const cleanUserPatch = stripUndefined(input.user ?? {}) as Omit<UserPatch, 'role'>;
         const cleanProfilePatch = stripUndefined(input.profile ?? {}) as PanelistProfilePatch;
+
+        const normalizedExpertise = normalizeNullableText(cleanProfilePatch.expertise);
+        if (normalizedExpertise !== undefined) {
+            cleanProfilePatch.expertise = normalizedExpertise;
+        }
 
         if (
             Object.keys(cleanUserPatch).length === 0 &&

@@ -87,6 +87,7 @@ const PANELIST_EVALUATION_SEGMENTS = [
     'notes',
     'note',
     'private-notes',
+    'private-panel-notes',
     'scores',
     'score',
 ] as const;
@@ -96,6 +97,27 @@ type PanelistEvaluationSegment = (typeof PANELIST_EVALUATION_SEGMENTS)[number];
 function isPanelistEvaluationSegment(value: string | undefined): value is PanelistEvaluationSegment {
     if (!value) return false;
     return (PANELIST_EVALUATION_SEGMENTS as readonly string[]).includes(value);
+}
+
+function resolvePanelistSegment(
+    routeTail: string[],
+    startIndex: number,
+): PanelistEvaluationSegment | null {
+    const direct = routeTail[startIndex]?.toLowerCase();
+    if (isPanelistEvaluationSegment(direct)) return direct;
+
+    const first = routeTail[startIndex]?.toLowerCase();
+    const second = routeTail[startIndex + 1]?.toLowerCase();
+
+    // Supports /private/notes and /private/panel-notes variants
+    if (first === 'private' && (second === 'notes' || second === 'note')) {
+        return 'private-notes';
+    }
+    if (first === 'private' && second === 'panel-notes') {
+        return 'private-panel-notes';
+    }
+
+    return null;
 }
 
 type ResolvedPanelistEvaluationRoute = {
@@ -118,8 +140,8 @@ function resolvePanelistEvaluationRoute(tail: string[]): ResolvedPanelistEvaluat
         routeTail[0]?.toLowerCase() === 'evaluations' &&
         isUuidLike(routeTail[1])
     ) {
-        const segment = routeTail[2]?.toLowerCase();
-        if (!isPanelistEvaluationSegment(segment)) return null;
+        const segment = resolvePanelistSegment(routeTail, 2);
+        if (!segment) return null;
 
         return {
             routeTail,
@@ -130,8 +152,8 @@ function resolvePanelistEvaluationRoute(tail: string[]): ResolvedPanelistEvaluat
 
     // Alternate: :id/:segment
     if (routeTail.length >= 2 && isUuidLike(routeTail[0])) {
-        const segment = routeTail[1]?.toLowerCase();
-        if (!isPanelistEvaluationSegment(segment)) return null;
+        const segment = resolvePanelistSegment(routeTail, 1);
+        if (!segment) return null;
 
         return {
             routeTail: ['evaluations', routeTail[0], ...routeTail.slice(1)],
@@ -353,6 +375,14 @@ function pickUuid(candidates: unknown[]): string | null {
     return null;
 }
 
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function sameUuid(left: string, right: string): boolean {
+    return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
 function toTargetType(value: unknown): EvaluationTargetType | null {
     const raw = toNonEmptyString(value)?.toLowerCase();
     if (!raw) return null;
@@ -393,8 +423,7 @@ function normalizeEvaluationScorePayload(
         body.target_type ??
         body.targetType ??
         body.subject_type ??
-        body.subjectType ??
-        body.targetType,
+        body.subjectType,
     );
 
     const targetType: EvaluationTargetType | null =
@@ -433,7 +462,7 @@ function normalizeEvaluationScorePayload(
 
     if (targetId) out.target_id = targetId;
 
-    const scoreRaw = body.score;
+    const scoreRaw = hasOwn(body, 'score') ? body.score : body.value;
     if (typeof scoreRaw === 'number' && Number.isFinite(scoreRaw)) {
         out.score = scoreRaw;
     } else if (typeof scoreRaw === 'string' && scoreRaw.trim().length > 0) {
@@ -441,10 +470,13 @@ function normalizeEvaluationScorePayload(
         if (Number.isFinite(parsed)) out.score = parsed;
     }
 
-    if (body.comment === null || typeof body.comment === 'string') {
-        out.comment = body.comment;
-    } else {
-        out.comment = null;
+    if (hasOwn(body, 'comment')) {
+        const commentRaw = body.comment;
+        if (commentRaw === null || typeof commentRaw === 'string') {
+            out.comment = commentRaw;
+        } else {
+            out.comment = null;
+        }
     }
 
     return out;
@@ -456,31 +488,24 @@ async function normalizeEvaluationScorePayloadForWrite(
     services: DatabaseServices,
 ): Promise<Record<string, unknown>> {
     const normalized = normalizeEvaluationScorePayload(body, scopedEvaluationId);
+    const explicitStudentId = pickUuid([body.student_id, body.studentId]);
+    const explicitGroupId = pickUuid([body.group_id, body.groupId]);
+
     const targetType = toTargetType(normalized.target_type);
+    const currentTargetId = pickUuid([normalized.target_id]);
 
-    if (targetType === 'student') {
-        const studentId = pickUuid([body.student_id, body.studentId, normalized.target_id]);
-        if (studentId) {
+    const canonical = await resolveCanonicalGroupContextForEvaluation(services, scopedEvaluationId);
+
+    if (!targetType) {
+        if (explicitStudentId) {
             normalized.target_type = 'student';
-            normalized.target_id = studentId;
-        }
-        return normalized;
-    }
-
-    if (targetType === 'group') {
-        const explicitGroupId = pickUuid([body.group_id, body.groupId]);
-        if (explicitGroupId) {
-            normalized.target_type = 'group';
-            normalized.target_id = explicitGroupId;
+            normalized.target_id = explicitStudentId;
             return normalized;
         }
 
-        const currentTargetId = toNonEmptyString(normalized.target_id);
-        const canonical = await resolveCanonicalGroupContextForEvaluation(services, scopedEvaluationId);
-
-        if (!currentTargetId && canonical.groupId) {
+        if (explicitGroupId) {
             normalized.target_type = 'group';
-            normalized.target_id = canonical.groupId;
+            normalized.target_id = explicitGroupId;
             return normalized;
         }
 
@@ -488,13 +513,52 @@ async function normalizeEvaluationScorePayloadForWrite(
             currentTargetId &&
             canonical.groupId &&
             canonical.scheduleId &&
-            currentTargetId.toLowerCase() === canonical.scheduleId.toLowerCase()
+            sameUuid(currentTargetId, canonical.scheduleId)
         ) {
             normalized.target_type = 'group';
             normalized.target_id = canonical.groupId;
+            return normalized;
+        }
+
+        if (!currentTargetId && canonical.groupId) {
+            normalized.target_type = 'group';
+            normalized.target_id = canonical.groupId;
+            return normalized;
         }
 
         return normalized;
+    }
+
+    if (targetType === 'student') {
+        const studentId = pickUuid([explicitStudentId, normalized.target_id]);
+        if (studentId) {
+            normalized.target_type = 'student';
+            normalized.target_id = studentId;
+        }
+        return normalized;
+    }
+
+    // targetType === 'group'
+    if (explicitGroupId) {
+        normalized.target_type = 'group';
+        normalized.target_id = explicitGroupId;
+        return normalized;
+    }
+
+    if (!currentTargetId && canonical.groupId) {
+        normalized.target_type = 'group';
+        normalized.target_id = canonical.groupId;
+        return normalized;
+    }
+
+    if (
+        currentTargetId &&
+        canonical.groupId &&
+        canonical.scheduleId &&
+        sameUuid(currentTargetId, canonical.scheduleId)
+    ) {
+        normalized.target_type = 'group';
+        normalized.target_id = canonical.groupId;
     }
 
     return normalized;
@@ -529,6 +593,57 @@ function validateNormalizedScorePayload(payload: Record<string, unknown>): strin
     return null;
 }
 
+async function findExistingEvaluationScoreByTarget(
+    controller: EvaluationScoresControllerLike,
+    payload: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+    const evaluationId = toNonEmptyString(payload.evaluation_id);
+    const criterionId = toNonEmptyString(payload.criterion_id);
+    const targetType = toTargetType(payload.target_type);
+    const targetId = toNonEmptyString(payload.target_id);
+
+    if (!evaluationId || !criterionId || !targetType || !targetId) return null;
+
+    if (typeof controller.findMany === 'function') {
+        const rows = await controller.findMany({
+            where: {
+                evaluation_id: evaluationId,
+                criterion_id: criterionId,
+                target_type: targetType,
+                target_id: targetId,
+            },
+            limit: 1,
+        } as ListQuery<Record<string, unknown>>);
+
+        if (Array.isArray(rows) && rows.length > 0 && isRecord(rows[0])) {
+            return rows[0] as Record<string, unknown>;
+        }
+    }
+
+    if (typeof controller.listByEvaluation === 'function') {
+        const rows = await controller.listByEvaluation(evaluationId as UUID);
+        const matched = rows.find((row) => {
+            if (!isRecord(row)) return false;
+
+            const rowCriterion = toNonEmptyString(row.criterion_id);
+            const rowTargetType = toTargetType(row.target_type);
+            const rowTargetId = toNonEmptyString(row.target_id);
+
+            if (!rowCriterion || !rowTargetType || !rowTargetId) return false;
+
+            return (
+                sameUuid(rowCriterion, criterionId) &&
+                rowTargetType === targetType &&
+                sameUuid(rowTargetId, targetId)
+            );
+        });
+
+        if (matched && isRecord(matched)) return matched as Record<string, unknown>;
+    }
+
+    return null;
+}
+
 async function upsertEvaluationScoreByTarget(
     controller: EvaluationScoresControllerLike,
     payload: Record<string, unknown>,
@@ -545,9 +660,16 @@ async function upsertEvaluationScoreByTarget(
         target_id: targetId,
     };
 
-    if (typeof controller.updateOne === 'function') {
-        const updated = await controller.updateOne(where, payload);
-        if (updated) return { item: updated, created: false };
+    const existing = await findExistingEvaluationScoreByTarget(controller, payload);
+    if (existing && typeof controller.updateOne === 'function') {
+        const existingId = pickUuid([existing.id]);
+        if (existingId) {
+            const updatedById = await controller.updateOne({ id: existingId }, payload);
+            if (updatedById) return { item: updatedById, created: false };
+        }
+
+        const updatedByComposite = await controller.updateOne(where, payload);
+        if (updatedByComposite) return { item: updatedByComposite, created: false };
     }
 
     if (typeof controller.create === 'function') {
@@ -555,9 +677,18 @@ async function upsertEvaluationScoreByTarget(
             const created = await controller.create(payload);
             return { item: created, created: true };
         } catch (error) {
-            if (isUniqueViolation(error) && typeof controller.updateOne === 'function') {
-                const updated = await controller.updateOne(where, payload);
-                if (updated) return { item: updated, created: false };
+            if (isUniqueViolation(error)) {
+                // Retry update after possible race.
+                const latest = await findExistingEvaluationScoreByTarget(controller, payload);
+                if (latest && typeof controller.updateOne === 'function') {
+                    const latestId = pickUuid([latest.id]);
+                    const updated =
+                        (latestId
+                            ? await controller.updateOne({ id: latestId }, payload)
+                            : null) ??
+                        (await controller.updateOne(where, payload));
+                    if (updated) return { item: updated, created: false };
+                }
             }
             throw error;
         }
@@ -567,7 +698,11 @@ async function upsertEvaluationScoreByTarget(
 }
 
 function readPanelNoteFromData(data: Record<string, unknown>): string {
+    const panelistNode = isRecord(data.panelist) ? data.panelist : null;
+
     const candidates: unknown[] = [
+        panelistNode?.private_notes,
+        panelistNode?.privateNotes,
         data.panelist_private_notes,
         data.private_panel_notes,
         data.panelist_notes,
@@ -626,12 +761,32 @@ async function upsertPanelNote(
     const existing = await findEvaluationExtraByEvaluationId(controller, evaluationId);
     const baseData = existing ? extractDataObject(existing) : {};
 
+    const existingPanelistNode = isRecord(baseData.panelist)
+        ? (baseData.panelist as Record<string, unknown>)
+        : {};
+
+    const previousPrivate = readPanelNoteFromData(baseData);
+
     const nextData: JsonObject = {
         ...baseData,
+        panelist: {
+            ...existingPanelistNode,
+            private_notes: notes,
+            privateNotes: notes,
+        },
         panelist_private_notes: notes,
         private_panel_notes: notes,
-        notes,
     };
+
+    // Keep "notes" synchronized only when it was previously used for private notes,
+    // so we don't overwrite unrelated public/general notes fields.
+    if (!hasOwn(baseData, 'notes')) {
+        nextData.notes = notes;
+    } else if (typeof baseData.notes === 'string' && baseData.notes === previousPrivate) {
+        nextData.notes = notes;
+    } else if (baseData.notes === null && previousPrivate.length === 0) {
+        nextData.notes = notes;
+    }
 
     let saved: unknown | null = null;
 
@@ -697,10 +852,6 @@ async function listPanelistEvaluationScores(
 
     if (targetTypeRaw && !targetType) {
         throw new Error('target_type must be either "group" or "student".');
-    }
-
-    if (targetId && !isUuidLike(targetId)) {
-        throw new Error('target_id must be a valid UUID.');
     }
 
     if (typeof controller.listByEvaluation === 'function') {
@@ -769,7 +920,12 @@ async function dispatchPanelistEvaluationsRequest(
     // PUT    /api/panelist/evaluations/:evaluationId/notes
     // POST   /api/panelist/evaluations/:evaluationId/notes
     if (
-        (segment === 'notes' || segment === 'note' || segment === 'private-notes') &&
+        (
+            segment === 'notes' ||
+            segment === 'note' ||
+            segment === 'private-notes' ||
+            segment === 'private-panel-notes'
+        ) &&
         routeTail.length >= 3
     ) {
         const extras = resolveEvaluationExtrasController(services);
@@ -806,7 +962,13 @@ async function dispatchPanelistEvaluationsRequest(
             const body = await readJsonRecord(req);
             if (!body) return json400('Invalid JSON body.');
 
-            const rawNotes = body.notes ?? body.note ?? body.private_notes ?? body.privateNotes;
+            const rawNotes =
+                body.notes ??
+                body.note ??
+                body.private_notes ??
+                body.privateNotes ??
+                body.private_panel_notes ??
+                body.privatePanelNotes;
             const notes = parseNotesValue(rawNotes);
 
             if (notes === null) {
@@ -815,7 +977,10 @@ async function dispatchPanelistEvaluationsRequest(
 
             try {
                 const item = await upsertPanelNote(extras, evaluationId as UUID, notes);
-                return json200({ item });
+                return json200({
+                    item,
+                    message: 'Private panel notes saved.',
+                });
             } catch (error) {
                 return json400(toErrorMessage(error));
             }
@@ -891,6 +1056,10 @@ async function dispatchPanelistEvaluationsRequest(
                         saved: items.length,
                         failed: errors.length,
                         errors,
+                        message:
+                            errors.length > 0
+                                ? 'Some scores were saved. Please review failed items.'
+                                : 'Draft scores saved successfully.',
                     },
                     { status: errors.length > 0 ? 207 : 200 },
                 );
@@ -907,8 +1076,14 @@ async function dispatchPanelistEvaluationsRequest(
             try {
                 const result = await upsertEvaluationScoreByTarget(scores, payload);
                 return result.created
-                    ? json201({ item: result.item })
-                    : json200({ item: result.item });
+                    ? json201({
+                        item: result.item,
+                        message: 'Draft score saved successfully.',
+                    })
+                    : json200({
+                        item: result.item,
+                        message: 'Draft score updated successfully.',
+                    });
             } catch (error) {
                 return json400(toErrorMessage(error));
             }

@@ -165,8 +165,14 @@ export interface EvaluationScoreRow {
     id: UUID;
     evaluation_id: UUID;
     criterion_id: UUID;
-    target_type: EvaluationTargetType | null;
-    target_id: UUID | null;
+
+    /**
+     * Required by migration 010/011 for per-target persistence.
+     * Must never be null once migration backfill is complete.
+     */
+    target_type: EvaluationTargetType;
+    target_id: UUID;
+
     score: number;
     comment: string | null;
 }
@@ -317,7 +323,7 @@ export type EvaluationInsert = Optional<
 
 export type EvaluationScoreInsert = Optional<
     EvaluationScoreRow,
-    'id' | 'comment' | 'target_type' | 'target_id'
+    'id' | 'comment'
 >;
 
 export type AuditLogInsert = Optional<AuditLogRow, 'id' | 'actor_id' | 'entity_id' | 'details' | 'created_at'>;
@@ -355,7 +361,12 @@ export type DefenseSchedulePatch = Partial<Omit<DefenseScheduleRow, 'id' | 'crea
 export type RubricTemplatePatch = Partial<Omit<RubricTemplateRow, 'id' | 'created_at'>>;
 export type RubricCriteriaPatch = Partial<Omit<RubricCriteriaRow, 'id' | 'template_id' | 'created_at'>>;
 export type EvaluationPatch = Partial<Omit<EvaluationRow, 'id' | 'schedule_id' | 'evaluator_id' | 'created_at'>>;
-export type EvaluationScorePatch = Partial<Omit<EvaluationScoreRow, 'id' | 'evaluation_id' | 'criterion_id'>>;
+export type EvaluationScorePatch = Partial<
+    Omit<
+        EvaluationScoreRow,
+        'id' | 'evaluation_id' | 'criterion_id' | 'target_type' | 'target_id'
+    >
+>;
 export type AuditLogPatch = Partial<Omit<AuditLogRow, 'id' | 'created_at'>>;
 export type StudentPatch = Partial<Omit<StudentRow, 'user_id' | 'created_at'>>;
 export type StaffProfilePatch = Partial<Omit<StaffProfileRow, 'user_id' | 'created_at'>>;
