@@ -136,6 +136,25 @@ const CRITERIA_ENDPOINTS = [
     "/api/rubric-template-criteria",
 ] as const
 
+const SCHEDULE_BY_ID_ENDPOINT_BUILDERS = [
+    (scheduleId: string) => `/api/defense-schedules/${encodeURIComponent(scheduleId)}`,
+    (scheduleId: string) => `/api/schedules/${encodeURIComponent(scheduleId)}`,
+] as const
+
+const PANELIST_SCORE_ENDPOINT_BUILDERS = [
+    (evaluationId: string) => `/api/panelist/evaluations/${encodeURIComponent(evaluationId)}/scores`,
+    (evaluationId: string) => `/api/panelist/${encodeURIComponent(evaluationId)}/scores`,
+] as const
+
+const PANELIST_NOTES_ENDPOINT_BUILDERS = [
+    (evaluationId: string) => `/api/panelist/evaluations/${encodeURIComponent(evaluationId)}/notes`,
+    (evaluationId: string) => `/api/panelist/evaluations/${encodeURIComponent(evaluationId)}/private-notes`,
+    (evaluationId: string) => `/api/panelist/${encodeURIComponent(evaluationId)}/notes`,
+    (evaluationId: string) => `/api/panelist/${encodeURIComponent(evaluationId)}/private-notes`,
+] as const
+
+const EVALUATION_SCORES_ENDPOINT = "/api/evaluation-scores"
+
 const NO_SCORE_SELECT_VALUE = "__none__"
 
 const GROUP_MEMBER_ENDPOINT_BUILDERS = [
@@ -146,6 +165,10 @@ const GROUP_MEMBER_ENDPOINT_BUILDERS = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function isMissingOrUnsupported(status: number): boolean {
+    return status === 404 || status === 405
 }
 
 function toStringSafe(value: unknown): string | null {
@@ -475,6 +498,80 @@ function extractObjectPayload(payload: unknown): Record<string, unknown> | null 
     return payload
 }
 
+function extractPanelNotes(payload: unknown): string {
+    const candidates: unknown[] = []
+
+    const pushFromObj = (obj: Record<string, unknown>) => {
+        candidates.push(
+            obj.notes,
+            obj.note,
+            obj.private_notes,
+            obj.privateNotes,
+            obj.private_panel_notes,
+            obj.privatePanelNotes,
+            obj.panelist_private_notes,
+            obj.panelist_notes,
+            obj.panel_notes,
+        )
+
+        if (isRecord(obj.panelist)) {
+            candidates.push(
+                obj.panelist.private_notes,
+                obj.panelist.privateNotes,
+                obj.panelist.notes,
+                obj.panelist.note,
+            )
+        }
+
+        if (isRecord(obj.data)) {
+            const data = obj.data
+            candidates.push(
+                data.notes,
+                data.note,
+                data.private_notes,
+                data.privateNotes,
+                data.private_panel_notes,
+                data.privatePanelNotes,
+                data.panelist_private_notes,
+                data.panelist_notes,
+                data.panel_notes,
+            )
+
+            if (isRecord(data.panelist)) {
+                candidates.push(
+                    data.panelist.private_notes,
+                    data.panelist.privateNotes,
+                    data.panelist.notes,
+                    data.panelist.note,
+                )
+            }
+        }
+    }
+
+    if (isRecord(payload)) {
+        pushFromObj(payload)
+    }
+
+    const item = extractItemPayload(payload)
+    if (isRecord(item)) {
+        pushFromObj(item)
+    }
+
+    const rows = extractArrayPayload(payload)
+    for (const row of rows) {
+        if (isRecord(row)) {
+            pushFromObj(row)
+        }
+    }
+
+    for (const value of candidates) {
+        if (typeof value === "string") return value
+        if (value === null) return ""
+    }
+
+    return ""
+}
+
 async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
     if (isRecord(payload)) {
         const error = toStringSafe(payload.error)
@@ -552,6 +649,114 @@ async function fetchGroupStudents(groupId: string): Promise<StudentTarget[]> {
     return []
 }
 
+async function fetchScheduleById(scheduleId: string): Promise<DefenseScheduleOption | null> {
+    if (!scheduleId) return null
+
+    const endpoints = SCHEDULE_BY_ID_ENDPOINT_BUILDERS.map((build) => build(scheduleId))
+
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            const payload = (await res.json().catch(() => null)) as unknown
+            if (!res.ok) continue
+
+            const objectCandidate =
+                normalizeSchedule(extractItemPayload(payload)) ??
+                normalizeSchedule(extractObjectPayload(payload))
+            if (objectCandidate) return objectCandidate
+
+            const firstRow = extractArrayPayload(payload)[0]
+            const rowCandidate = normalizeSchedule(firstRow)
+            if (rowCandidate) return rowCandidate
+        } catch {
+            // try next endpoint
+        }
+    }
+
+    return null
+}
+
+function buildScoreWritePayload(
+    evaluationId: string,
+    draft: DraftScore,
+    scheduleId: string | null,
+): Record<string, unknown> {
+    const comment = compact(draft.comment)
+
+    const base: Record<string, unknown> = {
+        evaluation_id: evaluationId,
+        criterion_id: draft.criterion_id,
+        score: draft.score,
+        comment: comment ?? null,
+
+        // canonical fields
+        target_type: draft.subject_type,
+        target_id: draft.subject_id,
+
+        // compatibility aliases
+        subject_type: draft.subject_type,
+        subject_id: draft.subject_id,
+    }
+
+    if (draft.subject_type === "group") {
+        base.group_id = draft.subject_id
+    } else {
+        base.student_id = draft.subject_id
+    }
+
+    if (scheduleId) {
+        base.schedule_id = scheduleId
+    }
+
+    return base
+}
+
+async function fetchPanelistScoresForEvaluation(evaluationId: string): Promise<EvaluationScoreItem[]> {
+    if (!evaluationId) return []
+
+    const endpoints = PANELIST_SCORE_ENDPOINT_BUILDERS.map((build) => build(evaluationId))
+
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            const payload = (await res.json().catch(() => null)) as unknown
+
+            if (!res.ok) {
+                if (isMissingOrUnsupported(res.status)) continue
+                continue
+            }
+
+            const rows = extractArrayPayload(payload)
+                .map(normalizeScore)
+                .filter((row): row is EvaluationScoreItem => row !== null)
+
+            return rows
+        } catch {
+            // try next endpoint
+        }
+    }
+
+    // generic fallback
+    try {
+        const query = new URLSearchParams({
+            evaluation_id: evaluationId,
+            limit: "5000",
+        })
+
+        const res = await fetch(`${EVALUATION_SCORES_ENDPOINT}?${query.toString()}`, {
+            cache: "no-store",
+        })
+        const payload = (await res.json().catch(() => null)) as unknown
+        if (!res.ok) return []
+
+        return extractArrayPayload(payload)
+            .map(normalizeScore)
+            .filter((row): row is EvaluationScoreItem => row !== null)
+    } catch {
+        return []
+    }
+}
+
 async function resolveCurrentUserProfile(): Promise<UserProfile | null> {
     const source = await fetchFirstSuccessfulObject(CURRENT_USER_ENDPOINTS)
     if (!source) return null
@@ -569,10 +774,11 @@ function buildEvaluationTargets(params: {
     item: EvaluationItem
     schedule: DefenseScheduleOption | null
     students: StudentTarget[]
+    fallbackGroupId: string | null
 }): EvaluationTarget[] {
-    const { item, schedule, students } = params
+    const { item, schedule, students, fallbackGroupId } = params
 
-    const groupId = compact(schedule?.group_id) ?? item.schedule_id
+    const groupId = compact(schedule?.group_id) ?? compact(fallbackGroupId) ?? item.schedule_id
     const groupLabel = compact(schedule?.group_title) ?? "Thesis Group"
     const groupSubtitleParts = [
         formatDateTime(schedule?.scheduled_at ?? null),
@@ -608,16 +814,28 @@ function buildDraftScoreMap(params: {
     targets: EvaluationTarget[]
     serverScores: EvaluationScoreItem[]
     fallbackGroupId: string
+    scheduleId: string
 }): Record<string, DraftScore> {
-    const { criteria, targets, serverScores, fallbackGroupId } = params
+    const { criteria, targets, serverScores, fallbackGroupId, scheduleId } = params
 
     const serverByKey = new Map<string, EvaluationScoreItem>()
     for (const row of serverScores) {
         const subjectType = row.subject_type
-        const subjectId =
+
+        let subjectId =
             subjectType === "group"
                 ? row.subject_id ?? fallbackGroupId
                 : row.subject_id
+
+        // Backward-compat: if a legacy row stored schedule_id as group target_id,
+        // map it to canonical group_id so UI rehydrates correctly.
+        if (
+            subjectType === "group" &&
+            subjectId &&
+            toLowerKey(subjectId) === toLowerKey(scheduleId)
+        ) {
+            subjectId = fallbackGroupId
+        }
 
         if (!subjectId) continue
 
@@ -696,11 +914,9 @@ export default function PanelistEvaluationDetailsPage() {
             setError(null)
 
             try {
-                const [itemRes, scoreRes, me, scheduleRows, userRows, templateRows, fallbackCriteriaRows] = await Promise.all([
+                const [itemRes, parsedScores, me, scheduleRows, userRows, templateRows, fallbackCriteriaRows] = await Promise.all([
                     fetch(`/api/evaluations/${id}`, { cache: "no-store" }),
-                    fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/scores`, { cache: "no-store" }).catch(
-                        () => null,
-                    ),
+                    fetchPanelistScoresForEvaluation(id),
                     resolveCurrentUserProfile(),
                     fetchFirstSuccessfulArray(SCHEDULES_ENDPOINTS),
                     fetchFirstSuccessfulArray(USERS_ENDPOINTS),
@@ -745,7 +961,7 @@ export default function PanelistEvaluationDetailsPage() {
                     return
                 }
 
-                const parsedSchedules = scheduleRows
+                let parsedSchedules = scheduleRows
                     .map(normalizeSchedule)
                     .filter((schedule): schedule is DefenseScheduleOption => schedule !== null)
 
@@ -797,36 +1013,25 @@ export default function PanelistEvaluationDetailsPage() {
                     }
                 }
 
-                let parsedScores: EvaluationScoreItem[] = []
-                if (scoreRes && scoreRes.ok) {
-                    const scorePayload = (await scoreRes.json().catch(() => null)) as unknown
-                    parsedScores = extractArrayPayload(scorePayload)
-                        .map(normalizeScore)
-                        .filter((row): row is EvaluationScoreItem => row !== null)
-                } else {
-                    // Backward-compatible fallback read (older servers)
-                    try {
-                        const fallbackRes = await fetch(
-                            `/api/evaluation-scores?evaluation_id=${encodeURIComponent(id)}`,
-                            { cache: "no-store" },
-                        )
-                        const fallbackPayload = (await fallbackRes.json().catch(() => null)) as unknown
-                        if (fallbackRes.ok) {
-                            parsedScores = extractArrayPayload(fallbackPayload)
-                                .map(normalizeScore)
-                                .filter((row): row is EvaluationScoreItem => row !== null)
-                        }
-                    } catch {
-                        // no-op
-                    }
-                }
-
-                const scheduleForItem =
+                let scheduleForItem =
                     parsedSchedules.find((schedule) => toLowerKey(schedule.id) === toLowerKey(parsedItem.schedule_id)) ??
                     null
 
-                const groupId = compact(scheduleForItem?.group_id) ?? parsedItem.schedule_id
-                const fetchedStudents = await fetchGroupStudents(groupId)
+                // Ensure group_id is always resolvable for persistence.
+                if (!scheduleForItem) {
+                    const scheduleById = await fetchScheduleById(parsedItem.schedule_id)
+                    if (scheduleById) {
+                        parsedSchedules = [...parsedSchedules, scheduleById]
+                        scheduleForItem = scheduleById
+                    }
+                }
+
+                const canonicalGroupId =
+                    compact(scheduleForItem?.group_id) ??
+                    compact(parsedScores.find((row) => row.subject_type === "group" && row.subject_id)?.subject_id) ??
+                    parsedItem.schedule_id
+
+                const fetchedStudents = await fetchGroupStudents(canonicalGroupId)
 
                 const usersById = new Map<string, UserOption>()
                 for (const user of parsedUsers) {
@@ -879,13 +1084,15 @@ export default function PanelistEvaluationDetailsPage() {
                     item: parsedItem,
                     schedule: scheduleForItem,
                     students: parsedStudents,
+                    fallbackGroupId: canonicalGroupId,
                 })
 
                 const draftMap = buildDraftScoreMap({
                     criteria: mergedCriteria,
                     targets: builtTargets,
                     serverScores: parsedScores,
-                    fallbackGroupId: groupId,
+                    fallbackGroupId: canonicalGroupId,
+                    scheduleId: parsedItem.schedule_id,
                 })
 
                 setItem(parsedItem)
@@ -946,27 +1153,47 @@ export default function PanelistEvaluationDetailsPage() {
             setNotesHydrated(false)
 
             try {
-                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/notes`, {
-                    cache: "no-store",
-                })
-                const payload = (await res.json().catch(() => null)) as unknown
+                const endpoints = PANELIST_NOTES_ENDPOINT_BUILDERS.map((build) => build(id))
+                let loaded = false
+                let fetchedNotes = ""
+                let firstError: string | null = null
 
-                if (!res.ok) {
-                    const msg = await readErrorMessage(res, payload)
+                for (const endpoint of endpoints) {
+                    try {
+                        const res = await fetch(endpoint, { cache: "no-store" })
+                        const payload = (await res.json().catch(() => null)) as unknown
+
+                        if (!res.ok) {
+                            const msg = await readErrorMessage(res, payload)
+
+                            if (!isMissingOrUnsupported(res.status) && !firstError) {
+                                firstError = msg
+                            }
+
+                            continue
+                        }
+
+                        fetchedNotes = extractPanelNotes(payload)
+                        loaded = true
+                        break
+                    } catch (err) {
+                        if (!firstError) {
+                            firstError = err instanceof Error ? err.message : "Unable to load private notes."
+                        }
+                    }
+                }
+
+                if (!loaded) {
                     setNotes("")
                     notesLastSavedRef.current = ""
                     setNotesSaveState("error")
                     if (showErrorToast) {
-                        toast.error("Unable to load private notes", { description: msg })
+                        toast.error("Unable to load private notes", {
+                            description: firstError ?? "Notes endpoint is unavailable.",
+                        })
                     }
                     return
                 }
-
-                const itemPayload = extractItemPayload(payload)
-                const fetchedNotes =
-                    isRecord(itemPayload) && typeof itemPayload.notes === "string"
-                        ? itemPayload.notes
-                        : ""
 
                 setNotes(fetchedNotes)
                 notesLastSavedRef.current = fetchedNotes
@@ -987,6 +1214,108 @@ export default function PanelistEvaluationDetailsPage() {
         [id],
     )
 
+    const saveScoreViaGenericEndpoint = React.useCallback(
+        async (draft: DraftScore): Promise<{ ok: boolean; serverId: string | null; message?: string }> => {
+            if (!id) {
+                return { ok: false, serverId: draft.server_id, message: "Missing evaluation ID." }
+            }
+            if (draft.score === null) {
+                return { ok: false, serverId: draft.server_id, message: "Score is required." }
+            }
+
+            const payload = buildScoreWritePayload(id, draft, item?.schedule_id ?? null)
+            const criterionId = toStringSafe(payload.criterion_id)
+            const targetType = toStringSafe(payload.target_type)
+            const targetId = toStringSafe(payload.target_id)
+
+            let existingId: string | null = null
+
+            if (criterionId && targetType && targetId) {
+                try {
+                    const query = new URLSearchParams({
+                        evaluation_id: id,
+                        criterion_id: criterionId,
+                        target_type: targetType,
+                        target_id: targetId,
+                        limit: "1",
+                    })
+
+                    const lookupRes = await fetch(`${EVALUATION_SCORES_ENDPOINT}?${query.toString()}`, {
+                        cache: "no-store",
+                    })
+                    const lookupPayload = (await lookupRes.json().catch(() => null)) as unknown
+
+                    if (lookupRes.ok) {
+                        const first = extractArrayPayload(lookupPayload).find((row) => isRecord(row))
+                        if (first && isRecord(first)) {
+                            existingId = toStringSafe(first.id)
+                        }
+                    }
+                } catch {
+                    // fallback create/update attempts below
+                }
+            }
+
+            if (existingId) {
+                try {
+                    const patchRes = await fetch(
+                        `${EVALUATION_SCORES_ENDPOINT}/${encodeURIComponent(existingId)}`,
+                        {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                score: payload.score,
+                                comment: payload.comment ?? null,
+                            }),
+                        },
+                    )
+                    const patchPayload = (await patchRes.json().catch(() => null)) as unknown
+
+                    if (patchRes.ok) {
+                        const parsed = normalizeScore(extractItemPayload(patchPayload))
+                        return {
+                            ok: true,
+                            serverId: parsed?.id ?? existingId,
+                        }
+                    }
+                } catch {
+                    // fallback create below
+                }
+            }
+
+            try {
+                const createRes = await fetch(EVALUATION_SCORES_ENDPOINT, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                })
+                const createPayload = (await createRes.json().catch(() => null)) as unknown
+
+                if (!createRes.ok) {
+                    const msg = await readErrorMessage(createRes, createPayload)
+                    return {
+                        ok: false,
+                        serverId: draft.server_id,
+                        message: msg,
+                    }
+                }
+
+                const parsed = normalizeScore(extractItemPayload(createPayload))
+                return {
+                    ok: true,
+                    serverId: parsed?.id ?? draft.server_id ?? null,
+                }
+            } catch (err) {
+                return {
+                    ok: false,
+                    serverId: draft.server_id,
+                    message: err instanceof Error ? err.message : "Unable to save score.",
+                }
+            }
+        },
+        [id, item?.schedule_id],
+    )
+
     const persistPanelNotes = React.useCallback(
         async (
             nextNotes: string,
@@ -1001,47 +1330,63 @@ export default function PanelistEvaluationDetailsPage() {
 
             setNotesSaveState("saving")
 
-            try {
-                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/notes`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ notes: nextNotes }),
-                })
+            const endpoints = PANELIST_NOTES_ENDPOINT_BUILDERS.map((build) => build(id))
+            let firstError: string | null = null
 
-                const payload = (await res.json().catch(() => null)) as unknown
+            for (const endpoint of endpoints) {
+                for (const method of ["PATCH", "POST"] as const) {
+                    try {
+                        const res = await fetch(endpoint, {
+                            method,
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                notes: nextNotes,
+                                note: nextNotes,
+                                private_notes: nextNotes,
+                                privateNotes: nextNotes,
+                            }),
+                        })
 
-                if (!res.ok) {
-                    const msg = await readErrorMessage(res, payload)
-                    setNotesSaveState("error")
-                    if (!silent) {
-                        toast.error("Unable to save private notes", { description: msg })
+                        const payload = (await res.json().catch(() => null)) as unknown
+
+                        if (!res.ok) {
+                            const msg = await readErrorMessage(res, payload)
+
+                            if (isMissingOrUnsupported(res.status)) {
+                                if (!firstError) firstError = msg
+                                break
+                            }
+
+                            if (!firstError) firstError = msg
+                            continue
+                        }
+
+                        const confirmedNotes = extractPanelNotes(payload)
+
+                        setNotes(confirmedNotes)
+                        notesLastSavedRef.current = confirmedNotes
+                        setNotesSaveState("saved")
+
+                        if (!silent) {
+                            toast.success(successMessage)
+                        }
+
+                        return true
+                    } catch (err) {
+                        if (!firstError) {
+                            firstError = err instanceof Error ? err.message : "Unable to save private notes."
+                        }
                     }
-                    return false
                 }
-
-                const itemPayload = extractItemPayload(payload)
-                const confirmedNotes =
-                    isRecord(itemPayload) && typeof itemPayload.notes === "string"
-                        ? itemPayload.notes
-                        : nextNotes
-
-                setNotes(confirmedNotes)
-                notesLastSavedRef.current = confirmedNotes
-                setNotesSaveState("saved")
-
-                if (!silent) {
-                    toast.success(successMessage)
-                }
-
-                return true
-            } catch (err) {
-                const message = err instanceof Error ? err.message : "Unable to save private notes."
-                setNotesSaveState("error")
-                if (!silent) {
-                    toast.error("Unable to save private notes", { description: message })
-                }
-                return false
             }
+
+            setNotesSaveState("error")
+            if (!silent) {
+                toast.error("Unable to save private notes", {
+                    description: firstError ?? "Notes endpoint is unavailable.",
+                })
+            }
+            return false
         },
         [id],
     )
@@ -1413,48 +1758,55 @@ export default function PanelistEvaluationDetailsPage() {
                 return { ok: false, serverId: draft.server_id, message: "Score is required." }
             }
 
-            const comment = compact(draft.comment)
+            const payload = buildScoreWritePayload(id, draft, item?.schedule_id ?? null)
 
-            const payload: Record<string, unknown> = {
-                criterion_id: draft.criterion_id,
-                score: draft.score,
-                comment: comment ?? null,
-                target_type: draft.subject_type,
-                target_id: draft.subject_id,
-            }
+            let firstError: string | null = null
+            const endpoints = PANELIST_SCORE_ENDPOINT_BUILDERS.map((build) => build(id))
 
-            try {
-                const res = await fetch(`/api/panelist/evaluations/${encodeURIComponent(id)}/scores`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
-                })
+            for (const endpoint of endpoints) {
+                try {
+                    const res = await fetch(endpoint, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    })
 
-                const responsePayload = (await res.json().catch(() => null)) as unknown
+                    const responsePayload = (await res.json().catch(() => null)) as unknown
 
-                if (!res.ok) {
-                    const msg = await readErrorMessage(res, responsePayload)
+                    if (!res.ok) {
+                        const msg = await readErrorMessage(res, responsePayload)
+
+                        if (isMissingOrUnsupported(res.status)) {
+                            if (!firstError) firstError = msg
+                            continue
+                        }
+
+                        if (!firstError) firstError = msg
+                        continue
+                    }
+
+                    const parsed = normalizeScore(extractItemPayload(responsePayload))
                     return {
-                        ok: false,
-                        serverId: draft.server_id,
-                        message: msg,
+                        ok: true,
+                        serverId: parsed?.id ?? draft.server_id ?? null,
+                    }
+                } catch (err) {
+                    if (!firstError) {
+                        firstError = err instanceof Error ? err.message : "Unable to save score."
                     }
                 }
+            }
 
-                const parsed = normalizeScore(extractItemPayload(responsePayload))
-                return {
-                    ok: true,
-                    serverId: parsed?.id ?? draft.server_id ?? null,
-                }
-            } catch (err) {
-                return {
-                    ok: false,
-                    serverId: draft.server_id,
-                    message: err instanceof Error ? err.message : "Unable to save score.",
-                }
+            const fallback = await saveScoreViaGenericEndpoint(draft)
+            if (fallback.ok) return fallback
+
+            return {
+                ok: false,
+                serverId: draft.server_id,
+                message: fallback.message ?? firstError ?? "Unable to save score.",
             }
         },
-        [id],
+        [id, item?.schedule_id, saveScoreViaGenericEndpoint],
     )
 
     const saveAllScores = React.useCallback(
@@ -1511,6 +1863,9 @@ export default function PanelistEvaluationDetailsPage() {
                     return false
                 }
 
+                // Rehydrate from DB so both Group + Student targets are guaranteed to reflect persisted state.
+                await loadDetails({ showErrorToast: false, showSuccessToast: false })
+
                 if (!silentSuccess) {
                     toast.success(`Saved ${dirtyRows.length} score update${dirtyRows.length === 1 ? "" : "s"}.`)
                 }
@@ -1520,7 +1875,7 @@ export default function PanelistEvaluationDetailsPage() {
                 setSavingScores(false)
             }
         },
-        [draftScores, persistScoreDraft],
+        [draftScores, loadDetails, persistScoreDraft],
     )
 
     const patchStatus = React.useCallback(
