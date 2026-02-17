@@ -1225,7 +1225,7 @@ async function dispatchNotificationsRequest(
 
             const body = await readJsonRecord(req);
             const readAt = body ? parseReadAt(body) : undefined;
-            const updated = await controller.markAllAsRead(userId asString = request.user_id as UUID, readAt);
+            const updated = await controller.markAllAsRead(userId as UUID, readAt);
             return json200({ updated });
         }
 
@@ -1867,9 +1867,6 @@ export async function dispatchApiRequest(
 
         case 'evaluations':
             return dispatchEvaluationsRequest(req, tail, services);
-
-        case 'student-evaluations':
-            return dispatchStudentEvaluationsRequest(req, tail, services);
 
         case 'defense-schedules':
             return dispatchDefenseSchedulesRequest(req, tail, services);
