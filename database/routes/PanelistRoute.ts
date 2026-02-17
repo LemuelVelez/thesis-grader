@@ -44,6 +44,11 @@ type EvaluationExtrasControllerLike = {
     findById?: (id: UUID) => Promise<unknown | null>;
 };
 
+type EvaluationLikeController = {
+    findById?: (id: UUID) => Promise<unknown | null>;
+    findMany?: (query: ListQuery<Record<string, unknown>>) => Promise<unknown[]>;
+};
+
 type ServicesWithLooseGet = {
     get?: (key: string) => unknown;
 };
@@ -68,9 +73,74 @@ function normalizePanelistTail(tail: string[]): string[] {
 
     let offset = 0;
     if (clean[offset]?.toLowerCase() === 'api') offset += 1;
-    if (clean[offset]?.toLowerCase() === 'panelist') offset += 1;
+    if (
+        clean[offset]?.toLowerCase() === 'panelist' ||
+        clean[offset]?.toLowerCase() === 'panelists'
+    ) {
+        offset += 1;
+    }
 
     return clean.slice(offset);
+}
+
+const PANELIST_EVALUATION_SEGMENTS = [
+    'notes',
+    'note',
+    'private-notes',
+    'scores',
+    'score',
+] as const;
+
+type PanelistEvaluationSegment = (typeof PANELIST_EVALUATION_SEGMENTS)[number];
+
+function isPanelistEvaluationSegment(value: string | undefined): value is PanelistEvaluationSegment {
+    if (!value) return false;
+    return (PANELIST_EVALUATION_SEGMENTS as readonly string[]).includes(value);
+}
+
+type ResolvedPanelistEvaluationRoute = {
+    routeTail: string[];
+    evaluationId: UUID;
+    segment: PanelistEvaluationSegment;
+};
+
+/**
+ * Supports both route shapes:
+ * 1) /api/panelist/evaluations/:evaluationId/:segment
+ * 2) /api/panelist/:evaluationId/:segment   (legacy/alternate catch-all shape)
+ */
+function resolvePanelistEvaluationRoute(tail: string[]): ResolvedPanelistEvaluationRoute | null {
+    const routeTail = normalizePanelistTail(tail);
+
+    // Canonical: evaluations/:id/:segment
+    if (
+        routeTail.length >= 3 &&
+        routeTail[0]?.toLowerCase() === 'evaluations' &&
+        isUuidLike(routeTail[1])
+    ) {
+        const segment = routeTail[2]?.toLowerCase();
+        if (!isPanelistEvaluationSegment(segment)) return null;
+
+        return {
+            routeTail,
+            evaluationId: routeTail[1] as UUID,
+            segment,
+        };
+    }
+
+    // Alternate: :id/:segment
+    if (routeTail.length >= 2 && isUuidLike(routeTail[0])) {
+        const segment = routeTail[1]?.toLowerCase();
+        if (!isPanelistEvaluationSegment(segment)) return null;
+
+        return {
+            routeTail: ['evaluations', routeTail[0], ...routeTail.slice(1)],
+            evaluationId: routeTail[0] as UUID,
+            segment,
+        };
+    }
+
+    return null;
 }
 
 function resolveEvaluationScoresController(
@@ -147,6 +217,134 @@ function resolveEvaluationExtrasController(
     return null;
 }
 
+function isEvaluationLikeController(value: unknown): value is EvaluationLikeController {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as EvaluationLikeController;
+    return (
+        typeof candidate.findById === 'function' ||
+        typeof candidate.findMany === 'function'
+    );
+}
+
+function resolveEvaluationController(services: DatabaseServices): EvaluationLikeController | null {
+    const directCandidates: unknown[] = [
+        (services as Partial<DatabaseServices>).evaluations,
+        (services as unknown as { evaluation?: unknown }).evaluation,
+        (services as unknown as { evaluationsController?: unknown }).evaluationsController,
+    ];
+
+    for (const candidate of directCandidates) {
+        if (isEvaluationLikeController(candidate)) return candidate;
+    }
+
+    const registryKeys = ['evaluations', 'evaluation'] as const;
+    for (const key of registryKeys) {
+        const viaRegistry = tryGetServiceByAnyKey(services, key);
+        if (isEvaluationLikeController(viaRegistry)) {
+            return viaRegistry;
+        }
+    }
+
+    return null;
+}
+
+function resolveDefenseSchedulesController(services: DatabaseServices): EvaluationLikeController | null {
+    const directCandidates: unknown[] = [
+        (services as Partial<DatabaseServices>).defense_schedules,
+        (services as unknown as { defenseSchedules?: unknown }).defenseSchedules,
+        (services as unknown as { defense_schedule?: unknown }).defense_schedule,
+        (services as unknown as { schedules?: unknown }).schedules,
+    ];
+
+    for (const candidate of directCandidates) {
+        if (isEvaluationLikeController(candidate)) return candidate;
+    }
+
+    const registryKeys = [
+        'defense_schedules',
+        'defenseSchedules',
+        'defense_schedule',
+        'schedules',
+        'schedule',
+    ] as const;
+
+    for (const key of registryKeys) {
+        const viaRegistry = tryGetServiceByAnyKey(services, key);
+        if (isEvaluationLikeController(viaRegistry)) {
+            return viaRegistry;
+        }
+    }
+
+    return null;
+}
+
+async function findOneById(
+    controller: EvaluationLikeController,
+    id: UUID,
+): Promise<Record<string, unknown> | null> {
+    if (typeof controller.findById === 'function') {
+        const row = await controller.findById(id);
+        if (isRecord(row)) return row as Record<string, unknown>;
+    }
+
+    if (typeof controller.findMany === 'function') {
+        const rows = await controller.findMany({
+            where: { id },
+            limit: 1,
+        } as ListQuery<Record<string, unknown>>);
+
+        if (Array.isArray(rows) && rows.length > 0 && isRecord(rows[0])) {
+            return rows[0] as Record<string, unknown>;
+        }
+    }
+
+    return null;
+}
+
+async function resolveCanonicalGroupContextForEvaluation(
+    services: DatabaseServices,
+    evaluationId: UUID,
+): Promise<{ scheduleId: UUID | null; groupId: UUID | null }> {
+    const evaluations = resolveEvaluationController(services);
+    if (!evaluations) {
+        return { scheduleId: null, groupId: null };
+    }
+
+    const evaluationRow = await findOneById(evaluations, evaluationId);
+    if (!evaluationRow) {
+        return { scheduleId: null, groupId: null };
+    }
+
+    const scheduleId = pickUuid([
+        evaluationRow.schedule_id,
+        evaluationRow.scheduleId,
+    ]);
+
+    if (!scheduleId) {
+        return { scheduleId: null, groupId: null };
+    }
+
+    const schedules = resolveDefenseSchedulesController(services);
+    if (!schedules) {
+        return { scheduleId, groupId: null };
+    }
+
+    const scheduleRow = await findOneById(schedules, scheduleId as UUID);
+    if (!scheduleRow) {
+        return { scheduleId, groupId: null };
+    }
+
+    const groupId = pickUuid([
+        scheduleRow.group_id,
+        scheduleRow.groupId,
+    ]);
+
+    return {
+        scheduleId: scheduleId as UUID,
+        groupId: groupId as UUID | null,
+    };
+}
+
 function pickUuid(candidates: unknown[]): string | null {
     for (const value of candidates) {
         const parsed = toNonEmptyString(value);
@@ -208,19 +406,19 @@ function normalizeEvaluationScorePayload(
 
     if (targetType === 'student') {
         targetId = pickUuid([
+            studentId,
             body.target_id,
             body.targetId,
             body.subject_id,
             body.subjectId,
-            studentId,
         ]);
     } else if (targetType === 'group') {
         targetId = pickUuid([
+            groupId,
             body.target_id,
             body.targetId,
             body.subject_id,
             body.subjectId,
-            groupId,
         ]);
     } else {
         targetId = pickUuid([
@@ -250,6 +448,56 @@ function normalizeEvaluationScorePayload(
     }
 
     return out;
+}
+
+async function normalizeEvaluationScorePayloadForWrite(
+    body: Record<string, unknown>,
+    scopedEvaluationId: UUID,
+    services: DatabaseServices,
+): Promise<Record<string, unknown>> {
+    const normalized = normalizeEvaluationScorePayload(body, scopedEvaluationId);
+    const targetType = toTargetType(normalized.target_type);
+
+    if (targetType === 'student') {
+        const studentId = pickUuid([body.student_id, body.studentId, normalized.target_id]);
+        if (studentId) {
+            normalized.target_type = 'student';
+            normalized.target_id = studentId;
+        }
+        return normalized;
+    }
+
+    if (targetType === 'group') {
+        const explicitGroupId = pickUuid([body.group_id, body.groupId]);
+        if (explicitGroupId) {
+            normalized.target_type = 'group';
+            normalized.target_id = explicitGroupId;
+            return normalized;
+        }
+
+        const currentTargetId = toNonEmptyString(normalized.target_id);
+        const canonical = await resolveCanonicalGroupContextForEvaluation(services, scopedEvaluationId);
+
+        if (!currentTargetId && canonical.groupId) {
+            normalized.target_type = 'group';
+            normalized.target_id = canonical.groupId;
+            return normalized;
+        }
+
+        if (
+            currentTargetId &&
+            canonical.groupId &&
+            canonical.scheduleId &&
+            currentTargetId.toLowerCase() === canonical.scheduleId.toLowerCase()
+        ) {
+            normalized.target_type = 'group';
+            normalized.target_id = canonical.groupId;
+        }
+
+        return normalized;
+    }
+
+    return normalized;
 }
 
 function validateNormalizedScorePayload(payload: Record<string, unknown>): string | null {
@@ -322,6 +570,7 @@ function readPanelNoteFromData(data: Record<string, unknown>): string {
     const candidates: unknown[] = [
         data.panelist_private_notes,
         data.private_panel_notes,
+        data.panelist_notes,
         data.panel_notes,
         data.notes,
     ];
@@ -380,6 +629,8 @@ async function upsertPanelNote(
     const nextData: JsonObject = {
         ...baseData,
         panelist_private_notes: notes,
+        private_panel_notes: notes,
+        notes,
     };
 
     let saved: unknown | null = null;
@@ -506,24 +757,21 @@ async function dispatchPanelistEvaluationsRequest(
     services: DatabaseServices,
 ): Promise<Response> {
     const method = req.method.toUpperCase();
-    const routeTail = normalizePanelistTail(tail);
 
-    // Supports both:
-    // - ['evaluations', ':evaluationId', ':segment']
-    // - ['panelist', 'evaluations', ':evaluationId', ':segment'] (normalized above)
-    if (routeTail.length < 3 || routeTail[0] !== 'evaluations') return json404Api();
+    const resolved = resolvePanelistEvaluationRoute(tail);
+    if (!resolved) return json404Api();
 
-    const evaluationId = routeTail[1];
-    if (!evaluationId || !isUuidLike(evaluationId)) return json404Api();
-
-    const segment = routeTail[2];
+    const { routeTail, evaluationId, segment } = resolved;
 
     // Notes routes
     // GET    /api/panelist/evaluations/:evaluationId/notes
     // PATCH  /api/panelist/evaluations/:evaluationId/notes
     // PUT    /api/panelist/evaluations/:evaluationId/notes
     // POST   /api/panelist/evaluations/:evaluationId/notes
-    if (segment === 'notes' && routeTail.length === 3) {
+    if (
+        (segment === 'notes' || segment === 'note' || segment === 'private-notes') &&
+        routeTail.length >= 3
+    ) {
         const extras = resolveEvaluationExtrasController(services);
         if (!extras) {
             return json400('Private notes service is unavailable for this environment.');
@@ -578,7 +826,10 @@ async function dispatchPanelistEvaluationsRequest(
 
     // Scores routes
     // GET/POST/PATCH/PUT /api/panelist/evaluations/:evaluationId/scores
-    if (segment === 'scores' && routeTail.length === 3) {
+    if (
+        (segment === 'scores' || segment === 'score') &&
+        routeTail.length >= 3
+    ) {
         const scores = resolveEvaluationScoresController(services);
         if (!scores) return json404Api();
 
@@ -616,9 +867,10 @@ async function dispatchPanelistEvaluationsRequest(
                     }
 
                     try {
-                        const payload = normalizeEvaluationScorePayload(
+                        const payload = await normalizeEvaluationScorePayloadForWrite(
                             node,
                             evaluationId as UUID,
+                            services,
                         );
                         const invalid = validateNormalizedScorePayload(payload);
                         if (invalid) {
@@ -644,7 +896,11 @@ async function dispatchPanelistEvaluationsRequest(
                 );
             }
 
-            const payload = normalizeEvaluationScorePayload(body, evaluationId as UUID);
+            const payload = await normalizeEvaluationScorePayloadForWrite(
+                body,
+                evaluationId as UUID,
+                services,
+            );
             const invalid = validateNormalizedScorePayload(payload);
             if (invalid) return json400(invalid);
 
@@ -671,9 +927,15 @@ export async function dispatchPanelistRequest(
 ): Promise<Response> {
     const routeTail = normalizePanelistTail(tail);
 
-    // New nested panelist evaluation routes:
-    // - /api/panelist/evaluations/:evaluationId/notes
-    // - /api/panelist/evaluations/:evaluationId/scores
+    // Accept both:
+    // - /api/panelist/evaluations/:evaluationId/{notes|scores}
+    // - /api/panelist/:evaluationId/{notes|scores}
+    const resolvedPanelistEvaluationRoute = resolvePanelistEvaluationRoute(routeTail);
+    if (resolvedPanelistEvaluationRoute) {
+        return dispatchPanelistEvaluationsRequest(req, resolvedPanelistEvaluationRoute.routeTail, services);
+    }
+
+    // Keep old behavior for any /evaluations/* paths.
     if (routeTail.length > 0 && routeTail[0] === 'evaluations') {
         return dispatchPanelistEvaluationsRequest(req, routeTail, services);
     }
