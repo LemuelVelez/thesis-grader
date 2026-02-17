@@ -1,9 +1,20 @@
 "use client"
 
 import * as React from "react"
+import { toast } from "sonner"
+import { Download, FileSpreadsheet, Loader2, RefreshCw } from "lucide-react"
+import * as XLSX from "xlsx-js-style"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
     Table,
@@ -25,8 +36,8 @@ type UserRecord = {
     role: ThesisRole
     status: UserStatus
     avatar_key: string | null
-    created_at: string
-    updated_at: string
+    created_at: string | null
+    updated_at: string | null
 }
 
 type GroupRankingRecord = {
@@ -45,31 +56,89 @@ type EvaluationRecord = {
     status: EvaluationStatus
     submitted_at: string | null
     locked_at: string | null
-    created_at: string
+    created_at: string | null
 }
 
-type UsersResponse = {
-    items?: UserRecord[]
-    error?: string
-    message?: string
+type StatusFilter = "all" | "pending" | "submitted" | "locked"
+
+type ExcelPreview = {
+    fileName: string
+    generatedAt: string
+    headers: string[]
+    rows: string[][]
 }
 
-type RankingsResponse = {
-    items?: GroupRankingRecord[]
-    error?: string
-    message?: string
+type StyledCell = XLSX.CellObject & {
+    s?: Record<string, unknown>
 }
 
-type EvaluationsResponse = {
-    items?: EvaluationRecord[]
-    error?: string
-    message?: string
+type FetchArrayResult = {
+    ok: boolean
+    items: unknown[]
+    error: string | null
 }
 
 const ROLE_FILTERS: Array<"all" | ThesisRole> = ["all", "admin", "staff", "student", "panelist"]
 const SUBMISSION_FILTERS: Array<"all" | "1+" | "2+" | "3+"> = ["all", "1+", "2+", "3+"]
+const STATUS_FILTERS: StatusFilter[] = ["all", "pending", "submitted", "locked"]
+
+const USERS_ENDPOINT_CANDIDATES = [
+    "/api/users?limit=1000&orderBy=name&orderDirection=asc",
+    "/api/users?limit=1000",
+]
+
+const RANKINGS_ENDPOINT_CANDIDATES = [
+    "/api/admin/rankings?limit=200",
+    "/api/admin/rankings",
+    "/api/rankings?limit=200",
+]
+
+const EVALUATIONS_ENDPOINT_CANDIDATES = [
+    "/api/evaluations?limit=1000&orderBy=created_at&orderDirection=desc",
+    "/api/evaluations?limit=1000",
+    "/api/evaluation?limit=1000",
+]
+
+const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function toStringSafe(value: unknown): string | null {
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+}
+
+function toNullableString(value: unknown): string | null {
+    if (value === null || value === undefined) return null
+    return toStringSafe(value)
+}
+
+function toNumber(value: number | `${number}` | null | undefined): number | null {
+    if (value === null || value === undefined) return null
+    const parsed = typeof value === "number" ? value : Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+}
+
+function toNumberSafe(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string") {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed)) return parsed
+    }
+    return null
+}
+
+function toIntSafe(value: unknown, fallback = 0): number {
+    const n = toNumberSafe(value)
+    if (n === null) return fallback
+    return Math.trunc(n)
+}
 
 function toTitleCase(value: string) {
+    if (!value) return value
     return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
@@ -80,41 +149,599 @@ function formatDate(value: string | null) {
     return d.toLocaleString()
 }
 
-function toNumber(value: number | `${number}` | null | undefined): number | null {
-    if (value === null || value === undefined) return null
-    const parsed = typeof value === "number" ? value : Number(value)
-    return Number.isFinite(parsed) ? parsed : null
-}
-
 function formatPercent(value: number | null, fractionDigits = 2) {
     if (value === null) return "N/A"
     return `${value.toFixed(fractionDigits)}%`
 }
 
-async function readErrorMessage(res: Response): Promise<string> {
+function statusTone(status: string): string {
+    const normalized = status.trim().toLowerCase()
+    if (normalized === "submitted") {
+        return "border-blue-600/40 bg-blue-600/10 text-foreground"
+    }
+    if (normalized === "locked") {
+        return "border-emerald-600/40 bg-emerald-600/10 text-foreground"
+    }
+    if (normalized === "pending") {
+        return "border-amber-600/40 bg-amber-600/10 text-foreground"
+    }
+    return "border-muted-foreground/30 bg-muted text-muted-foreground"
+}
+
+function parseRole(value: unknown): ThesisRole {
+    const role = toStringSafe(value)?.toLowerCase()
+    if (role === "admin" || role === "staff" || role === "student" || role === "panelist") {
+        return role
+    }
+    return "student"
+}
+
+function parseUserStatus(value: unknown): UserStatus {
+    return toStringSafe(value)?.toLowerCase() === "disabled" ? "disabled" : "active"
+}
+
+function extractArrayPayload(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload
+    if (!isRecord(payload)) return []
+
+    if (Array.isArray(payload.items)) return payload.items
+    if (Array.isArray(payload.data)) return payload.data
+    if (Array.isArray(payload.rankings)) return payload.rankings
+    if (Array.isArray(payload.evaluations)) return payload.evaluations
+    if (Array.isArray(payload.users)) return payload.users
+
+    if (isRecord(payload.data)) {
+        if (Array.isArray(payload.data.items)) return payload.data.items
+        if (Array.isArray(payload.data.rankings)) return payload.data.rankings
+        if (Array.isArray(payload.data.evaluations)) return payload.data.evaluations
+        if (Array.isArray(payload.data.users)) return payload.data.users
+    }
+
+    if (isRecord(payload.result)) {
+        if (Array.isArray(payload.result.items)) return payload.result.items
+        if (Array.isArray(payload.result.rankings)) return payload.result.rankings
+        if (Array.isArray(payload.result.evaluations)) return payload.result.evaluations
+        if (Array.isArray(payload.result.users)) return payload.result.users
+    }
+
+    return []
+}
+
+async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
+    if (isRecord(payload)) {
+        const error = toStringSafe(payload.error)
+        if (error) return error
+
+        const message = toStringSafe(payload.message)
+        if (message) return message
+    }
+
     try {
-        const data = (await res.json()) as { error?: string; message?: string }
-        return data.error || data.message || `Request failed (${res.status})`
+        const text = await res.text()
+        if (text.trim().length > 0) return text
     } catch {
-        return `Request failed (${res.status})`
+        // ignore
+    }
+
+    return `Request failed (${res.status})`
+}
+
+async function fetchFirstSuccessfulArray(endpoints: string[]): Promise<FetchArrayResult> {
+    let latestError = "Unable to load data."
+
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, { cache: "no-store" })
+            const payload = (await res.json().catch(() => null)) as unknown
+
+            if (!res.ok) {
+                latestError = await readErrorMessage(res, payload)
+                continue
+            }
+
+            return {
+                ok: true,
+                items: extractArrayPayload(payload),
+                error: null,
+            }
+        } catch (err) {
+            latestError = err instanceof Error ? err.message : "Unable to load data."
+        }
+    }
+
+    return {
+        ok: false,
+        items: [],
+        error: latestError,
     }
 }
 
-function escapeCsvValue(value: string | number | null) {
-    const raw = value === null ? "" : String(value)
-    const escaped = raw.replace(/"/g, '""')
-    return `"${escaped}"`
+function normalizeUser(raw: unknown): UserRecord | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.user) ? raw.user : raw
+
+    const id = toStringSafe(source.id ?? raw.id)
+    const name = toStringSafe(source.name ?? raw.name)
+    const email = toStringSafe(source.email ?? raw.email)
+
+    if (!id || !name || !email) return null
+
+    return {
+        id,
+        name,
+        email,
+        role: parseRole(source.role ?? raw.role),
+        status: parseUserStatus(source.status ?? raw.status),
+        avatar_key: toNullableString(source.avatar_key ?? source.avatarKey ?? raw.avatar_key),
+        created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
+        updated_at: toNullableString(source.updated_at ?? source.updatedAt ?? raw.updated_at),
+    }
 }
 
-function downloadCsv(filename: string, rows: Array<Array<string | number | null>>) {
-    const csv = rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement("a")
-    link.href = url
-    link.download = filename
-    link.click()
-    URL.revokeObjectURL(url)
+function normalizeRanking(raw: unknown): GroupRankingRecord | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.ranking) ? raw.ranking : raw
+
+    const group_id = toStringSafe(source.group_id ?? source.groupId ?? raw.group_id)
+    if (!group_id) return null
+
+    const group_title =
+        toStringSafe(source.group_title ?? source.groupTitle ?? raw.group_title) ?? "Untitled Group"
+
+    return {
+        group_id,
+        group_title,
+        group_percentage:
+            (toNumberSafe(source.group_percentage ?? source.groupPercentage ?? raw.group_percentage) ??
+                null) as number | null,
+        submitted_evaluations: toIntSafe(
+            source.submitted_evaluations ??
+            source.submittedEvaluations ??
+            raw.submitted_evaluations,
+            0,
+        ),
+        latest_defense_at: toNullableString(
+            source.latest_defense_at ?? source.latestDefenseAt ?? raw.latest_defense_at,
+        ),
+        rank: toIntSafe(source.rank ?? raw.rank, 0),
+    }
+}
+
+function normalizeEvaluation(raw: unknown): EvaluationRecord | null {
+    if (!isRecord(raw)) return null
+    const source = isRecord(raw.evaluation) ? raw.evaluation : raw
+
+    const id = toStringSafe(source.id ?? raw.id)
+    const schedule_id = toStringSafe(source.schedule_id ?? source.scheduleId ?? raw.schedule_id)
+    const evaluator_id = toStringSafe(source.evaluator_id ?? source.evaluatorId ?? raw.evaluator_id)
+
+    if (!id || !schedule_id || !evaluator_id) return null
+
+    const status =
+        toStringSafe(source.status ?? raw.status)?.toLowerCase() ??
+        "pending"
+
+    return {
+        id,
+        schedule_id,
+        evaluator_id,
+        status: status as EvaluationStatus,
+        submitted_at: toNullableString(source.submitted_at ?? source.submittedAt ?? raw.submitted_at),
+        locked_at: toNullableString(source.locked_at ?? source.lockedAt ?? raw.locked_at),
+        created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
+    }
+}
+
+function thinBorder(color = "D1D5DB") {
+    return {
+        top: { style: "thin", color: { rgb: color } },
+        bottom: { style: "thin", color: { rgb: color } },
+        left: { style: "thin", color: { rgb: color } },
+        right: { style: "thin", color: { rgb: color } },
+    }
+}
+
+function headerStyle(fillRgb: string): Record<string, unknown> {
+    return {
+        font: { bold: true, color: { rgb: "FFFFFF" } },
+        fill: { patternType: "solid", fgColor: { rgb: fillRgb } },
+        border: thinBorder("C7D2FE"),
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    }
+}
+
+function dataStyle(striped: boolean, align: "left" | "center" = "left"): Record<string, unknown> {
+    return {
+        font: { color: { rgb: "111827" } },
+        fill: {
+            patternType: "solid",
+            fgColor: { rgb: striped ? "F8FAFC" : "FFFFFF" },
+        },
+        border: thinBorder(),
+        alignment: { horizontal: align, vertical: "center", wrapText: true },
+    }
+}
+
+function evaluationStatusDataStyle(status: string): Record<string, unknown> {
+    const normalized = status.trim().toLowerCase()
+    const palette: Record<string, { bg: string; fg: string }> = {
+        submitted: { bg: "DBEAFE", fg: "1D4ED8" },
+        locked: { bg: "D1FAE5", fg: "047857" },
+        pending: { bg: "FEF3C7", fg: "B45309" },
+    }
+
+    const selected = palette[normalized] ?? { bg: "E5E7EB", fg: "374151" }
+
+    return {
+        font: { bold: true, color: { rgb: selected.fg } },
+        fill: { patternType: "solid", fgColor: { rgb: selected.bg } },
+        border: thinBorder(),
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    }
+}
+
+function userStatusDataStyle(status: string): Record<string, unknown> {
+    const normalized = status.trim().toLowerCase()
+    const palette: Record<string, { bg: string; fg: string }> = {
+        active: { bg: "DCFCE7", fg: "166534" },
+        disabled: { bg: "FEE2E2", fg: "991B1B" },
+    }
+
+    const selected = palette[normalized] ?? { bg: "E5E7EB", fg: "374151" }
+
+    return {
+        font: { bold: true, color: { rgb: selected.fg } },
+        fill: { patternType: "solid", fgColor: { rgb: selected.bg } },
+        border: thinBorder(),
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    }
+}
+
+function createRankingsSheet(items: GroupRankingRecord[]): XLSX.WorkSheet {
+    const rows = [
+        ["Rank", "Group", "Group ID", "Score", "Submitted Evaluations", "Latest Defense"],
+        ...items.map((item) => [
+            item.rank > 0 ? item.rank : "—",
+            item.group_title,
+            item.group_id,
+            formatPercent(toNumber(item.group_percentage)),
+            item.submitted_evaluations,
+            formatDate(item.latest_defense_at),
+        ]),
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [
+        { wch: 12 },
+        { wch: 42 },
+        { wch: 40 },
+        { wch: 14 },
+        { wch: 24 },
+        { wch: 24 },
+    ]
+
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("7C3AED")
+                continue
+            }
+
+            const striped = r % 2 === 0
+            const align = c === 0 || c === 3 || c === 4 ? "center" : "left"
+            cell.s = dataStyle(striped, align)
+
+            if (c === 0) {
+                const rankValue = Number(cell.v)
+                if (rankValue === 1) {
+                    cell.s = {
+                        ...dataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "854D0E" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "FEF9C3" } },
+                    }
+                } else if (rankValue === 2) {
+                    cell.s = {
+                        ...dataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "334155" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "E2E8F0" } },
+                    }
+                } else if (rankValue === 3) {
+                    cell.s = {
+                        ...dataStyle(striped, "center"),
+                        font: { bold: true, color: { rgb: "7C2D12" } },
+                        fill: { patternType: "solid", fgColor: { rgb: "FFEDD5" } },
+                    }
+                }
+            }
+        }
+    }
+
+    return ws
+}
+
+function createUsersSheet(items: UserRecord[]): XLSX.WorkSheet {
+    const rows = [
+        ["No.", "Name", "Email", "Role", "Status", "Created At", "Updated At"],
+        ...items.map((item, idx) => [
+            idx + 1,
+            item.name,
+            item.email,
+            toTitleCase(item.role),
+            toTitleCase(item.status),
+            formatDate(item.created_at),
+            formatDate(item.updated_at),
+        ]),
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [
+        { wch: 8 },
+        { wch: 30 },
+        { wch: 36 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 24 },
+        { wch: 24 },
+    ]
+
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("0F766E")
+                continue
+            }
+
+            const striped = r % 2 === 0
+
+            if (c === 4) {
+                cell.s = userStatusDataStyle(String(cell.v ?? ""))
+                continue
+            }
+
+            const align = c === 0 || c >= 5 ? "center" : "left"
+            cell.s = dataStyle(striped, align)
+        }
+    }
+
+    return ws
+}
+
+function createEvaluationsSheet(items: EvaluationRecord[]): XLSX.WorkSheet {
+    const rows = [
+        ["No.", "Evaluation ID", "Schedule ID", "Evaluator ID", "Status", "Submitted At", "Locked At", "Created At"],
+        ...items.map((item, idx) => [
+            idx + 1,
+            item.id,
+            item.schedule_id,
+            item.evaluator_id,
+            toTitleCase(String(item.status)),
+            formatDate(item.submitted_at),
+            formatDate(item.locked_at),
+            formatDate(item.created_at),
+        ]),
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [
+        { wch: 8 },
+        { wch: 42 },
+        { wch: 40 },
+        { wch: 40 },
+        { wch: 14 },
+        { wch: 24 },
+        { wch: 24 },
+        { wch: 24 },
+    ]
+
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("2563EB")
+                continue
+            }
+
+            const striped = r % 2 === 0
+
+            if (c === 4) {
+                cell.s = evaluationStatusDataStyle(String(cell.v ?? ""))
+                continue
+            }
+
+            const align = c === 0 || c >= 5 ? "center" : "left"
+            cell.s = dataStyle(striped, align)
+        }
+    }
+
+    return ws
+}
+
+function createSummarySheet(summaryRows: Array<[string, string | number]>): XLSX.WorkSheet {
+    const rows = [["Metric", "Value"], ...summaryRows]
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+
+    ws["!cols"] = [{ wch: 36 }, { wch: 36 }]
+    ws["!rows"] = Array.from({ length: rows.length }, (_, idx) => ({
+        hpt: idx === 0 ? 24 : 20,
+    }))
+
+    const ref = ws["!ref"]
+    if (!ref) return ws
+
+    const range = XLSX.utils.decode_range(ref)
+
+    for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+            const addr = XLSX.utils.encode_cell({ r, c })
+            const cell = ws[addr] as StyledCell | undefined
+            if (!cell) continue
+
+            if (r === 0) {
+                cell.s = headerStyle("4F46E5")
+                continue
+            }
+
+            const striped = r % 2 === 0
+            const align = c === 1 ? "center" : "left"
+            cell.s = dataStyle(striped, align)
+        }
+    }
+
+    return ws
+}
+
+function buildWorkbook(params: {
+    rankings: GroupRankingRecord[]
+    users: UserRecord[]
+    evaluations: EvaluationRecord[]
+    summaryRows: Array<[string, string | number]>
+}): XLSX.WorkBook {
+    const wb = XLSX.utils.book_new()
+
+    const summarySheet = createSummarySheet(params.summaryRows)
+    const rankingsSheet = createRankingsSheet(params.rankings)
+    const usersSheet = createUsersSheet(params.users)
+    const evaluationsSheet = createEvaluationsSheet(params.evaluations)
+
+    XLSX.utils.book_append_sheet(wb, summarySheet, "Summary")
+    XLSX.utils.book_append_sheet(wb, rankingsSheet, "Rankings")
+    XLSX.utils.book_append_sheet(wb, usersSheet, "Users")
+    XLSX.utils.book_append_sheet(wb, evaluationsSheet, "Evaluations")
+
+    return wb
+}
+
+function previewCellText(value: unknown): string {
+    if (value === null || value === undefined) return ""
+    if (typeof value === "string") return value
+    if (typeof value === "number" || typeof value === "boolean") return String(value)
+
+    try {
+        return JSON.stringify(value)
+    } catch {
+        return String(value)
+    }
+}
+
+function isLikelyColumnLettersRow(row: string[]): boolean {
+    if (row.length < 2) return false
+    return row.every((cell, idx) => cell.trim().toUpperCase() === XLSX.utils.encode_col(idx))
+}
+
+function normalizePreviewFromRendererRows(rawRows: unknown[][]): {
+    headers: string[]
+    rows: string[][]
+} {
+    const matrix = rawRows
+        .filter((row): row is unknown[] => Array.isArray(row))
+        .map((row) => row.map((value) => previewCellText(value)))
+
+    if (matrix.length === 0) {
+        return { headers: ["No Columns"], rows: [] }
+    }
+
+    let headerIndex = matrix.findIndex((row) =>
+        row.some((cell) => cell.trim().length > 0),
+    )
+
+    if (headerIndex < 0) {
+        return { headers: ["No Columns"], rows: [] }
+    }
+
+    if (
+        isLikelyColumnLettersRow(matrix[headerIndex]) &&
+        matrix[headerIndex + 1] &&
+        matrix[headerIndex + 1].some((cell) => cell.trim().length > 0)
+    ) {
+        headerIndex += 1
+    }
+
+    let headers = matrix[headerIndex].map(
+        (cell, idx) => cell.trim() || `Column ${idx + 1}`,
+    )
+
+    let bodyRows = matrix.slice(headerIndex + 1)
+
+    const widest = Math.max(headers.length, ...bodyRows.map((row) => row.length), 0)
+
+    if (widest > headers.length) {
+        headers = [
+            ...headers,
+            ...Array.from(
+                { length: widest - headers.length },
+                (_, idx) => `Column ${headers.length + idx + 1}`,
+            ),
+        ]
+    }
+
+    bodyRows = bodyRows.map((row) =>
+        Array.from({ length: headers.length }, (_, idx) => row[idx] ?? ""),
+    )
+
+    return {
+        headers: headers.length > 0 ? headers : ["No Columns"],
+        rows: bodyRows,
+    }
+}
+
+function normalizePreviewFromWorksheet(sheet: XLSX.WorkSheet): {
+    headers: string[]
+    rows: string[][]
+} {
+    const matrix = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+    }) as unknown[][]
+
+    return normalizePreviewFromRendererRows(matrix)
+}
+
+function looksCollapsedPreview(preview: { headers: string[]; rows: string[][] }): boolean {
+    if (preview.headers.length <= 1) return true
+    if (preview.rows.length === 0) return false
+    return preview.rows.every((row) => row.length <= 1)
 }
 
 export default function AdminReportsPage() {
@@ -124,53 +751,103 @@ export default function AdminReportsPage() {
 
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
-    const [error, setError] = React.useState<string | null>(null)
+
+    const [usersError, setUsersError] = React.useState<string | null>(null)
+    const [rankingsError, setRankingsError] = React.useState<string | null>(null)
+    const [evaluationsError, setEvaluationsError] = React.useState<string | null>(null)
+
     const [lastUpdated, setLastUpdated] = React.useState<string | null>(null)
 
     const [rankingSearch, setRankingSearch] = React.useState("")
     const [roleFilter, setRoleFilter] = React.useState<"all" | ThesisRole>("all")
     const [submissionFilter, setSubmissionFilter] = React.useState<"all" | "1+" | "2+" | "3+">("all")
+    const [evaluationStatusFilter, setEvaluationStatusFilter] = React.useState<StatusFilter>("all")
+
+    const [previewLoading, setPreviewLoading] = React.useState(false)
+    const [downloadLoading, setDownloadLoading] = React.useState(false)
+    const [excelPreview, setExcelPreview] = React.useState<ExcelPreview | null>(null)
 
     const loadReports = React.useCallback(
-        async (isRefresh = false) => {
+        async ({ isRefresh = false, silent = false }: { isRefresh?: boolean; silent?: boolean } = {}) => {
             if (isRefresh) {
                 setRefreshing(true)
             } else {
                 setLoading(true)
             }
 
-            setError(null)
+            setUsersError(null)
+            setRankingsError(null)
+            setEvaluationsError(null)
 
             try {
-                const [rankingsRes, usersRes, evaluationsRes] = await Promise.all([
-                    fetch("/api/admin/rankings?limit=200", { cache: "no-store" }),
-                    fetch("/api/users?limit=1000", { cache: "no-store" }),
-                    fetch("/api/evaluations?limit=1000", { cache: "no-store" }),
+                const [usersResult, rankingsResult, evaluationsResult] = await Promise.all([
+                    fetchFirstSuccessfulArray(USERS_ENDPOINT_CANDIDATES),
+                    fetchFirstSuccessfulArray(RANKINGS_ENDPOINT_CANDIDATES),
+                    fetchFirstSuccessfulArray(EVALUATIONS_ENDPOINT_CANDIDATES),
                 ])
 
-                if (!rankingsRes.ok) {
-                    throw new Error(await readErrorMessage(rankingsRes))
-                }
-                if (!usersRes.ok) {
-                    throw new Error(await readErrorMessage(usersRes))
-                }
-                if (!evaluationsRes.ok) {
-                    throw new Error(await readErrorMessage(evaluationsRes))
+                const nextUsers = usersResult.items
+                    .map(normalizeUser)
+                    .filter((item): item is UserRecord => item !== null)
+                    .sort((a, b) => a.name.localeCompare(b.name))
+
+                const nextRankings = rankingsResult.items
+                    .map(normalizeRanking)
+                    .filter((item): item is GroupRankingRecord => item !== null)
+                    .sort((a, b) => {
+                        const ar = a.rank > 0 ? a.rank : Number.MAX_SAFE_INTEGER
+                        const br = b.rank > 0 ? b.rank : Number.MAX_SAFE_INTEGER
+                        return ar - br
+                    })
+
+                const nextEvaluations = evaluationsResult.items
+                    .map(normalizeEvaluation)
+                    .filter((item): item is EvaluationRecord => item !== null)
+                    .sort((a, b) => {
+                        const at = a.created_at ? new Date(a.created_at).getTime() : 0
+                        const bt = b.created_at ? new Date(b.created_at).getTime() : 0
+                        return bt - at
+                    })
+
+                setUsers(nextUsers)
+                setRankings(nextRankings)
+                setEvaluations(nextEvaluations)
+
+                setUsersError(usersResult.ok ? null : `${usersResult.error ?? "Unable to load users."}`)
+                setRankingsError(rankingsResult.ok ? null : `${rankingsResult.error ?? "Unable to load rankings."}`)
+                setEvaluationsError(
+                    evaluationsResult.ok
+                        ? null
+                        : `${evaluationsResult.error ?? "Unable to load evaluations."}`,
+                )
+
+                const successCount = [usersResult.ok, rankingsResult.ok, evaluationsResult.ok].filter(Boolean).length
+
+                if (successCount > 0) {
+                    setLastUpdated(new Date().toISOString())
                 }
 
-                const rankingsData = (await rankingsRes.json()) as RankingsResponse
-                const usersData = (await usersRes.json()) as UsersResponse
-                const evaluationsData = (await evaluationsRes.json()) as EvaluationsResponse
-
-                setRankings(Array.isArray(rankingsData.items) ? rankingsData.items : [])
-                setUsers(Array.isArray(usersData.items) ? usersData.items : [])
-                setEvaluations(Array.isArray(evaluationsData.items) ? evaluationsData.items : [])
-                setLastUpdated(new Date().toISOString())
+                if (!silent) {
+                    if (successCount === 3) {
+                        toast.success("Reports refreshed successfully.")
+                    } else if (successCount > 0) {
+                        toast.warning("Reports refreshed with partial data.")
+                    } else {
+                        toast.error("Unable to refresh reports.")
+                    }
+                }
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load reports.")
-                setRankings([])
+                const message = err instanceof Error ? err.message : "Failed to load reports."
                 setUsers([])
+                setRankings([])
                 setEvaluations([])
+                setUsersError(message)
+                setRankingsError(message)
+                setEvaluationsError(message)
+
+                if (!silent) {
+                    toast.error(message)
+                }
             } finally {
                 setLoading(false)
                 setRefreshing(false)
@@ -180,7 +857,7 @@ export default function AdminReportsPage() {
     )
 
     React.useEffect(() => {
-        void loadReports()
+        void loadReports({ silent: true })
     }, [loadReports])
 
     const userCounts = React.useMemo(() => {
@@ -287,59 +964,183 @@ export default function AdminReportsPage() {
     const filteredRecentUsers = React.useMemo(() => {
         const scoped = roleFilter === "all" ? users : users.filter((u) => u.role === roleFilter)
         return [...scoped]
-            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+            .sort((a, b) => {
+                const at = a.updated_at ? new Date(a.updated_at).getTime() : 0
+                const bt = b.updated_at ? new Date(b.updated_at).getTime() : 0
+                return bt - at
+            })
             .slice(0, 10)
     }, [users, roleFilter])
 
-    const recentEvaluations = React.useMemo(() => {
-        return [...evaluations]
-            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    const filteredRecentEvaluations = React.useMemo(() => {
+        const scoped = evaluationStatusFilter === "all"
+            ? evaluations
+            : evaluations.filter(
+                (e) => String(e.status).trim().toLowerCase() === evaluationStatusFilter,
+            )
+
+        return [...scoped]
+            .sort((a, b) => {
+                const at = a.created_at ? new Date(a.created_at).getTime() : 0
+                const bt = b.created_at ? new Date(b.created_at).getTime() : 0
+                return bt - at
+            })
             .slice(0, 10)
+    }, [evaluations, evaluationStatusFilter])
+
+    const usersForExport = React.useMemo(() => {
+        const scoped = roleFilter === "all" ? users : users.filter((u) => u.role === roleFilter)
+        return [...scoped].sort((a, b) => a.name.localeCompare(b.name))
+    }, [users, roleFilter])
+
+    const evaluationsForExport = React.useMemo(() => {
+        return [...evaluations].sort((a, b) => {
+            const at = a.created_at ? new Date(a.created_at).getTime() : 0
+            const bt = b.created_at ? new Date(b.created_at).getTime() : 0
+            return bt - at
+        })
     }, [evaluations])
 
-    const exportRankingsCsv = React.useCallback(() => {
-        if (rankings.length === 0) return
+    const hasExportData = React.useMemo(
+        () =>
+            filteredRankings.length > 0 ||
+            usersForExport.length > 0 ||
+            evaluationsForExport.length > 0,
+        [filteredRankings.length, usersForExport.length, evaluationsForExport.length],
+    )
 
-        const rows: Array<Array<string | number | null>> = [
-            ["Rank", "Group Title", "Group ID", "Group Percentage", "Submitted Evaluations", "Latest Defense At"],
-            ...rankings.map((item) => [
-                item.rank,
-                item.group_title,
-                item.group_id,
-                toNumber(item.group_percentage),
-                item.submitted_evaluations,
-                item.latest_defense_at,
-            ]),
+    const createExportPayload = React.useCallback(() => {
+        const nowIso = new Date().toISOString()
+        const fileName = `admin-reports-${nowIso.slice(0, 10)}.xlsx`
+
+        const summaryRows: Array<[string, string | number]> = [
+            ["Generated At", formatDate(nowIso)],
+            ["Users in Export Scope", usersForExport.length],
+            ["Rankings in Export Scope", filteredRankings.length],
+            ["Evaluations in Export Scope", evaluationsForExport.length],
+            ["Evaluation Pending", evaluationCounts.pending],
+            ["Evaluation Submitted", evaluationCounts.submitted],
+            ["Evaluation Locked", evaluationCounts.locked],
+            ["Evaluation Other", evaluationCounts.other],
+            ["Average Group Score", formatPercent(rankingMetrics.average)],
         ]
 
-        downloadCsv("admin-report-rankings.csv", rows)
-    }, [rankings])
+        const workbook = buildWorkbook({
+            rankings: filteredRankings,
+            users: usersForExport,
+            evaluations: evaluationsForExport,
+            summaryRows,
+        })
 
-    const exportUsersCsv = React.useCallback(() => {
-        if (users.length === 0) return
+        return { fileName, workbook }
+    }, [
+        usersForExport,
+        filteredRankings,
+        evaluationsForExport,
+        evaluationCounts.pending,
+        evaluationCounts.submitted,
+        evaluationCounts.locked,
+        evaluationCounts.other,
+        rankingMetrics.average,
+    ])
 
-        const rows: Array<Array<string | number | null>> = [
-            ["ID", "Name", "Email", "Role", "Status", "Created At", "Updated At"],
-            ...users.map((user) => [
-                user.id,
-                user.name,
-                user.email,
-                user.role,
-                user.status,
-                user.created_at,
-                user.updated_at,
-            ]),
-        ]
+    const handlePreviewExcel = React.useCallback(async () => {
+        if (!hasExportData) {
+            toast.info("No report data available to preview.")
+            return
+        }
 
-        downloadCsv("admin-report-users.csv", rows)
-    }, [users])
+        setPreviewLoading(true)
+
+        try {
+            const { fileName, workbook } = createExportPayload()
+
+            const workbookBytes = XLSX.write(workbook, {
+                bookType: "xlsx",
+                type: "array",
+            })
+
+            const file = new File([workbookBytes], fileName, { type: EXCEL_MIME })
+
+            const excelRendererModule = await import("react-excel-renderer")
+
+            const parsed = await new Promise<{
+                cols?: Array<{ name?: string; key?: string }>
+                rows?: unknown[][]
+            }>((resolve, reject) => {
+                excelRendererModule.ExcelRenderer(file, (err, resp) => {
+                    if (err) {
+                        reject(err)
+                        return
+                    }
+                    resolve(
+                        (resp ?? {}) as {
+                            cols?: Array<{ name?: string; key?: string }>
+                            rows?: unknown[][]
+                        },
+                    )
+                })
+            })
+
+            const rawRows = Array.isArray(parsed.rows) ? parsed.rows : []
+            let normalized = normalizePreviewFromRendererRows(rawRows)
+
+            if (looksCollapsedPreview(normalized)) {
+                const firstSheetName = workbook.SheetNames[0]
+                const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : undefined
+                if (firstSheet) {
+                    const fallback = normalizePreviewFromWorksheet(firstSheet)
+                    if (!looksCollapsedPreview(fallback)) {
+                        normalized = fallback
+                    }
+                }
+            }
+
+            setExcelPreview({
+                fileName,
+                generatedAt: new Date().toISOString(),
+                headers: normalized.headers,
+                rows: normalized.rows,
+            })
+
+            toast.success("Excel preview is ready.")
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to preview Excel export.")
+        } finally {
+            setPreviewLoading(false)
+        }
+    }, [createExportPayload, hasExportData])
+
+    const handleDownloadExcel = React.useCallback(async () => {
+        if (!hasExportData) {
+            toast.info("No report data available to export.")
+            return
+        }
+
+        setDownloadLoading(true)
+
+        try {
+            const { fileName, workbook } = createExportPayload()
+            XLSX.writeFile(workbook, fileName)
+            toast.success("Excel export downloaded.")
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to download Excel export.")
+        } finally {
+            setDownloadLoading(false)
+        }
+    }, [createExportPayload, hasExportData])
+
+    const previewRows = React.useMemo(
+        () => (excelPreview ? excelPreview.rows.slice(0, 120) : []),
+        [excelPreview],
+    )
 
     return (
         <DashboardLayout title="Reports" description="Consolidated analytics and summary reports.">
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                             <p className="text-sm text-muted-foreground">
                                 Last updated:{" "}
                                 <span className="font-medium text-foreground">
@@ -350,28 +1151,61 @@ export default function AdminReportsPage() {
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     variant="outline"
-                                    onClick={() => void loadReports(true)}
+                                    onClick={() => void loadReports({ isRefresh: true, silent: false })}
                                     disabled={loading || refreshing}
                                 >
-                                    {loading ? "Loading..." : refreshing ? "Refreshing..." : "Refresh"}
-                                </Button>
-
-                                <Button variant="outline" onClick={exportUsersCsv} disabled={users.length === 0}>
-                                    Export Users CSV
+                                    {loading || refreshing ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            {loading ? "Loading..." : "Refreshing..."}
+                                        </>
+                                    ) : (
+                                        <>
+                                            <RefreshCw className="mr-2 h-4 w-4" />
+                                            Refresh
+                                        </>
+                                    )}
                                 </Button>
 
                                 <Button
                                     variant="outline"
-                                    onClick={exportRankingsCsv}
-                                    disabled={rankings.length === 0}
+                                    onClick={() => void handlePreviewExcel()}
+                                    disabled={loading || previewLoading || !hasExportData}
                                 >
-                                    Export Rankings CSV
+                                    {previewLoading ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Preparing Preview...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <FileSpreadsheet className="mr-2 h-4 w-4" />
+                                            Preview Excel
+                                        </>
+                                    )}
+                                </Button>
+
+                                <Button
+                                    onClick={() => void handleDownloadExcel()}
+                                    disabled={loading || downloadLoading || !hasExportData}
+                                >
+                                    {downloadLoading ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Downloading...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Download className="mr-2 h-4 w-4" />
+                                            Download Excel
+                                        </>
+                                    )}
                                 </Button>
                             </div>
                         </div>
 
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                            <div className="rounded-md border p-3">
+                            <div className="rounded-md border bg-background p-3">
                                 <p className="text-xs text-muted-foreground">Total Users</p>
                                 <p className="mt-1 text-2xl font-semibold">{userCounts.total}</p>
                                 <p className="text-xs text-muted-foreground">
@@ -379,7 +1213,7 @@ export default function AdminReportsPage() {
                                 </p>
                             </div>
 
-                            <div className="rounded-md border p-3">
+                            <div className="rounded-md border bg-background p-3">
                                 <p className="text-xs text-muted-foreground">Groups Ranked</p>
                                 <p className="mt-1 text-2xl font-semibold">{rankingMetrics.total}</p>
                                 <p className="text-xs text-muted-foreground">
@@ -387,7 +1221,7 @@ export default function AdminReportsPage() {
                                 </p>
                             </div>
 
-                            <div className="rounded-md border p-3">
+                            <div className="rounded-md border bg-background p-3">
                                 <p className="text-xs text-muted-foreground">Evaluations</p>
                                 <p className="mt-1 text-2xl font-semibold">{evaluations.length}</p>
                                 <p className="text-xs text-muted-foreground">
@@ -395,7 +1229,7 @@ export default function AdminReportsPage() {
                                 </p>
                             </div>
 
-                            <div className="rounded-md border p-3">
+                            <div className="rounded-md border bg-background p-3">
                                 <p className="text-xs text-muted-foreground">Top Group</p>
                                 <p className="mt-1 line-clamp-1 text-base font-semibold">
                                     {rankingMetrics.top?.group_title ?? "—"}
@@ -410,15 +1244,27 @@ export default function AdminReportsPage() {
                     </div>
                 </div>
 
-                {error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                        {error}
+                {usersError ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700">
+                        Users: {usersError}
+                    </div>
+                ) : null}
+
+                {rankingsError ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700">
+                        Rankings: {rankingsError}
+                    </div>
+                ) : null}
+
+                {evaluationsError ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700">
+                        Evaluations: {evaluationsError}
                     </div>
                 ) : null}
 
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                             <div>
                                 <h2 className="text-base font-semibold">Thesis Group Rankings</h2>
                                 <p className="text-sm text-muted-foreground">
@@ -430,7 +1276,7 @@ export default function AdminReportsPage() {
                                 placeholder="Search group title, group ID, or rank"
                                 value={rankingSearch}
                                 onChange={(e) => setRankingSearch(e.target.value)}
-                                className="w-full md:max-w-sm"
+                                className="w-full lg:max-w-sm"
                             />
                         </div>
 
@@ -483,8 +1329,10 @@ export default function AdminReportsPage() {
                                     </TableRow>
                                 ) : (
                                     filteredRankings.map((item) => (
-                                        <TableRow key={item.group_id}>
-                                            <TableCell className="font-medium">#{item.rank}</TableCell>
+                                        <TableRow key={`${item.group_id}-${item.rank}`}>
+                                            <TableCell className="font-medium">
+                                                {item.rank > 0 ? `#${item.rank}` : "—"}
+                                            </TableCell>
                                             <TableCell>
                                                 <div className="flex flex-col">
                                                     <span className="font-medium">{item.group_title}</span>
@@ -631,6 +1479,26 @@ export default function AdminReportsPage() {
                             </div>
                         </div>
 
+                        <div className="mt-4 space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">Filter evaluation status</p>
+                            <div className="flex flex-wrap gap-2">
+                                {STATUS_FILTERS.map((status) => {
+                                    const active = evaluationStatusFilter === status
+                                    const label = status === "all" ? "All" : toTitleCase(status)
+                                    return (
+                                        <Button
+                                            key={status}
+                                            size="sm"
+                                            variant={active ? "default" : "outline"}
+                                            onClick={() => setEvaluationStatusFilter(status)}
+                                        >
+                                            {label}
+                                        </Button>
+                                    )
+                                })}
+                            </div>
+                        </div>
+
                         <div className="mt-4 overflow-x-auto rounded-md border">
                             <Table>
                                 <TableHeader>
@@ -651,17 +1519,26 @@ export default function AdminReportsPage() {
                                                 </TableCell>
                                             </TableRow>
                                         ))
-                                    ) : recentEvaluations.length === 0 ? (
+                                    ) : filteredRecentEvaluations.length === 0 ? (
                                         <TableRow>
                                             <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
                                                 No evaluations found.
                                             </TableCell>
                                         </TableRow>
                                     ) : (
-                                        recentEvaluations.map((item) => (
+                                        filteredRecentEvaluations.map((item) => (
                                             <TableRow key={item.id}>
                                                 <TableCell className="font-medium">{item.id}</TableCell>
-                                                <TableCell>{toTitleCase(String(item.status))}</TableCell>
+                                                <TableCell>
+                                                    <span
+                                                        className={[
+                                                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                            statusTone(String(item.status)),
+                                                        ].join(" ")}
+                                                    >
+                                                        {toTitleCase(String(item.status))}
+                                                    </span>
+                                                </TableCell>
                                                 <TableCell className="text-muted-foreground">
                                                     {formatDate(item.submitted_at)}
                                                 </TableCell>
@@ -680,6 +1557,114 @@ export default function AdminReportsPage() {
                     </div>
                 </div>
             </div>
+
+            <Dialog
+                open={Boolean(excelPreview)}
+                onOpenChange={(open) => {
+                    if (!open) setExcelPreview(null)
+                }}
+            >
+                {excelPreview ? (
+                    <DialogContent className="w-full overflow-hidden p-0 sm:max-w-7xl">
+                        <div className="flex max-h-screen flex-col">
+                            <div className="border-b px-6 py-4">
+                                <DialogHeader>
+                                    <DialogTitle className="flex items-center gap-2">
+                                        <FileSpreadsheet className="h-5 w-5" />
+                                        Excel Preview
+                                    </DialogTitle>
+                                    <DialogDescription className="break-all">
+                                        Previewing export file{" "}
+                                        <span className="font-medium text-foreground">{excelPreview.fileName}</span>{" "}
+                                        • Generated {formatDate(excelPreview.generatedAt)}
+                                    </DialogDescription>
+                                </DialogHeader>
+                            </div>
+
+                            <div className="min-h-0 flex-1 px-6 py-4">
+                                <div className="h-full w-full overflow-auto rounded-md border">
+                                    <div className="min-w-max">
+                                        <Table>
+                                            <TableHeader className="sticky top-0 z-10 bg-background">
+                                                <TableRow>
+                                                    {excelPreview.headers.map((header, idx) => (
+                                                        <TableHead
+                                                            key={`${header}-${idx}`}
+                                                            className="align-top whitespace-pre-wrap wrap-break-word"
+                                                        >
+                                                            {header || `Column ${idx + 1}`}
+                                                        </TableHead>
+                                                    ))}
+                                                </TableRow>
+                                            </TableHeader>
+
+                                            <TableBody>
+                                                {previewRows.length === 0 ? (
+                                                    <TableRow>
+                                                        <TableCell
+                                                            colSpan={excelPreview.headers.length || 1}
+                                                            className="h-20 text-center text-muted-foreground"
+                                                        >
+                                                            No rows available for preview.
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ) : (
+                                                    previewRows.map((row, rowIndex) => (
+                                                        <TableRow key={`preview-row-${rowIndex}`}>
+                                                            {row.map((cell, cellIndex) => (
+                                                                <TableCell
+                                                                    key={`preview-cell-${rowIndex}-${cellIndex}`}
+                                                                    className="max-w-xs align-top whitespace-pre-wrap wrap-break-word leading-relaxed"
+                                                                    title={cell || "—"}
+                                                                >
+                                                                    {cell || "—"}
+                                                                </TableCell>
+                                                            ))}
+                                                        </TableRow>
+                                                    ))
+                                                )}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                </div>
+
+                                {excelPreview.rows.length > previewRows.length ? (
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                        Showing first {previewRows.length} of {excelPreview.rows.length} row(s).
+                                    </p>
+                                ) : null}
+                            </div>
+
+                            <DialogFooter className="border-t px-6 py-4">
+                                <p className="mr-auto text-xs text-muted-foreground">
+                                    Total rows in preview: {excelPreview.rows.length}
+                                </p>
+
+                                <Button variant="outline" onClick={() => setExcelPreview(null)}>
+                                    Close
+                                </Button>
+
+                                <Button
+                                    onClick={() => void handleDownloadExcel()}
+                                    disabled={downloadLoading || !hasExportData}
+                                >
+                                    {downloadLoading ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Downloading...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Download className="mr-2 h-4 w-4" />
+                                            Download Excel
+                                        </>
+                                    )}
+                                </Button>
+                            </DialogFooter>
+                        </div>
+                    </DialogContent>
+                ) : null}
+            </Dialog>
         </DashboardLayout>
     )
 }
