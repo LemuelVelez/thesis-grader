@@ -20,8 +20,14 @@ type ThesisRole = "student" | "staff" | "admin" | "panelist" | (string & {})
 type EvaluationStatus = "pending" | "submitted" | "locked" | (string & {})
 type FilterStatus = "all" | "pending" | "submitted" | "locked"
 type EvaluationAction = "submit" | "lock" | "set-pending"
-type EvaluatorScope = "all" | "panelist" | "student"
 type FormMode = "create" | "edit"
+type AssigneeRole = "panelist" | "student"
+type AssignmentMode = "all" | "particular"
+type AssignmentPreset =
+    | "all-panelists"
+    | "particular-panelist"
+    | "all-students"
+    | "particular-student"
 
 type EvaluationRecord = {
     id: string
@@ -87,8 +93,61 @@ type EvaluationFormState = {
 
 const STATUS_FILTERS: FilterStatus[] = ["all", "pending", "submitted", "locked"]
 const ASSIGNMENT_STATUSES: EvaluationStatus[] = ["pending", "submitted", "locked"]
-const EVALUATOR_SCOPES: EvaluatorScope[] = ["panelist", "student", "all"]
 const GROUP_ENDPOINTS = ["/api/admin/thesis-groups", "/api/thesis-groups"] as const
+
+const ASSIGNMENT_PRESET_META: Record<
+    AssignmentPreset,
+    {
+        role: AssigneeRole
+        mode: AssignmentMode
+        label: string
+        description: string
+        roleSingular: string
+        rolePlural: string
+    }
+> = {
+    "all-panelists": {
+        role: "panelist",
+        mode: "all",
+        label: "All Panelists",
+        description: "Assign to every active panelist",
+        roleSingular: "panelist",
+        rolePlural: "panelists",
+    },
+    "particular-panelist": {
+        role: "panelist",
+        mode: "particular",
+        label: "Particular Panelist",
+        description: "Assign to one selected panelist",
+        roleSingular: "panelist",
+        rolePlural: "panelists",
+    },
+    "all-students": {
+        role: "student",
+        mode: "all",
+        label: "All Students",
+        description: "Assign to every active student",
+        roleSingular: "student",
+        rolePlural: "students",
+    },
+    "particular-student": {
+        role: "student",
+        mode: "particular",
+        label: "Particular Student",
+        description: "Assign to one selected student",
+        roleSingular: "student",
+        rolePlural: "students",
+    },
+}
+
+const CREATE_PRESETS: AssignmentPreset[] = [
+    "all-panelists",
+    "particular-panelist",
+    "all-students",
+    "particular-student",
+]
+
+const EDIT_PRESETS: AssignmentPreset[] = ["particular-panelist", "particular-student"]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -180,11 +239,8 @@ function roleLabel(role: ThesisRole) {
     return toTitleCase(String(role))
 }
 
-function toEvaluatorScope(role: ThesisRole): EvaluatorScope {
-    const normalized = normalizeStatus(String(role))
-    if (normalized === "panelist") return "panelist"
-    if (normalized === "student") return "student"
-    return "all"
+function toAssigneeRole(role: ThesisRole): AssigneeRole {
+    return normalizeStatus(String(role)) === "student" ? "student" : "panelist"
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
@@ -198,6 +254,18 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
     }
 
     return out
+}
+
+function isUserAssignable(status?: string): boolean {
+    const normalized = normalizeStatus(status ?? "active")
+    return !["inactive", "disabled", "blocked", "archived", "suspended"].includes(normalized)
+}
+
+function toAssignmentPreset(role: AssigneeRole, mode: AssignmentMode): AssignmentPreset {
+    if (role === "student" && mode === "all") return "all-students"
+    if (role === "student" && mode === "particular") return "particular-student"
+    if (role === "panelist" && mode === "all") return "all-panelists"
+    return "particular-panelist"
 }
 
 export default function AdminEvaluationsPage() {
@@ -221,7 +289,9 @@ export default function AdminEvaluationsPage() {
     const [formBusy, setFormBusy] = React.useState(false)
     const [editingId, setEditingId] = React.useState<string | null>(null)
     const [form, setForm] = React.useState<EvaluationFormState>(getEvaluationFormDefault())
-    const [evaluatorScope, setEvaluatorScope] = React.useState<EvaluatorScope>("panelist")
+
+    const [assignmentPreset, setAssignmentPreset] =
+        React.useState<AssignmentPreset>("all-panelists")
 
     const [scheduleQuery, setScheduleQuery] = React.useState("")
     const [evaluatorQuery, setEvaluatorQuery] = React.useState("")
@@ -251,6 +321,16 @@ export default function AdminEvaluationsPage() {
         }
         return map
     }, [evaluators])
+
+    const assignmentMeta = React.useMemo(
+        () => ASSIGNMENT_PRESET_META[assignmentPreset],
+        [assignmentPreset],
+    )
+
+    const availablePresets = React.useMemo<AssignmentPreset[]>(
+        () => (formMode === "create" ? CREATE_PRESETS : EDIT_PRESETS),
+        [formMode],
+    )
 
     const resolveGroupNameFromSchedule = React.useCallback(
         (schedule: DefenseScheduleOption | null | undefined): string => {
@@ -468,11 +548,19 @@ export default function AdminEvaluationsPage() {
         }
     }, [evaluations])
 
+    const assignableUsers = React.useMemo(() => {
+        return evaluators.filter((item) => {
+            const roleMatches = normalizeStatus(String(item.role)) === assignmentMeta.role
+            if (!roleMatches) return false
+            return isUserAssignable(item.status)
+        })
+    }, [assignmentMeta.role, evaluators])
+
     const openCreateForm = React.useCallback(() => {
         setFormMode("create")
         setEditingId(null)
         setForm(getEvaluationFormDefault())
-        setEvaluatorScope("panelist")
+        setAssignmentPreset("all-panelists")
         setScheduleQuery("")
         setEvaluatorQuery("")
         setFormOpen(true)
@@ -491,7 +579,9 @@ export default function AdminEvaluationsPage() {
             const user = evaluators.find(
                 (u) => u.id.toLowerCase() === row.evaluator_id.toLowerCase(),
             )
-            setEvaluatorScope(user ? toEvaluatorScope(user.role) : "all")
+
+            const role = user ? toAssigneeRole(user.role) : "panelist"
+            setAssignmentPreset(toAssignmentPreset(role, "particular"))
 
             const selectedSchedule = resolveScheduleById(row.schedule_id)
             const selectedEvaluator = resolveEvaluatorById(row.evaluator_id)
@@ -515,6 +605,7 @@ export default function AdminEvaluationsPage() {
         setFormBusy(false)
         setEditingId(null)
         setForm(getEvaluationFormDefault())
+        setAssignmentPreset("all-panelists")
         setScheduleQuery("")
         setEvaluatorQuery("")
     }, [])
@@ -538,22 +629,100 @@ export default function AdminEvaluationsPage() {
             return
         }
 
-        if (!evaluator_id) {
-            toast.error("Please select an evaluator.")
+        if (formMode === "edit" && assignmentMeta.mode === "all") {
+            toast.error("Editing supports particular assignee only.")
             return
         }
 
-        const payload: Partial<EvaluationRecord> = {
-            schedule_id,
-            evaluator_id,
-            status: status || "pending",
+        if (assignmentMeta.mode === "particular" && !evaluator_id) {
+            toast.error(`Please select a ${assignmentMeta.roleSingular}.`)
+            return
         }
 
         setFormBusy(true)
         setError(null)
 
         try {
+            if (formMode === "create" && assignmentMeta.mode === "all") {
+                const targets = assignableUsers
+
+                if (targets.length === 0) {
+                    toast.error(`No active ${assignmentMeta.rolePlural} available for assignment.`)
+                    return
+                }
+
+                const settled = await Promise.allSettled(
+                    targets.map(async (user) => {
+                        const payload: Partial<EvaluationRecord> = {
+                            schedule_id,
+                            evaluator_id: user.id,
+                            status: status || "pending",
+                        }
+
+                        const res = await fetch("/api/evaluations", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        })
+
+                        const data = await parseJsonSafely<EvaluationResponse>(res)
+                        return data.item ?? null
+                    }),
+                )
+
+                const createdItems: EvaluationRecord[] = []
+                const failures: string[] = []
+
+                for (const result of settled) {
+                    if (result.status === "fulfilled") {
+                        if (result.value) createdItems.push(result.value)
+                    } else {
+                        const message =
+                            result.reason instanceof Error
+                                ? result.reason.message
+                                : "Unknown assignment failure"
+                        failures.push(message)
+                    }
+                }
+
+                const successCount = settled.length - failures.length
+
+                if (successCount > 0) {
+                    if (createdItems.length === successCount && createdItems.length > 0) {
+                        setEvaluations((prev) => uniqueById([...createdItems, ...prev]))
+                    } else {
+                        await loadEvaluations()
+                    }
+                }
+
+                if (successCount === 0) {
+                    throw new Error(
+                        failures[0] ??
+                        `Failed to assign to selected ${assignmentMeta.rolePlural}.`,
+                    )
+                }
+
+                if (failures.length > 0) {
+                    toast.error("Partial assignment completed", {
+                        description: `${successCount} created, ${failures.length} failed.`,
+                    })
+                } else {
+                    toast.success("Bulk assignment completed", {
+                        description: `${successCount} ${assignmentMeta.rolePlural} assigned successfully.`,
+                    })
+                }
+
+                closeForm()
+                return
+            }
+
             if (formMode === "create") {
+                const payload: Partial<EvaluationRecord> = {
+                    schedule_id,
+                    evaluator_id,
+                    status: status || "pending",
+                }
+
                 const res = await fetch("/api/evaluations", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -569,33 +738,42 @@ export default function AdminEvaluationsPage() {
                 }
 
                 toast.success("Evaluation assigned", {
-                    description: "The evaluation was created successfully.",
-                })
-            } else {
-                if (!editingId) {
-                    throw new Error("No evaluation selected for update.")
-                }
-
-                const res = await fetch(`/api/evaluations/${editingId}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
+                    description: `Assigned to selected ${assignmentMeta.roleSingular}.`,
                 })
 
-                const data = await parseJsonSafely<EvaluationResponse>(res)
-
-                if (data.item) {
-                    setEvaluations((prev) =>
-                        prev.map((row) => (row.id === data.item!.id ? data.item! : row)),
-                    )
-                } else {
-                    await loadEvaluations()
-                }
-
-                toast.success("Evaluation updated", {
-                    description: "Changes were saved successfully.",
-                })
+                closeForm()
+                return
             }
+
+            if (!editingId) {
+                throw new Error("No evaluation selected for update.")
+            }
+
+            const payload: Partial<EvaluationRecord> = {
+                schedule_id,
+                evaluator_id,
+                status: status || "pending",
+            }
+
+            const res = await fetch(`/api/evaluations/${editingId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            })
+
+            const data = await parseJsonSafely<EvaluationResponse>(res)
+
+            if (data.item) {
+                setEvaluations((prev) =>
+                    prev.map((row) => (row.id === data.item!.id ? data.item! : row)),
+                )
+            } else {
+                await loadEvaluations()
+            }
+
+            toast.success("Evaluation updated", {
+                description: "Changes were saved successfully.",
+            })
 
             closeForm()
         } catch (err) {
@@ -605,7 +783,7 @@ export default function AdminEvaluationsPage() {
         } finally {
             setFormBusy(false)
         }
-    }, [closeForm, editingId, form, formBusy, formMode, loadEvaluations])
+    }, [assignmentMeta, assignableUsers, closeForm, editingId, form, formBusy, formMode, loadEvaluations])
 
     const deleteEvaluation = React.useCallback(
         async (evaluationId: string) => {
@@ -719,14 +897,11 @@ export default function AdminEvaluationsPage() {
     }, [resolveGroupNameFromSchedule, scheduleQuery, schedules])
 
     const evaluatorSuggestions = React.useMemo(() => {
+        if (assignmentMeta.mode === "all") return []
+
         const q = evaluatorQuery.trim().toLowerCase()
 
-        const scoped = evaluators.filter((item) => {
-            if (evaluatorScope === "all") return true
-            return normalizeStatus(String(item.role)) === evaluatorScope
-        })
-
-        const matched = scoped.filter((item) => {
+        const matched = assignableUsers.filter((item) => {
             if (!q) return true
 
             return (
@@ -741,7 +916,7 @@ export default function AdminEvaluationsPage() {
                 (compactString(a.name) ?? "").localeCompare(compactString(b.name) ?? ""),
             )
             .slice(0, 8)
-    }, [evaluatorQuery, evaluatorScope, evaluators])
+    }, [assignmentMeta.mode, assignableUsers, evaluatorQuery])
 
     const selectedSchedule = React.useMemo(() => {
         return resolveScheduleById(form.schedule_id)
@@ -750,6 +925,10 @@ export default function AdminEvaluationsPage() {
     const selectedEvaluator = React.useMemo(() => {
         return resolveEvaluatorById(form.evaluator_id)
     }, [form.evaluator_id, resolveEvaluatorById])
+
+    const allModePreview = React.useMemo(() => {
+        return assignableUsers.slice(0, 8)
+    }, [assignableUsers])
 
     React.useEffect(() => {
         if (!formOpen) return
@@ -761,7 +940,7 @@ export default function AdminEvaluationsPage() {
             }
         }
 
-        if (form.evaluator_id && !evaluatorQuery.trim()) {
+        if (assignmentMeta.mode === "particular" && form.evaluator_id && !evaluatorQuery.trim()) {
             const picked = resolveEvaluatorById(form.evaluator_id)
             if (picked) {
                 setEvaluatorQuery(
@@ -770,6 +949,7 @@ export default function AdminEvaluationsPage() {
             }
         }
     }, [
+        assignmentMeta.mode,
         evaluatorQuery,
         form.evaluator_id,
         form.schedule_id,
@@ -780,10 +960,40 @@ export default function AdminEvaluationsPage() {
         scheduleQuery,
     ])
 
+    React.useEffect(() => {
+        if (!formOpen) return
+
+        if (assignmentMeta.mode === "all") {
+            if (form.evaluator_id) {
+                setForm((prev) => ({ ...prev, evaluator_id: "" }))
+            }
+            if (evaluatorQuery) {
+                setEvaluatorQuery("")
+            }
+            return
+        }
+
+        if (!form.evaluator_id) return
+
+        const selected = resolveEvaluatorById(form.evaluator_id)
+        const selectedRole = selected ? normalizeStatus(String(selected.role)) : ""
+        if (selectedRole !== assignmentMeta.role) {
+            setForm((prev) => ({ ...prev, evaluator_id: "" }))
+            setEvaluatorQuery("")
+        }
+    }, [
+        assignmentMeta.mode,
+        assignmentMeta.role,
+        evaluatorQuery,
+        form.evaluator_id,
+        formOpen,
+        resolveEvaluatorById,
+    ])
+
     return (
         <DashboardLayout
             title="Evaluations"
-            description="Assign evaluations to panelists/students and manage evaluation lifecycle."
+            description="Assign evaluations to all/particular panelists or students, and manage evaluation lifecycle."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
@@ -846,8 +1056,8 @@ export default function AdminEvaluationsPage() {
                                 </h3>
                                 <p className="text-sm text-muted-foreground">
                                     {formMode === "create"
-                                        ? "Assign an evaluation to a panelist or student."
-                                        : "Update evaluation details and assignment."}
+                                        ? "Assign by one of four modes: all panelists, particular panelist, all students, or particular student."
+                                        : "Update a single evaluation assignment and status."}
                                 </p>
                             </div>
 
@@ -865,6 +1075,30 @@ export default function AdminEvaluationsPage() {
                                             : "Save Changes"}
                                 </Button>
                             </div>
+                        </div>
+
+                        <div className="mb-4 space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">Assignment type</p>
+                            <div className="flex flex-wrap gap-2">
+                                {availablePresets.map((preset) => {
+                                    const active = assignmentPreset === preset
+                                    const meta = ASSIGNMENT_PRESET_META[preset]
+                                    return (
+                                        <Button
+                                            key={preset}
+                                            size="sm"
+                                            variant={active ? "default" : "outline"}
+                                            onClick={() => setAssignmentPreset(preset)}
+                                            disabled={formBusy}
+                                        >
+                                            {meta.label}
+                                        </Button>
+                                    )
+                                })}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                {ASSIGNMENT_PRESET_META[assignmentPreset].description}
+                            </p>
                         </div>
 
                         <div className="grid gap-4 lg:grid-cols-2">
@@ -931,89 +1165,120 @@ export default function AdminEvaluationsPage() {
                             </div>
 
                             <div className="space-y-2">
-                                <p className="text-xs font-medium text-muted-foreground">Evaluator</p>
-                                <Input
-                                    placeholder="Search evaluator name, email, or role"
-                                    value={evaluatorQuery}
-                                    onChange={(e) => setEvaluatorQuery(e.target.value)}
-                                    disabled={formBusy}
-                                />
+                                <p className="text-xs font-medium text-muted-foreground">
+                                    {assignmentMeta.mode === "all"
+                                        ? `Recipients (${assignmentMeta.rolePlural})`
+                                        : `${toTitleCase(assignmentMeta.roleSingular)} selector`}
+                                </p>
 
-                                {selectedEvaluator ? (
-                                    <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
-                                        <span className="font-semibold text-foreground">Selected evaluator:</span>{" "}
-                                        {compactString(selectedEvaluator.name) ?? "Unnamed"} •{" "}
-                                        {compactString(selectedEvaluator.email) ?? "No email"} •{" "}
-                                        {roleLabel(selectedEvaluator.role)}
-                                    </div>
-                                ) : null}
+                                {assignmentMeta.mode === "all" ? (
+                                    <>
+                                        <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
+                                            <span className="font-semibold text-foreground">
+                                                Bulk assignment target:
+                                            </span>{" "}
+                                            {assignableUsers.length} active {assignmentMeta.rolePlural}
+                                        </div>
 
-                                <div className="space-y-2">
-                                    <p className="text-xs text-muted-foreground">Evaluator scope</p>
-                                    <div className="flex flex-wrap gap-2">
-                                        {EVALUATOR_SCOPES.map((scope) => {
-                                            const active = evaluatorScope === scope
-                                            return (
-                                                <Button
-                                                    key={scope}
-                                                    size="sm"
-                                                    variant={active ? "default" : "outline"}
-                                                    onClick={() => setEvaluatorScope(scope)}
-                                                    disabled={formBusy}
-                                                >
-                                                    {scope === "all" ? "All" : toTitleCase(scope)}
-                                                </Button>
-                                            )
-                                        })}
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <p className="text-xs text-muted-foreground">Quick pick from users</p>
-                                    <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
-                                        {loadingMeta ? (
-                                            <span className="text-xs text-muted-foreground">
-                                                Loading user options...
-                                            </span>
-                                        ) : evaluatorSuggestions.length === 0 ? (
-                                            <span className="text-xs text-muted-foreground">
-                                                No matching evaluators.
-                                            </span>
-                                        ) : (
-                                            evaluatorSuggestions.map((item) => (
-                                                <Button
-                                                    key={item.id}
-                                                    type="button"
-                                                    size="sm"
-                                                    variant={
-                                                        form.evaluator_id.toLowerCase() === item.id.toLowerCase()
-                                                            ? "default"
-                                                            : "outline"
-                                                    }
-                                                    onClick={() => {
-                                                        onFormFieldChange("evaluator_id", item.id)
-                                                        setEvaluatorQuery(
-                                                            compactString(item.name) ??
-                                                            compactString(item.email) ??
-                                                            "",
-                                                        )
-                                                    }}
-                                                    className="h-auto px-2 py-1 text-left"
-                                                    disabled={formBusy}
-                                                >
-                                                    <span className="block max-w-80 truncate text-xs">
-                                                        {compactString(item.name) ?? "Unnamed"}
-                                                        {compactString(item.email)
-                                                            ? ` • ${compactString(item.email)}`
-                                                            : ""}
-                                                        {" • "}
-                                                        {roleLabel(item.role)}
+                                        <div className="space-y-2">
+                                            <p className="text-xs text-muted-foreground">
+                                                Preview of recipients (up to 8)
+                                            </p>
+                                            <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
+                                                {loadingMeta ? (
+                                                    <span className="text-xs text-muted-foreground">
+                                                        Loading {assignmentMeta.rolePlural}...
                                                     </span>
-                                                </Button>
-                                            ))
-                                        )}
-                                    </div>
-                                </div>
+                                                ) : allModePreview.length === 0 ? (
+                                                    <span className="text-xs text-muted-foreground">
+                                                        No active {assignmentMeta.rolePlural} found.
+                                                    </span>
+                                                ) : (
+                                                    allModePreview.map((item) => (
+                                                        <span
+                                                            key={item.id}
+                                                            className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs"
+                                                        >
+                                                            {compactString(item.name) ?? "Unnamed"}
+                                                            {compactString(item.email)
+                                                                ? ` • ${compactString(item.email)}`
+                                                                : ""}
+                                                        </span>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Input
+                                            placeholder={`Search ${assignmentMeta.roleSingular} name, email, or role`}
+                                            value={evaluatorQuery}
+                                            onChange={(e) => setEvaluatorQuery(e.target.value)}
+                                            disabled={formBusy}
+                                        />
+
+                                        {selectedEvaluator ? (
+                                            <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
+                                                <span className="font-semibold text-foreground">
+                                                    Selected {assignmentMeta.roleSingular}:
+                                                </span>{" "}
+                                                {compactString(selectedEvaluator.name) ?? "Unnamed"} •{" "}
+                                                {compactString(selectedEvaluator.email) ?? "No email"} •{" "}
+                                                {roleLabel(selectedEvaluator.role)}
+                                            </div>
+                                        ) : null}
+
+                                        <div className="space-y-2">
+                                            <p className="text-xs text-muted-foreground">
+                                                Quick pick from {assignmentMeta.rolePlural}
+                                            </p>
+                                            <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
+                                                {loadingMeta ? (
+                                                    <span className="text-xs text-muted-foreground">
+                                                        Loading {assignmentMeta.rolePlural}...
+                                                    </span>
+                                                ) : evaluatorSuggestions.length === 0 ? (
+                                                    <span className="text-xs text-muted-foreground">
+                                                        No matching {assignmentMeta.rolePlural}.
+                                                    </span>
+                                                ) : (
+                                                    evaluatorSuggestions.map((item) => (
+                                                        <Button
+                                                            key={item.id}
+                                                            type="button"
+                                                            size="sm"
+                                                            variant={
+                                                                form.evaluator_id.toLowerCase() === item.id.toLowerCase()
+                                                                    ? "default"
+                                                                    : "outline"
+                                                            }
+                                                            onClick={() => {
+                                                                onFormFieldChange("evaluator_id", item.id)
+                                                                setEvaluatorQuery(
+                                                                    compactString(item.name) ??
+                                                                    compactString(item.email) ??
+                                                                    "",
+                                                                )
+                                                            }}
+                                                            className="h-auto px-2 py-1 text-left"
+                                                            disabled={formBusy}
+                                                        >
+                                                            <span className="block max-w-80 truncate text-xs">
+                                                                {compactString(item.name) ?? "Unnamed"}
+                                                                {compactString(item.email)
+                                                                    ? ` • ${compactString(item.email)}`
+                                                                    : ""}
+                                                                {" • "}
+                                                                {roleLabel(item.role)}
+                                                            </span>
+                                                        </Button>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
                             </div>
                         </div>
 
