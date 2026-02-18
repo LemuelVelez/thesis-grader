@@ -1,440 +1,405 @@
-/**
- * Central database model types for Thesis Grader
- * Based on migrations:
- * 001..012 in database/migration
- */
-
-export type UUID = string;
-export type ISODateTime = string;
-
-/**
- * PostgreSQL NUMERIC columns may come back as string (default pg behavior)
- * unless a custom parser is configured.
- */
-export type DbNumeric = number | `${number}`;
-
-/** Keeps literal autocomplete while still allowing future text statuses */
-export type LooseString<T extends string> = T | (string & {});
-
-/* --------------------------------- JSON ---------------------------------- */
-
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
-
-export interface JsonObject {
-    [key: string]: JsonValue;
-}
-
-export interface JsonArray extends Array<JsonValue> { }
-
-/* --------------------------------- ENUMS --------------------------------- */
-
-export const THESIS_ROLES = ['student', 'staff', 'admin', 'panelist'] as const;
-export type ThesisRole = (typeof THESIS_ROLES)[number];
-
-export const USER_STATUSES = ['active', 'disabled'] as const;
-export type UserStatus = (typeof USER_STATUSES)[number];
-
-export const STUDENT_EVAL_STATUSES = ['pending', 'submitted', 'locked'] as const;
-export type StudentEvalStatus = (typeof STUDENT_EVAL_STATUSES)[number];
-
-export const NOTIFICATION_TYPES = [
-    'general',
-    'evaluation_submitted',
-    'evaluation_locked',
-] as const;
-export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
-
-export const EVALUATION_TARGET_TYPES = ['group', 'student'] as const;
-export type EvaluationTargetType = (typeof EVALUATION_TARGET_TYPES)[number];
+import type {
+    DefenseScheduleRow,
+    GroupMemberRow,
+    ISODateTime,
+    JsonObject,
+    JsonValue,
+    StudentEvaluationPatch,
+    StudentEvaluationRow,
+    StudentEvalStatus,
+    StudentFeedbackFormInsert,
+    StudentFeedbackFormPatch,
+    StudentFeedbackFormRow,
+    StudentRow,
+    UUID,
+    UserRow,
+} from '../models/Model';
+import type { Services } from './Services';
 
 /**
- * Text statuses in schema (not strict SQL enum columns)
+ * Public schema type consumed by controllers/routes.
+ * We intentionally keep it flexible (stored as JSON in DB).
  */
-export type DefenseScheduleStatus = LooseString<
-    'scheduled' | 'ongoing' | 'completed' | 'cancelled'
->;
+export type StudentFeedbackFormSchema = JsonObject;
 
-export type EvaluationStatus = LooseString<'pending' | 'submitted' | 'locked'>;
-
-/* ------------------------------- TABLE ROWS ------------------------------- */
-
-export interface UserRow {
-    id: UUID;
-    name: string;
-    email: string;
-    role: ThesisRole;
-    status: UserStatus;
-    password_hash: string;
-    avatar_key: string | null;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
-}
-
-export interface SessionRow {
-    id: UUID;
-    user_id: UUID;
-    token_hash: string;
-    expires_at: ISODateTime;
-    created_at: ISODateTime;
-}
-
-export interface PasswordResetRow {
-    id: UUID;
-    user_id: UUID;
-    token_hash: string;
-    expires_at: ISODateTime;
-    used_at: ISODateTime | null;
-    created_at: ISODateTime;
-}
-
-export interface ThesisGroupRow {
-    id: UUID;
-    title: string;
-    adviser_id: UUID | null;
-    program: string | null;
-    term: string | null;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
+export interface RequiredAnswersValidation {
+    ok: boolean;
+    missing: string[];
 }
 
 /**
- * NOTE:
- * Extending Record<string, unknown> keeps required fields strongly typed
- * while allowing safe structural overlap with generic JSON-like records.
- * This prevents TS2352 when narrowing from Record<string, unknown>.
+ * Optional input for assigning/ensuring student feedback forms for a schedule.
+ * - form_id: assign using a specific form (otherwise ACTIVE is used)
+ * - force: if true, overwrite existing answers with seed template
+ * - seed_answers: if provided, overrides generated seed template
  */
-export interface GroupMemberRow extends Record<string, unknown> {
-    group_id: UUID;
-    student_id: UUID;
+export interface AssignStudentFeedbackFormsInput {
+    form_id?: UUID;
+    force?: boolean;
+    seed_answers?: JsonObject;
 }
 
-export interface DefenseScheduleRow {
-    id: UUID;
-    group_id: UUID;
-    scheduled_at: ISODateTime;
-    room: string | null;
-    status: DefenseScheduleStatus;
-    created_by: UUID | null;
-    rubric_template_id: UUID | null;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
-}
-
-export interface SchedulePanelistRow {
+export interface AssignStudentFeedbackFormsResult {
     schedule_id: UUID;
-    staff_id: UUID; // kept as staff_id in schema for compatibility
+    form_id: UUID | null;
+    total_students: number;
+    created: number;
+    existing: number;
+    updated: number;
 }
 
-export interface RubricTemplateRow {
-    id: UUID;
-    name: string;
-    version: number;
-    active: boolean;
-    description: string | null;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
-}
-
-export interface RubricCriteriaRow {
-    id: UUID;
-    template_id: UUID;
-    criterion: string;
-    description: string | null;
-    weight: DbNumeric;
-    min_score: number;
-    max_score: number;
-    created_at: ISODateTime;
-}
-
-export interface EvaluationRow {
-    id: UUID;
-    schedule_id: UUID;
-    evaluator_id: UUID;
-    status: EvaluationStatus;
-    submitted_at: ISODateTime | null;
-    locked_at: ISODateTime | null;
-    created_at: ISODateTime;
-}
-
-export interface EvaluationScoreRow {
-    /**
-     * Added in migration 010 to support PATCH /api/evaluation-scores/:id
-     * and unique scoring per target (group/student) per criterion.
-     */
-    id: UUID;
-    evaluation_id: UUID;
-    criterion_id: UUID;
-
-    /**
-     * Required by migration 010/011 for per-target persistence.
-     * Must never be null once migration backfill is complete.
-     */
-    target_type: EvaluationTargetType;
-    target_id: UUID;
-
-    score: number;
-    comment: string | null;
-}
-
-export interface AuditLogRow {
-    id: UUID;
-    actor_id: UUID | null;
-    action: string;
-    entity: string;
-    entity_id: UUID | null;
-    details: JsonValue | null;
-    created_at: ISODateTime;
-}
-
-export interface StudentRow {
-    user_id: UUID;
+/**
+ * Admin detailed row: student evaluation entry + student identity/profile.
+ */
+export interface AdminStudentFeedbackRow extends StudentEvaluationRow {
+    student_name: string | null;
+    student_email: string | null;
     program: string | null;
     section: string | null;
-    created_at: ISODateTime;
 }
 
-export interface StaffProfileRow {
-    user_id: UUID;
-    department: string | null;
-    created_at: ISODateTime;
+function nowIso(): ISODateTime {
+    return new Date().toISOString();
 }
 
-export interface StudentEvaluationRow {
-    id: UUID;
-    schedule_id: UUID;
-    student_id: UUID;
-    status: StudentEvalStatus;
-    answers: JsonObject;
-    submitted_at: ISODateTime | null;
-    locked_at: ISODateTime | null;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
+function isNonEmptyString(v: unknown): v is string {
+    return typeof v === 'string' && v.trim().length > 0;
 }
 
-export interface EvaluationExtraRow {
-    evaluation_id: UUID;
-    data: JsonObject;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
+function isMissingAnswer(value: unknown): boolean {
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') return value.trim().length === 0;
+    if (Array.isArray(value)) return value.length === 0;
+    if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length === 0;
+    return false;
 }
-
-export interface PanelistProfileRow {
-    user_id: UUID;
-    expertise: string | null;
-    created_at: ISODateTime;
-}
-
-export interface RubricScaleLevelRow {
-    template_id: UUID;
-    score: number; // CHECK (1..5)
-    adjectival: string;
-    description: string | null;
-}
-
-export interface NotificationRow {
-    id: UUID;
-    user_id: UUID;
-    type: NotificationType;
-    title: string;
-    body: string;
-    data: JsonObject;
-    read_at: ISODateTime | null;
-    created_at: ISODateTime;
-}
-
-export interface StudentFeedbackFormRow {
-    id: UUID;
-    key: string;
-    version: number;
-    title: string;
-    description: string | null;
-    schema: JsonObject;
-    active: boolean;
-    created_at: ISODateTime;
-    updated_at: ISODateTime;
-}
-
-/* ---------------------------------- VIEWS -------------------------------- */
-
-export interface EvaluationOverallPercentageRow {
-    evaluation_id: UUID;
-    schedule_id: UUID;
-    group_id: UUID;
-    evaluator_id: UUID;
-    status: EvaluationStatus;
-    criteria_count: number;
-    criteria_scored: number;
-    overall_percentage: DbNumeric;
-    weighted_score: DbNumeric;
-    weighted_max: DbNumeric;
-    submitted_at: ISODateTime | null;
-    locked_at: ISODateTime | null;
-    created_at: ISODateTime;
-}
-
-export interface ThesisGroupRankingRow {
-    group_id: UUID;
-    group_title: string;
-    group_percentage: DbNumeric | null;
-    submitted_evaluations: number;
-    latest_defense_at: ISODateTime | null;
-    rank: number;
-}
-
-/* ----------------------------- INSERT HELPERS ----------------------------- */
-
-type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 /**
- * Insert payloads (DB defaults are optional here)
+ * Extract "required keys" from various possible schema shapes:
+ * - Custom form: { sections: [{ questions: [{ key/id/name, required: true }] }] }
+ * - Flat: { questions: [...] } or { fields: [...] }
+ * - JSON Schema-ish: { required: [...], properties: {...} }
+ *
+ * We walk the structure safely and collect keys.
  */
-export type UserInsert = Optional<
-    UserRow,
-    'id' | 'status' | 'avatar_key' | 'created_at' | 'updated_at'
->;
+function collectRequiredKeys(node: JsonValue, out: Set<string>): void {
+    if (node === null) return;
 
-export type SessionInsert = Optional<SessionRow, 'id' | 'created_at'>;
+    if (Array.isArray(node)) {
+        for (const item of node) collectRequiredKeys(item, out);
+        return;
+    }
 
-export type PasswordResetInsert = Optional<
-    PasswordResetRow,
-    'id' | 'used_at' | 'created_at'
->;
+    if (typeof node !== 'object') return;
 
-export type ThesisGroupInsert = Optional<
-    ThesisGroupRow,
-    'id' | 'adviser_id' | 'program' | 'term' | 'created_at' | 'updated_at'
->;
+    const obj = node as Record<string, unknown>;
 
-export type GroupMemberInsert = GroupMemberRow;
+    // JSON-schema style: { required: ["a","b"], properties: {...} }
+    if (Array.isArray(obj.required)) {
+        for (const k of obj.required) {
+            if (isNonEmptyString(k)) out.add(k);
+        }
+    }
 
-export type DefenseScheduleInsert = Optional<
-    DefenseScheduleRow,
-    | 'id'
-    | 'room'
-    | 'status'
-    | 'created_by'
-    | 'rubric_template_id'
-    | 'created_at'
-    | 'updated_at'
->;
+    // Custom question/field arrays
+    const maybeArrays: unknown[] = [];
+    if (Array.isArray(obj.questions)) maybeArrays.push(...obj.questions);
+    if (Array.isArray(obj.fields)) maybeArrays.push(...obj.fields);
 
-export type SchedulePanelistInsert = SchedulePanelistRow;
+    for (const item of maybeArrays) {
+        if (!item || typeof item !== 'object') continue;
+        const q = item as Record<string, unknown>;
 
-export type RubricTemplateInsert = Optional<
-    RubricTemplateRow,
-    'id' | 'version' | 'active' | 'description' | 'created_at' | 'updated_at'
->;
+        const required = q.required === true;
+        if (!required) continue;
 
-export type RubricCriteriaInsert = Optional<RubricCriteriaRow, 'id' | 'created_at'>;
+        const key =
+            (isNonEmptyString(q.key) && q.key) ||
+            (isNonEmptyString(q.id) && q.id) ||
+            (isNonEmptyString(q.name) && q.name) ||
+            null;
 
-export type EvaluationInsert = Optional<
-    EvaluationRow,
-    'id' | 'status' | 'submitted_at' | 'locked_at' | 'created_at'
->;
+        if (key) out.add(key);
+    }
 
-export type EvaluationScoreInsert = Optional<
-    EvaluationScoreRow,
-    'id' | 'comment'
->;
-
-export type AuditLogInsert = Optional<AuditLogRow, 'id' | 'actor_id' | 'entity_id' | 'details' | 'created_at'>;
-
-export type StudentInsert = Optional<StudentRow, 'program' | 'section' | 'created_at'>;
-
-export type StaffProfileInsert = Optional<StaffProfileRow, 'department' | 'created_at'>;
-
-export type StudentEvaluationInsert = Optional<
-    StudentEvaluationRow,
-    'id' | 'status' | 'answers' | 'submitted_at' | 'locked_at' | 'created_at' | 'updated_at'
->;
-
-export type EvaluationExtraInsert = Optional<
-    EvaluationExtraRow,
-    'data' | 'created_at' | 'updated_at'
->;
-
-export type PanelistProfileInsert = Optional<PanelistProfileRow, 'expertise' | 'created_at'>;
-
-export type RubricScaleLevelInsert = Optional<RubricScaleLevelRow, 'description'>;
-
-export type NotificationInsert = Optional<
-    NotificationRow,
-    'id' | 'type' | 'data' | 'read_at' | 'created_at'
->;
-
-export type StudentFeedbackFormInsert = Optional<
-    StudentFeedbackFormRow,
-    'id' | 'description' | 'active' | 'created_at' | 'updated_at'
->;
-
-/* ------------------------------ UPDATE HELPERS ---------------------------- */
-
-export type UserPatch = Partial<Omit<UserRow, 'id' | 'created_at'>>;
-export type SessionPatch = Partial<Omit<SessionRow, 'id' | 'created_at'>>;
-export type PasswordResetPatch = Partial<Omit<PasswordResetRow, 'id' | 'created_at'>>;
-export type ThesisGroupPatch = Partial<Omit<ThesisGroupRow, 'id' | 'created_at'>>;
-export type DefenseSchedulePatch = Partial<Omit<DefenseScheduleRow, 'id' | 'created_at'>>;
-export type RubricTemplatePatch = Partial<Omit<RubricTemplateRow, 'id' | 'created_at'>>;
-export type RubricCriteriaPatch = Partial<Omit<RubricCriteriaRow, 'id' | 'template_id' | 'created_at'>>;
-export type EvaluationPatch = Partial<Omit<EvaluationRow, 'id' | 'schedule_id' | 'evaluator_id' | 'created_at'>>;
-export type EvaluationScorePatch = Partial<
-    Omit<
-        EvaluationScoreRow,
-        'id' | 'evaluation_id' | 'criterion_id' | 'target_type' | 'target_id'
-    >
->;
-export type AuditLogPatch = Partial<Omit<AuditLogRow, 'id' | 'created_at'>>;
-export type StudentPatch = Partial<Omit<StudentRow, 'user_id' | 'created_at'>>;
-export type StaffProfilePatch = Partial<Omit<StaffProfileRow, 'user_id' | 'created_at'>>;
-export type StudentEvaluationPatch = Partial<
-    Omit<StudentEvaluationRow, 'id' | 'schedule_id' | 'student_id' | 'created_at'>
->;
-export type EvaluationExtraPatch = Partial<Omit<EvaluationExtraRow, 'evaluation_id' | 'created_at'>>;
-export type PanelistProfilePatch = Partial<Omit<PanelistProfileRow, 'user_id' | 'created_at'>>;
-export type RubricScaleLevelPatch = Partial<Omit<RubricScaleLevelRow, 'template_id' | 'score'>>;
-export type NotificationPatch = Partial<Omit<NotificationRow, 'id' | 'user_id' | 'created_at'>>;
-export type StudentFeedbackFormPatch = Partial<Omit<StudentFeedbackFormRow, 'id' | 'created_at'>>;
-
-/* ------------------------------- REGISTRY --------------------------------- */
-
-/**
- * Canonical map of table/view name -> row type
- */
-export interface DatabaseModels {
-    // tables
-    users: UserRow;
-    sessions: SessionRow;
-    password_resets: PasswordResetRow;
-    thesis_groups: ThesisGroupRow;
-    group_members: GroupMemberRow;
-    defense_schedules: DefenseScheduleRow;
-    schedule_panelists: SchedulePanelistRow;
-    rubric_templates: RubricTemplateRow;
-    rubric_criteria: RubricCriteriaRow;
-    evaluations: EvaluationRow;
-    evaluation_scores: EvaluationScoreRow;
-    audit_logs: AuditLogRow;
-    students: StudentRow;
-    staff_profiles: StaffProfileRow;
-    student_evaluations: StudentEvaluationRow;
-    evaluation_extras: EvaluationExtraRow;
-    panelist_profiles: PanelistProfileRow;
-    rubric_scale_levels: RubricScaleLevelRow;
-    notifications: NotificationRow;
-    student_feedback_forms: StudentFeedbackFormRow;
-
-    // views
-    v_evaluation_overall_percentages: EvaluationOverallPercentageRow;
-    v_thesis_group_rankings: ThesisGroupRankingRow;
+    // Recurse through object values
+    for (const v of Object.values(obj)) {
+        collectRequiredKeys(v as JsonValue, out);
+    }
 }
 
-export type DbEntityName = keyof DatabaseModels;
-export type TableName = Exclude<
-    DbEntityName,
-    'v_evaluation_overall_percentages' | 'v_thesis_group_rankings'
->;
-export type ViewName = Extract<
-    DbEntityName,
-    'v_evaluation_overall_percentages' | 'v_thesis_group_rankings'
->;
+function requiredKeysFromSchema(schema: StudentFeedbackFormSchema): string[] {
+    const keys = new Set<string>();
+    collectRequiredKeys(schema as unknown as JsonValue, keys);
+    return Array.from(keys);
+}
+
+export class StudentFeedbackService {
+    constructor(private readonly services: Services) { }
+
+    private svc(override?: Services): Services {
+        return override ?? this.services;
+    }
+
+    /* ------------------------------- FORMS CRUD ------------------------------ */
+
+    async listForms(override?: Services): Promise<StudentFeedbackFormRow[]> {
+        const s = this.svc(override);
+        return s.student_feedback_forms.findMany({
+            orderBy: 'version',
+            orderDirection: 'desc',
+            limit: 500,
+        });
+    }
+
+    async getFormById(id: UUID, override?: Services): Promise<StudentFeedbackFormRow | null> {
+        const s = this.svc(override);
+        return s.student_feedback_forms.findById(id);
+    }
+
+    async createForm(input: StudentFeedbackFormInsert, override?: Services): Promise<StudentFeedbackFormRow> {
+        const s = this.svc(override);
+        const createdAt = nowIso();
+        return s.student_feedback_forms.create({
+            ...input,
+            active: input.active ?? false,
+            created_at: input.created_at ?? createdAt,
+            updated_at: input.updated_at ?? createdAt,
+        });
+    }
+
+    async updateForm(
+        id: UUID,
+        patch: StudentFeedbackFormPatch,
+        override?: Services,
+    ): Promise<StudentFeedbackFormRow | null> {
+        const s = this.svc(override);
+        return s.student_feedback_forms.updateOne(
+            { id },
+            { ...patch, updated_at: patch.updated_at ?? nowIso() },
+        );
+    }
+
+    /**
+     * Activates a single form and deactivates all other forms.
+     */
+    async activateForm(id: UUID, override?: Services): Promise<StudentFeedbackFormRow | null> {
+        const s = this.svc(override);
+
+        // If caller passed an override (already inside a transaction), do best-effort without nesting.
+        // Otherwise, wrap in a transaction to keep "single active" consistent.
+        const runner = override
+            ? async (tx: Services) => this.activateFormInTx(id, tx)
+            : async (tx: Services) => this.activateFormInTx(id, tx);
+
+        if (override) {
+            return runner(s);
+        }
+
+        return s.transaction(async (tx) => runner(tx));
+    }
+
+    private async activateFormInTx(id: UUID, tx: Services): Promise<StudentFeedbackFormRow | null> {
+        // Deactivate existing active ones
+        await tx.student_feedback_forms.update({ active: true }, { active: false, updated_at: nowIso() });
+        // Activate target
+        const updated = await tx.student_feedback_forms.updateOne(
+            { id },
+            { active: true, updated_at: nowIso() },
+        );
+        return updated ?? (await tx.student_feedback_forms.findById(id));
+    }
+
+    /* ------------------------------- ACTIVE FORM ----------------------------- */
+
+    private async getActiveFormRow(override?: Services): Promise<StudentFeedbackFormRow | null> {
+        const s = this.svc(override);
+
+        const active = await s.student_feedback_forms.findMany({
+            where: { active: true },
+            orderBy: 'version',
+            orderDirection: 'desc',
+            limit: 1,
+        });
+        if (active[0]) return active[0];
+
+        const latest = await s.student_feedback_forms.findMany({
+            orderBy: 'version',
+            orderDirection: 'desc',
+            limit: 1,
+        });
+        return latest[0] ?? null;
+    }
+
+    async getActiveSchema(override?: Services): Promise<StudentFeedbackFormSchema> {
+        const form = await this.getActiveFormRow(override);
+        const schema = (form?.schema ?? {}) as JsonObject;
+        return schema as StudentFeedbackFormSchema;
+    }
+
+    async getActiveSeedAnswersTemplate(override?: Services): Promise<JsonObject> {
+        const schema = await this.getActiveSchema(override);
+        const requiredKeys = requiredKeysFromSchema(schema);
+
+        // Seed only required keys by default (safe + minimal).
+        // Frontend can extend/structure as needed.
+        const out: JsonObject = {};
+        for (const k of requiredKeys) {
+            out[k] = null;
+        }
+        return out;
+    }
+
+    /* ------------------------------ VALIDATION ------------------------------- */
+
+    validateRequiredAnswers(
+        answers: JsonObject,
+        schema: StudentFeedbackFormSchema,
+    ): RequiredAnswersValidation {
+        const requiredKeys = requiredKeysFromSchema(schema);
+        const missing: string[] = [];
+
+        for (const key of requiredKeys) {
+            const value = (answers as Record<string, unknown>)[key];
+            if (isMissingAnswer(value)) missing.push(key);
+        }
+
+        return { ok: missing.length === 0, missing };
+    }
+
+    /* ------------------------------ ASSIGNMENT ------------------------------- */
+
+    async assignForSchedule(
+        scheduleId: UUID,
+        input: AssignStudentFeedbackFormsInput = {},
+    ): Promise<AssignStudentFeedbackFormsResult | null> {
+        return this.services.transaction(async (tx) => {
+            const schedule = await tx.defense_schedules.findById(scheduleId);
+            if (!schedule) return null;
+
+            const groupMembers: GroupMemberRow[] = await tx.group_members.listByGroup(schedule.group_id);
+            const studentIds = Array.from(
+                new Set(
+                    groupMembers
+                        .map((m) => (m as unknown as { student_id?: UUID }).student_id)
+                        .filter((id): id is UUID => !!id),
+                ),
+            );
+
+            const form =
+                input.form_id
+                    ? await tx.student_feedback_forms.findById(input.form_id)
+                    : await this.getActiveFormRow(tx);
+
+            const formSchema = (form?.schema ?? {}) as JsonObject;
+            const seed =
+                input.seed_answers ??
+                (() => {
+                    const requiredKeys = requiredKeysFromSchema(formSchema);
+                    const obj: JsonObject = {};
+                    for (const k of requiredKeys) obj[k] = null;
+                    return obj;
+                })();
+
+            let created = 0;
+            let existing = 0;
+            let updated = 0;
+
+            const now = nowIso();
+
+            for (const studentId of studentIds) {
+                const already = await tx.student_evaluations.findOne({
+                    schedule_id: scheduleId,
+                    student_id: studentId,
+                });
+
+                if (!already) {
+                    await tx.student_evaluations.create({
+                        schedule_id: scheduleId,
+                        student_id: studentId,
+                        status: 'pending',
+                        answers: seed,
+                        submitted_at: null,
+                        locked_at: null,
+                        created_at: now,
+                        updated_at: now,
+                    });
+                    created += 1;
+                    continue;
+                }
+
+                existing += 1;
+
+                if (input.force) {
+                    const patch: StudentEvaluationPatch = {
+                        answers: seed,
+                        updated_at: now,
+                    };
+
+                    const changed = await tx.student_evaluations.updateOne({ id: already.id }, patch);
+                    if (changed) updated += 1;
+                }
+            }
+
+            return {
+                schedule_id: scheduleId,
+                form_id: form?.id ?? null,
+                total_students: studentIds.length,
+                created,
+                existing,
+                updated,
+            };
+        });
+    }
+
+    async listForScheduleDetailed(scheduleId: UUID): Promise<AdminStudentFeedbackRow[]> {
+        const evaluations: StudentEvaluationRow[] = await this.services.student_evaluations.listBySchedule(
+            scheduleId,
+        );
+
+        const rows = await Promise.all(
+            evaluations.map(async (ev): Promise<AdminStudentFeedbackRow> => {
+                const [user, profile] = await Promise.all([
+                    this.services.users.findById(ev.student_id),
+                    this.services.students.findByUserId(ev.student_id),
+                ]);
+
+                const u = user as UserRow | null;
+                const p = profile as StudentRow | null;
+
+                return {
+                    ...ev,
+                    student_name: u?.name ?? null,
+                    student_email: u?.email ?? null,
+                    program: p?.program ?? null,
+                    section: p?.section ?? null,
+                };
+            }),
+        );
+
+        // Stable ordering: submitted first, then pending, then locked; within each by name.
+        const statusOrder: Record<StudentEvalStatus, number> = {
+            submitted: 1,
+            pending: 2,
+            locked: 3,
+        };
+
+        return rows.sort((a, b) => {
+            const aS = statusOrder[a.status] ?? 99;
+            const bS = statusOrder[b.status] ?? 99;
+            if (aS !== bS) return aS - bS;
+
+            const aName = (a.student_name ?? '').toLowerCase();
+            const bName = (b.student_name ?? '').toLowerCase();
+            return aName.localeCompare(bName);
+        });
+    }
+
+    /* ------------------------------- HELPERS -------------------------------- */
+
+    async getSchedule(scheduleId: UUID): Promise<DefenseScheduleRow | null> {
+        return this.services.defense_schedules.findById(scheduleId);
+    }
+}
+
+export default StudentFeedbackService;

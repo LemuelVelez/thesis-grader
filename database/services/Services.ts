@@ -62,6 +62,9 @@ import type {
     StudentEvaluationInsert,
     StudentEvaluationPatch,
     StudentEvaluationRow,
+    StudentFeedbackFormInsert,
+    StudentFeedbackFormPatch,
+    StudentFeedbackFormRow,
     StudentInsert,
     StudentPatch,
     StudentRow,
@@ -188,6 +191,7 @@ export interface TableInsertMap {
     panelist_profiles: PanelistProfileInsert;
     rubric_scale_levels: RubricScaleLevelInsert;
     notifications: NotificationInsert;
+    student_feedback_forms: StudentFeedbackFormInsert;
     push_subscriptions: PushSubscriptionInsert;
 }
 
@@ -211,6 +215,7 @@ export interface TablePatchMap {
     panelist_profiles: PanelistProfilePatch;
     rubric_scale_levels: RubricScaleLevelPatch;
     notifications: NotificationPatch;
+    student_feedback_forms: StudentFeedbackFormPatch;
     push_subscriptions: PushSubscriptionPatch;
 }
 
@@ -373,6 +378,14 @@ export interface NotificationsService
     createForUsers(userIds: UUID[], payload: NotificationBroadcastPayload): Promise<NotificationRow[]>;
 }
 
+export interface StudentFeedbackFormsService
+    extends TableService<StudentFeedbackFormRow, StudentFeedbackFormInsert, StudentFeedbackFormPatch> {
+    findById(id: UUID): Promise<StudentFeedbackFormRow | null>;
+    listActive(query?: Omit<ListQuery<StudentFeedbackFormRow>, 'where'>): Promise<StudentFeedbackFormRow[]>;
+    getActiveLatest(): Promise<StudentFeedbackFormRow | null>;
+    setActive(formId: UUID, active: boolean): Promise<StudentFeedbackFormRow | null>;
+}
+
 export interface PushSubscriptionsService
     extends TableService<PushSubscriptionRow, PushSubscriptionInsert, PushSubscriptionPatch> {
     findById(id: UUID): Promise<PushSubscriptionRow | null>;
@@ -423,6 +436,7 @@ export interface TableServiceMap {
     panelist_profiles: PanelistProfilesService;
     rubric_scale_levels: RubricScaleLevelsService;
     notifications: NotificationsService;
+    student_feedback_forms: StudentFeedbackFormsService;
     push_subscriptions: PushSubscriptionsService;
 }
 
