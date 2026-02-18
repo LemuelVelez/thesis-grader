@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
     createApiRouteHandlers,
     type AuthRouteContext,
-} from '../../../../database/routes/Route';
-import { resolveDatabaseServices } from '../../../../database/services/resolver';
+} from '../../../database/routes/Route';
+import { resolveDatabaseServices } from '../../../database/services/resolver';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -84,7 +84,7 @@ function buildAuthRouteContextFromRequest(req: NextRequest): AuthRouteContext {
 
 const handlers = createApiRouteHandlers({
     resolveServices: resolveDatabaseServices,
-    onError: (error, req) => {
+    onError: (error: unknown, req: NextRequest) => {
         const message = extractErrorMessage(error);
         const path = req.nextUrl.pathname ?? '';
 
