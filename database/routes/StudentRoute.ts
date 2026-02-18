@@ -16,6 +16,9 @@ import {
     type UUID,
 } from '../models/Model';
 import type { DatabaseServices } from '../services/Services';
+import StudentFeedbackService, {
+    type AssignStudentFeedbackFormsInput,
+} from '../services/StudentFeedbackService';
 import {
     isUuidLike,
     json200,
@@ -25,6 +28,7 @@ import {
     json404Entity,
     json405,
     omitWhere,
+    parseBoolean,
     parseListQuery,
     readJsonRecord,
     toUserStatus,
@@ -63,6 +67,17 @@ function isJsonObject(value: unknown): value is JsonObject {
         if (!isJsonValue(v)) return false;
     }
     return true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toJsonObject(value: unknown): JsonObject {
+    if (!isRecord(value)) return {};
+    // Ensure JSON-safe: only allow JsonValue leaves
+    if (!isJsonObject(value)) return {};
+    return value as JsonObject;
 }
 
 function extractErrorMessage(error: unknown): string {
@@ -213,6 +228,32 @@ function resolveAuthedUserIdFromRequest(req: NextRequest): UUID | null {
     return null;
 }
 
+async function resolveAuthedUser(
+    req: NextRequest,
+    services: DatabaseServices,
+): Promise<UserRow | null> {
+    // 1) direct id from headers/cookies/query params
+    const direct = resolveAuthedUserIdFromRequest(req);
+    if (direct) {
+        try {
+            const user = await services.users.findById(direct);
+            return user ?? null;
+        } catch {
+            // fall through
+        }
+    }
+
+    // 2) middleware session resolver
+    try {
+        const mw = createMiddlewareController(services);
+        const auth = await mw.resolve(req);
+        if (!auth) return null;
+        return auth.user ?? null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Resolve the current authenticated STUDENT id.
  * Supports:
@@ -224,18 +265,10 @@ async function resolveAuthedStudentId(
     req: NextRequest,
     services: DatabaseServices,
 ): Promise<UUID | null> {
-    const direct = resolveAuthedUserIdFromRequest(req);
-    if (direct) return direct as UUID;
-
-    try {
-        const mw = createMiddlewareController(services);
-        const auth = await mw.resolve(req);
-        if (!auth) return null;
-        if (auth.user.role !== 'student') return null;
-        return auth.user.id as UUID;
-    } catch {
-        return null;
-    }
+    const user = await resolveAuthedUser(req, services);
+    if (!user) return null;
+    if (user.role !== 'student') return null;
+    return user.id as UUID;
 }
 
 function isMeAlias(value: string): boolean {
@@ -274,6 +307,24 @@ function withItemAliases<T>(item: T) {
     };
 }
 
+function parseUuidArrayFromBody(value: unknown): UUID[] {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    const out: UUID[] = [];
+
+    for (const item of value) {
+        if (typeof item !== 'string') continue;
+        const trimmed = item.trim();
+        if (!trimmed || !isUuidLike(trimmed)) continue;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(trimmed as UUID);
+    }
+
+    return out;
+}
+
 /**
  * Student self endpoints (no explicit :id), used by the frontend:
  * - GET /api/student-evaluations/schema
@@ -286,6 +337,10 @@ function withItemAliases<T>(item: T) {
  * - PATCH /api/student-evaluations/:evaluationId/(answers|draft|response)
  * - POST/PATCH /api/student-evaluations/:evaluationId/(submit|finalize|lock)
  * - GET /api/student-evaluations/:evaluationId/score
+ *
+ * NEW (for admin/staff assignment compatibility):
+ * - POST /api/student-evaluations   (assign feedback forms for a schedule to students)
+ *   Body: { schedule_id|scheduleId, studentIds|student_ids?, overwritePending?, seedAnswers? }
  */
 async function dispatchStudentSelfEvaluationsRequest(
     req: NextRequest,
@@ -295,10 +350,145 @@ async function dispatchStudentSelfEvaluationsRequest(
 ): Promise<Response> {
     const method = req.method.toUpperCase();
 
-    // Helpful default: if called at "/api/student-evaluations" (no tail),
-    // return the caller's items when authenticated; otherwise return the route map.
+    // Root "/api/student-evaluations"
     if (tail.length === 0) {
-        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        // ✅ FIX: accept POST here (admin/staff assignment or student self ensure)
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const scheduleIdRaw =
+                (typeof body.schedule_id === 'string' ? body.schedule_id : null) ??
+                (typeof body.scheduleId === 'string' ? body.scheduleId : null) ??
+                (typeof body.defense_schedule_id === 'string' ? body.defense_schedule_id : null) ??
+                (typeof body.defenseScheduleId === 'string' ? body.defenseScheduleId : null);
+
+            if (!scheduleIdRaw || !isUuidLike(scheduleIdRaw)) {
+                return json400('schedule_id is required and must be a valid UUID.');
+            }
+
+            const seedAnswersRaw =
+                body.seedAnswers ??
+                body.seed_answers ??
+                body.answersTemplate ??
+                body.answers_template ??
+                body.template ??
+                body.answers ??
+                undefined;
+
+            const seedAnswers = toJsonObject(seedAnswersRaw);
+
+            const overwritePendingRaw =
+                body.overwritePending ??
+                body.overwrite_pending ??
+                body.overwrite ??
+                body.reset ??
+                body.replacePending;
+
+            const overwritePending = typeof overwritePendingRaw === 'boolean'
+                ? overwritePendingRaw
+                : (parseBoolean(typeof overwritePendingRaw === 'string' ? overwritePendingRaw : null) ?? false);
+
+            const studentIds = (() => {
+                const many = parseUuidArrayFromBody(body.studentIds ?? body.student_ids ?? body.students);
+                if (many.length > 0) return many;
+
+                const single =
+                    typeof body.student_id === 'string' ? body.student_id :
+                        (typeof body.studentId === 'string' ? body.studentId : null);
+
+                if (single && isUuidLike(single)) return [single as UUID];
+                return [];
+            })();
+
+            const authed = await resolveAuthedUser(req, services);
+            if (!authed) {
+                return NextResponse.json(
+                    { error: 'Unauthorized.', message: 'Sign in is required to assign student feedback evaluations.' },
+                    { status: 401 },
+                );
+            }
+
+            // Admin/Staff: assign to students for schedule (compat with admin evaluations page)
+            if (authed.role === 'admin' || authed.role === 'staff') {
+                try {
+                    const feedback = new StudentFeedbackService(services);
+
+                    const input: AssignStudentFeedbackFormsInput = {
+                        studentIds: studentIds.length > 0 ? studentIds : undefined,
+                        overwritePending,
+                        seedAnswers: Object.keys(seedAnswers).length > 0 ? (seedAnswers as any) : undefined,
+                        initialStatus: 'pending',
+                    };
+
+                    const result = await feedback.assignForSchedule(scheduleIdRaw as UUID, input);
+                    if (!result) return json404Entity('Defense schedule');
+
+                    const status = result.counts?.created > 0 ? 201 : 200;
+
+                    return NextResponse.json(
+                        {
+                            scheduleId: result.scheduleId,
+                            groupId: result.groupId,
+                            counts: result.counts,
+                            created: result.created,
+                            updated: result.updated,
+                            existing: result.existing,
+                            targetedStudentIds: result.targetedStudentIds,
+                            message:
+                                result.counts?.created > 0
+                                    ? 'Student feedback evaluations assigned successfully.'
+                                    : 'No new student feedback evaluations were created.',
+                        },
+                        { status },
+                    );
+                } catch (error) {
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to assign student feedback evaluations.',
+                            message: extractErrorMessage(error),
+                        },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            // Student: allow self-ensure via POST /api/student-evaluations (best-effort compat)
+            if (authed.role === 'student') {
+                try {
+                    const before = await controller.listStudentEvaluations(authed.id as UUID, {
+                        scheduleId: scheduleIdRaw as UUID,
+                    });
+                    if (!before) return json404Entity('Student');
+
+                    const item = await controller.ensureStudentEvaluation(authed.id as UUID, {
+                        schedule_id: scheduleIdRaw as UUID,
+                        answers: Object.keys(seedAnswers).length > 0 ? (seedAnswers as JsonObject) : undefined,
+                    });
+
+                    if (!item) return json404Entity('Student');
+
+                    const created = before.length === 0;
+                    return NextResponse.json(
+                        { ...withItemAliases(item), created },
+                        { status: created ? 201 : 200 },
+                    );
+                } catch (error) {
+                    return NextResponse.json(
+                        { error: 'Failed to create student evaluation.', message: extractErrorMessage(error) },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            return NextResponse.json(
+                { error: 'Forbidden.', message: 'Only admin/staff can assign evaluations to students.' },
+                { status: 403 },
+            );
+        }
+
+        // Original behavior (GET only)
+        if (method !== 'GET') return json405(['GET', 'POST', 'OPTIONS']);
 
         const studentId = await resolveAuthedStudentId(req, services);
         if (!studentId) {
@@ -316,6 +506,8 @@ async function dispatchStudentSelfEvaluationsRequest(
                     submit: 'POST /api/student-evaluations/:evaluationId/(submit|finalize)',
                     lock: 'POST /api/student-evaluations/:evaluationId/lock',
                     score: 'GET /api/student-evaluations/:evaluationId/score',
+                    // New compat:
+                    assign: 'POST /api/student-evaluations  (admin/staff assignment compat)',
                     // Backward/compat:
                     studentsMeSchema: 'GET /api/students/me/student-evaluations/schema',
                     studentsCurrentSchema: 'GET /api/students/current/student-evaluations/schema',
@@ -899,16 +1091,40 @@ export async function dispatchStudentRequest(
         // /:id/student-evaluations/:evaluationId/score
         if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'score') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-
             const item = await controller.getStudentEvaluationScore(id as UUID, evalId as UUID);
             if (!item) return json404Entity('StudentEvaluationScore');
             return json200({ item });
         }
 
-        // /:id/student-evaluations/:evaluationId/submit
-        if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'submit') {
-            if (method !== 'POST' && method !== 'PATCH') {
-                return json405(['POST', 'PATCH', 'OPTIONS']);
+        // /:id/student-evaluations/:evaluationId/submit (aliases: submit/finalize)
+        if (
+            t.length === 4 &&
+            (t[3] ?? '').toLowerCase() &&
+            ((t[3] ?? '').toLowerCase() === 'submit' || (t[3] ?? '').toLowerCase() === 'finalize')
+        ) {
+            if (method !== 'POST' && method !== 'PATCH') return json405(['POST', 'PATCH', 'OPTIONS']);
+
+            const body = await readJsonRecord(req);
+            const answersRaw = body?.answers as unknown;
+
+            if (answersRaw !== undefined && !isJsonObject(answersRaw)) {
+                return json400('answers must be a JSON object with JSON-serializable values.');
+            }
+
+            if (answersRaw !== undefined) {
+                try {
+                    const patched = await controller.patchStudentEvaluationAnswers(
+                        id as UUID,
+                        evalId as UUID,
+                        { answers: answersRaw as JsonObject },
+                    );
+                    if (!patched) return json404Entity('StudentEvaluation');
+                } catch (err) {
+                    if (err instanceof StudentEvalStateError) {
+                        return json400(err.message);
+                    }
+                    throw err;
+                }
             }
 
             try {
@@ -935,10 +1151,7 @@ export async function dispatchStudentRequest(
 
         // /:id/student-evaluations/:evaluationId/lock
         if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'lock') {
-            if (method !== 'POST' && method !== 'PATCH') {
-                return json405(['POST', 'PATCH', 'OPTIONS']);
-            }
-
+            if (method !== 'POST' && method !== 'PATCH') return json405(['POST', 'PATCH', 'OPTIONS']);
             try {
                 const item = await controller.lockStudentEvaluation(id as UUID, evalId as UUID);
                 if (!item) return json404Entity('StudentEvaluation');
@@ -954,18 +1167,16 @@ export async function dispatchStudentRequest(
         return json404Api();
     }
 
-    if (t.length === 2 && (t[1] ?? '').toLowerCase() === 'status') {
-        if (method !== 'PATCH' && method !== 'POST') {
-            return json405(['PATCH', 'POST', 'OPTIONS']);
-        }
+    // staff/admin status toggle etc (unchanged)
+    const seg2 = (t[2] ?? '').toLowerCase();
+    if (t.length === 2 && seg2 === 'status') {
+        if (method !== 'PATCH' && method !== 'POST') return json405(['PATCH', 'POST', 'OPTIONS']);
 
         const body = await readJsonRecord(req);
         if (!body) return json400('Invalid JSON body.');
 
         const status = toUserStatus(body.status);
-        if (!status) {
-            return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
-        }
+        if (!status) return json400(`Invalid status. Allowed: ${USER_STATUSES.join(', ')}`);
 
         const item = await controller.setStatus(id as UUID, status);
         if (!item) return json404Entity('Student');
