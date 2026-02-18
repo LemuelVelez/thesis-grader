@@ -1,6 +1,6 @@
 import type {
+    DefenseScheduleRow,
     JsonObject,
-    StudentEvalStatus,
     StudentEvaluationPatch,
     StudentEvaluationRow,
     StudentEvaluationScoreInsert,
@@ -8,6 +8,7 @@ import type {
     StudentFeedbackFormRow,
     StudentPatch,
     StudentRow,
+    ThesisGroupRow,
     UserInsert,
     UserPatch,
     UserRow,
@@ -89,6 +90,24 @@ function isLockedEval(row: StudentEvaluationRow): boolean {
 function isSubmittedEval(row: StudentEvaluationRow): boolean {
     return row.status === 'submitted' || row.submitted_at !== null;
 }
+
+type StudentEvaluationContext = {
+    /**
+     * Hydrated context for frontend UX:
+     * - schedule + group objects for rendering thesis/group title and defense schedule details
+     * - flattened aliases used by older frontend variants
+     */
+    schedule: DefenseScheduleRow | null;
+    group: ThesisGroupRow | null;
+
+    // flattened aliases (frontend looks for these too)
+    group_title: string | null;
+    title: string | null;
+    scheduled_at: string | null;
+    room: string | null;
+    program: string | null;
+    term: string | null;
+};
 
 export class StudentController {
     private readonly studentFeedback: StudentFeedbackService;
@@ -173,6 +192,60 @@ export class StudentController {
             createPayload,
             patchPayload,
         );
+    }
+
+    private async hydrateEvaluation(
+        tx: Services,
+        evaluation: StudentEvaluationRow,
+        cache?: {
+            schedules: Map<UUID, DefenseScheduleRow | null>;
+            groups: Map<UUID, ThesisGroupRow | null>;
+        },
+    ): Promise<StudentEvaluationRow & StudentEvaluationContext> {
+        const schedules = cache?.schedules ?? new Map<UUID, DefenseScheduleRow | null>();
+        const groups = cache?.groups ?? new Map<UUID, ThesisGroupRow | null>();
+
+        const getSchedule = async (id: UUID): Promise<DefenseScheduleRow | null> => {
+            if (schedules.has(id)) return schedules.get(id) ?? null;
+            const row = await tx.defense_schedules.findById(id);
+            schedules.set(id, row ?? null);
+            return row ?? null;
+        };
+
+        const getGroup = async (id: UUID): Promise<ThesisGroupRow | null> => {
+            if (groups.has(id)) return groups.get(id) ?? null;
+            const row = await tx.thesis_groups.findById(id);
+            groups.set(id, row ?? null);
+            return row ?? null;
+        };
+
+        const schedule = await getSchedule(evaluation.schedule_id);
+        const group = schedule ? await getGroup(schedule.group_id) : null;
+
+        const ctx: StudentEvaluationContext = {
+            schedule,
+            group,
+            group_title: group?.title ?? null,
+            title: group?.title ?? null,
+            scheduled_at: schedule?.scheduled_at ?? null,
+            room: schedule?.room ?? null,
+            program: group?.program ?? null,
+            term: group?.term ?? null,
+        };
+
+        return { ...evaluation, ...ctx };
+    }
+
+    private async hydrateEvaluations(
+        tx: Services,
+        evaluations: StudentEvaluationRow[],
+    ): Promise<(StudentEvaluationRow & StudentEvaluationContext)[]> {
+        const cache = {
+            schedules: new Map<UUID, DefenseScheduleRow | null>(),
+            groups: new Map<UUID, ThesisGroupRow | null>(),
+        };
+
+        return Promise.all(evaluations.map((ev) => this.hydrateEvaluation(tx, ev, cache)));
     }
 
     /* -------------------------- STUDENT FEEDBACK FORM -------------------------- */
@@ -274,6 +347,8 @@ export class StudentController {
     /**
      * List all feedback/survey/reflection entries of a student.
      * Optional filter by schedule_id.
+     *
+     * IMPORTANT: Hydrates schedule + group context for frontend UX.
      */
     async listStudentEvaluations(
         studentId: UUID,
@@ -282,17 +357,24 @@ export class StudentController {
         const user = await this.services.users.findById(studentId);
         if (!user || user.role !== 'student') return null;
 
+        let rows: StudentEvaluationRow[] = [];
+
         if (opts.scheduleId) {
-            return this.services.student_evaluations.findMany({
+            rows = await this.services.student_evaluations.findMany({
                 where: { student_id: studentId, schedule_id: opts.scheduleId },
             });
+        } else {
+            rows = await this.services.student_evaluations.listByStudent(studentId);
         }
 
-        return this.services.student_evaluations.listByStudent(studentId);
+        // Hydrate schedule/group so frontend doesn't show empty thesis/group and defense schedule.
+        const hydrated = await this.hydrateEvaluations(this.services, rows);
+        return hydrated;
     }
 
     /**
      * Get a single student evaluation ensuring ownership.
+     * IMPORTANT: Hydrates schedule + group context for frontend UX.
      */
     async getStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         const user = await this.services.users.findById(studentId);
@@ -300,7 +382,9 @@ export class StudentController {
 
         const row = await this.services.student_evaluations.findById(evaluationId);
         if (!row || row.student_id !== studentId) return null;
-        return row;
+
+        const hydrated = await this.hydrateEvaluation(this.services, row);
+        return hydrated;
     }
 
     /**
@@ -342,6 +426,8 @@ export class StudentController {
     /**
      * Create (if missing) the student's survey/feedback/reflection for a defense schedule.
      * If already exists, returns the existing row (idempotent).
+     *
+     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
      */
     async ensureStudentEvaluation(
         studentId: UUID,
@@ -356,7 +442,10 @@ export class StudentController {
                 student_id: studentId,
             });
 
-            if (existing) return existing;
+            if (existing) {
+                const hydratedExisting = await this.hydrateEvaluation(tx, existing);
+                return hydratedExisting;
+            }
 
             const activeForm = await this.studentFeedback.getActiveForm(tx);
             const schema = (activeForm?.schema ?? {}) as JsonObject;
@@ -391,7 +480,8 @@ export class StudentController {
                 // Score is best-effort; evaluation creation should still succeed.
             }
 
-            return created;
+            const hydrated = await this.hydrateEvaluation(tx, created);
+            return hydrated;
         });
     }
 
@@ -399,6 +489,8 @@ export class StudentController {
      * Patch answers while still editable.
      * - pending: allowed
      * - submitted/locked: not allowed
+     *
+     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
      */
     async patchStudentEvaluationAnswers(
         studentId: UUID,
@@ -452,13 +544,16 @@ export class StudentController {
                 mergedAnswers,
             );
 
-            return finalRow;
+            const hydrated = await this.hydrateEvaluation(tx, finalRow);
+            return hydrated;
         });
     }
 
     /**
      * Submit the student's feedback/survey/reflection.
      * Once submitted, it becomes read-only (unless your admin flow unlocks it elsewhere).
+     *
+     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
      */
     async submitStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         return this.services.transaction<StudentEvaluationRow | null>(async (tx) => {
@@ -513,12 +608,15 @@ export class StudentController {
                 submittedAt,
             );
 
-            return finalRow;
+            const hydrated = await this.hydrateEvaluation(tx, finalRow);
+            return hydrated;
         });
     }
 
     /**
      * Lock the student's feedback entry (typically used by staff/admin workflows).
+     *
+     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
      */
     async lockStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         return this.services.transaction<StudentEvaluationRow | null>(async (tx) => {
@@ -531,13 +629,21 @@ export class StudentController {
             const lockedAt = nowIso();
 
             const locked = await tx.student_evaluations.lock(evaluationId, lockedAt);
-            if (locked) return locked;
+            if (locked) {
+                const hydratedLocked = await this.hydrateEvaluation(tx, locked);
+                return hydratedLocked;
+            }
 
             const patched = await tx.student_evaluations.updateOne(
                 { id: evaluationId },
                 { status: 'locked', locked_at: lockedAt, updated_at: lockedAt },
             );
-            return patched ?? (await tx.student_evaluations.findById(evaluationId));
+
+            const finalRow = patched ?? (await tx.student_evaluations.findById(evaluationId));
+            if (!finalRow) return null;
+
+            const hydrated = await this.hydrateEvaluation(tx, finalRow);
+            return hydrated;
         });
     }
 

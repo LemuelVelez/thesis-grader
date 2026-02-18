@@ -256,6 +256,24 @@ async function resolveStudentIdFromAlias(
     return null;
 }
 
+function withListAliases<T>(items: T[]) {
+    // Frontend resilience: support multiple legacy payload shapes
+    return {
+        items,
+        evaluations: items,
+        student_evaluations: items,
+        count: items.length,
+    };
+}
+
+function withItemAliases<T>(item: T) {
+    return {
+        item,
+        evaluation: item,
+        student_evaluation: item,
+    };
+}
+
 /**
  * Student self endpoints (no explicit :id), used by the frontend:
  * - GET /api/student-evaluations/schema
@@ -307,13 +325,13 @@ async function dispatchStudentSelfEvaluationsRequest(
 
         parseListQuery<StudentEvaluationRow>(req);
 
+        // Controller hydrates schedule + group context (so thesis/group + defense schedule are not empty)
         const items = await controller.listStudentEvaluations(studentId, {});
         if (!items) return json404Entity('Student');
 
         return json200({
             studentId,
-            items,
-            count: items.length,
+            ...withListAliases(items),
             routes: {
                 schema: 'GET /api/student-evaluations/schema',
                 formSchema: 'GET /api/student-evaluations/form/schema',
@@ -376,6 +394,7 @@ async function dispatchStudentSelfEvaluationsRequest(
 
         parseListQuery<StudentEvaluationRow>(req);
 
+        // Controller hydrates schedule + group context (so thesis/group + defense schedule are not empty)
         const items = await controller.listStudentEvaluations(studentId, {
             scheduleId: scheduleIdParam as UUID | undefined,
         });
@@ -384,17 +403,19 @@ async function dispatchStudentSelfEvaluationsRequest(
 
         // UX-friendly: do NOT 404 when there is simply no evaluation yet.
         if (seg0 === 'me') {
-            return json200({ studentId, item: items[0] ?? null });
+            return json200({
+                studentId,
+                ...withItemAliases(items[0] ?? null),
+            });
         }
 
-        return json200({ studentId, items, count: items.length });
+        return json200({
+            studentId,
+            ...withListAliases(items),
+        });
     }
 
-    // -------------------- NEW: evaluationId-based self routes --------------------
-    // /api/student-evaluations/:evaluationId
-    // /api/student-evaluations/:evaluationId/(me|item|detail)
-    // /api/student-evaluations/:evaluationId/(answers|draft|response)
-    // /api/student-evaluations/:evaluationId/(submit|finalize|lock|score|status)
+    // -------------------- evaluationId-based self routes --------------------
     if (tail.length >= 1 && isUuidLike(tail[0])) {
         const evaluationId = tail[0] as UUID;
         const action = (tail[1] ?? '').toLowerCase();
@@ -420,7 +441,7 @@ async function dispatchStudentSelfEvaluationsRequest(
         ) {
             const item = await getDetail();
             if (!item) return json404Entity('StudentEvaluation');
-            return json200({ studentId, item });
+            return json200({ studentId, ...withItemAliases(item) });
         }
 
         // GET score
@@ -468,12 +489,11 @@ async function dispatchStudentSelfEvaluationsRequest(
             }
 
             // Optional: allow status transition through PATCH for frontend resilience.
-            // (Frontend sometimes falls back to PATCH { answers, status: "submitted" }.)
             if (statusRaw === 'submitted') {
                 try {
                     const submitted = await controller.submitStudentEvaluation(studentId, evaluationId);
                     if (!submitted) return json404Entity('StudentEvaluation');
-                    return json200({ studentId, item: submitted });
+                    return json200({ studentId, ...withItemAliases(submitted) });
                 } catch (err) {
                     if (err instanceof StudentEvalValidationError) {
                         return NextResponse.json(
@@ -496,7 +516,7 @@ async function dispatchStudentSelfEvaluationsRequest(
                 try {
                     const locked = await controller.lockStudentEvaluation(studentId, evaluationId);
                     if (!locked) return json404Entity('StudentEvaluation');
-                    return json200({ studentId, item: locked });
+                    return json200({ studentId, ...withItemAliases(locked) });
                 } catch (err) {
                     if (err instanceof StudentEvalStateError) {
                         return json400(err.message);
@@ -505,7 +525,7 @@ async function dispatchStudentSelfEvaluationsRequest(
                 }
             }
 
-            return json200({ studentId, item: current });
+            return json200({ studentId, ...withItemAliases(current) });
         }
 
         // POST/PATCH submit (aliases: submit, finalize)
@@ -538,7 +558,7 @@ async function dispatchStudentSelfEvaluationsRequest(
             try {
                 const item = await controller.submitStudentEvaluation(studentId, evaluationId);
                 if (!item) return json404Entity('StudentEvaluation');
-                return json200({ studentId, item });
+                return json200({ studentId, ...withItemAliases(item) });
             } catch (err) {
                 if (err instanceof StudentEvalValidationError) {
                     return NextResponse.json(
@@ -562,7 +582,7 @@ async function dispatchStudentSelfEvaluationsRequest(
             try {
                 const item = await controller.lockStudentEvaluation(studentId, evaluationId);
                 if (!item) return json404Entity('StudentEvaluation');
-                return json200({ studentId, item });
+                return json200({ studentId, ...withItemAliases(item) });
             } catch (err) {
                 if (err instanceof StudentEvalStateError) {
                     return json400(err.message);
@@ -757,7 +777,7 @@ export async function dispatchStudentRequest(
                 const item = items[0] ?? null;
                 if (!item) return json404Entity('StudentEvaluation');
 
-                return json200({ item });
+                return json200({ ...withItemAliases(item) });
             }
 
             if (method === 'POST' || method === 'PUT') {
@@ -783,7 +803,7 @@ export async function dispatchStudentRequest(
 
                 const created = before.length === 0;
                 return NextResponse.json(
-                    { item, created },
+                    { ...withItemAliases(item), created },
                     { status: created ? 201 : 200 },
                 );
             }
@@ -807,7 +827,7 @@ export async function dispatchStudentRequest(
                 });
 
                 if (!items) return json404Entity('Student');
-                return json200({ items });
+                return json200({ ...withListAliases(items) });
             }
 
             if (method === 'POST') {
@@ -830,7 +850,7 @@ export async function dispatchStudentRequest(
                 });
 
                 if (!item) return json404Entity('Student');
-                return json201({ item });
+                return json201({ ...withItemAliases(item) });
             }
 
             return json405(['GET', 'POST', 'OPTIONS']);
@@ -845,7 +865,7 @@ export async function dispatchStudentRequest(
             if (method === 'GET') {
                 const item = await controller.getStudentEvaluation(id as UUID, evalId as UUID);
                 if (!item) return json404Entity('StudentEvaluation');
-                return json200({ item });
+                return json200({ ...withItemAliases(item) });
             }
 
             if (method === 'PATCH' || method === 'PUT') {
@@ -864,7 +884,7 @@ export async function dispatchStudentRequest(
                         { answers: answersRaw as JsonObject },
                     );
                     if (!item) return json404Entity('StudentEvaluation');
-                    return json200({ item });
+                    return json200({ ...withItemAliases(item) });
                 } catch (err) {
                     if (err instanceof StudentEvalStateError) {
                         return json400(err.message);
@@ -894,7 +914,7 @@ export async function dispatchStudentRequest(
             try {
                 const item = await controller.submitStudentEvaluation(id as UUID, evalId as UUID);
                 if (!item) return json404Entity('StudentEvaluation');
-                return json200({ item });
+                return json200({ ...withItemAliases(item) });
             } catch (err) {
                 if (err instanceof StudentEvalValidationError) {
                     return NextResponse.json(
@@ -922,7 +942,7 @@ export async function dispatchStudentRequest(
             try {
                 const item = await controller.lockStudentEvaluation(id as UUID, evalId as UUID);
                 if (!item) return json404Entity('StudentEvaluation');
-                return json200({ item });
+                return json200({ ...withItemAliases(item) });
             } catch (err) {
                 if (err instanceof StudentEvalStateError) {
                     return json400(err.message);
