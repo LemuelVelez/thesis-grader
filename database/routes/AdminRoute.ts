@@ -236,6 +236,100 @@ async function dispatchAdminStudentProfileRequest(
     return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
 }
 
+/* -------------------------- NEW: EVALUATION PREVIEWS -------------------------- */
+/**
+ * GET /api/admin/evaluation-previews/schedule/:scheduleId
+ * GET /api/admin/evaluation-previews/:scheduleId   (uuid shortcut)
+ *
+ * Query params:
+ * - includeStudentAnswers=true|false (default true)
+ * - includePanelistScores=true|false (default true)
+ * - includePanelistComments=true|false (default true)
+ */
+async function dispatchAdminEvaluationPreviewsRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = new AdminController(services);
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        return json200({
+            service: 'admin.evaluation-previews',
+            routes: {
+                schedule: 'GET /api/admin/evaluation-previews/schedule/:scheduleId',
+                shortcut: 'GET /api/admin/evaluation-previews/:scheduleId',
+                query: {
+                    includeStudentAnswers: 'boolean (default true)',
+                    includePanelistScores: 'boolean (default true)',
+                    includePanelistComments: 'boolean (default true)',
+                },
+            },
+        });
+    }
+
+    if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+    const seg0 = (tail[0] ?? '').toLowerCase();
+    const seg1 = (tail[1] ?? '').toLowerCase();
+
+    let scheduleId: string | null = null;
+
+    // /evaluation-previews/schedule/:scheduleId
+    if (seg0 === 'schedule' && tail.length >= 2) {
+        scheduleId = tail[1] ?? null;
+    }
+
+    // /evaluation-previews/:scheduleId (uuid shortcut)
+    if (!scheduleId && tail.length === 1) {
+        scheduleId = tail[0] ?? null;
+    }
+
+    // also accept /evaluation-previews/defense-schedule/:scheduleId
+    if (!scheduleId && (seg0 === 'defense-schedule' || seg0 === 'defense-schedules') && tail.length >= 2) {
+        scheduleId = tail[1] ?? null;
+    }
+
+    if (!scheduleId || !isUuidLike(scheduleId)) {
+        return json400('scheduleId is required and must be a valid UUID.');
+    }
+
+    const includeStudentAnswers =
+        parseBoolean(req.nextUrl.searchParams.get('includeStudentAnswers')) ?? true;
+
+    const includePanelistScores =
+        parseBoolean(req.nextUrl.searchParams.get('includePanelistScores')) ?? true;
+
+    const includePanelistComments =
+        parseBoolean(req.nextUrl.searchParams.get('includePanelistComments')) ?? true;
+
+    try {
+        const preview = await controller.getEvaluationPreviewBySchedule(scheduleId as UUID, {
+            includeStudentAnswers,
+            includePanelistScores,
+            includePanelistComments,
+        });
+
+        if (!preview) return json404Entity('Defense schedule');
+
+        return json200({
+            scheduleId: preview.schedule.id,
+            groupId: preview.schedule.group_id,
+            preview,
+        });
+    } catch (error) {
+        return NextResponse.json(
+            {
+                error: 'Failed to load evaluation previews.',
+                message: toErrorMessage(error),
+            },
+            { status: 500 },
+        );
+    }
+}
+
 async function dispatchAdminStudentFeedbackRequest(
     req: NextRequest,
     tail: string[],
@@ -620,6 +714,16 @@ export async function dispatchAdminRequest(
     }
 
     const seg0 = (t[0] ?? '').toLowerCase();
+
+    if (
+        seg0 === 'evaluation-previews' ||
+        seg0 === 'evaluation-preview' ||
+        seg0 === 'evaluation-results' ||
+        seg0 === 'evaluation-result' ||
+        seg0 === 'evaluation-previews-v1'
+    ) {
+        return dispatchAdminEvaluationPreviewsRequest(req, t.slice(1), services);
+    }
 
     if (
         seg0 === 'student-feedback' ||

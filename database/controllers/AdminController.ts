@@ -1,8 +1,13 @@
 import type {
+    DbNumeric,
     DefenseScheduleInsert,
     DefenseSchedulePatch,
     DefenseScheduleRow,
+    EvaluationOverallPercentageRow,
+    EvaluationRow,
+    EvaluationScoreRow,
     JsonObject,
+    RubricCriteriaRow,
     StudentFeedbackFormInsert,
     StudentFeedbackFormPatch,
     StudentFeedbackFormRow,
@@ -70,6 +75,22 @@ function isUniqueViolationLike(error: unknown): boolean {
     return false;
 }
 
+function toNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const t = value.trim();
+        if (!t) return null;
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+    }
+    return null;
+}
+
+function dbNumericToNumber(value: DbNumeric | null | undefined, fallback = 0): number {
+    const n = toNumber(value);
+    return n === null ? fallback : n;
+}
+
 export type CreateAdminInput = Omit<UserInsert, 'role'>;
 export type UpdateAdminInput = Omit<UserPatch, 'role'>;
 
@@ -89,6 +110,69 @@ export interface AdminDefenseScheduleView extends DefenseScheduleRow {
     rubric_template_name: string | null;
     created_by_name: string | null;
     created_by_email: string | null;
+}
+
+/* ----------------------- EVALUATION PREVIEW (ADMIN) ----------------------- */
+
+export type EvaluationPreviewTargetType = EvaluationScoreRow['target_type'];
+
+export interface PanelistScorePreviewItem {
+    id: UUID;
+    evaluation_id: UUID;
+    evaluator_id: UUID;
+
+    target_type: EvaluationPreviewTargetType;
+    target_id: UUID;
+    target_name: string | null;
+
+    criterion_id: UUID;
+    criterion: string | null;
+    criterion_description: string | null;
+
+    weight: DbNumeric | null;
+    min_score: number | null;
+    max_score: number | null;
+
+    score: number;
+    comment: string | null;
+}
+
+export interface PanelistTargetSummary {
+    target_type: EvaluationPreviewTargetType;
+    target_id: UUID;
+    target_name: string | null;
+
+    criteria_scored: number;
+    weighted_score: number;
+    weighted_max: number;
+    percentage: number;
+}
+
+export interface PanelistEvaluationPreview {
+    evaluation: EvaluationRow & {
+        evaluator_name: string | null;
+        evaluator_email: string | null;
+    };
+
+    overall: (EvaluationOverallPercentageRow & { schedule_id: UUID }) | null;
+
+    targets: PanelistTargetSummary[];
+    scores: PanelistScorePreviewItem[];
+}
+
+export interface AdminEvaluationPreview {
+    schedule: AdminDefenseScheduleView;
+    student: {
+        items: AdminStudentFeedbackRow[];
+        count: number;
+        includeAnswers: boolean;
+    };
+    panelist: {
+        items: PanelistEvaluationPreview[];
+        count: number;
+        includeScores: boolean;
+        includeComments: boolean;
+    };
 }
 
 export class AdminController {
@@ -164,6 +248,311 @@ export class AdminController {
         scheduleId: UUID,
     ): Promise<AdminStudentFeedbackRow[]> {
         return this.studentFeedback.listForScheduleDetailed(scheduleId);
+    }
+
+    /* ---------------------------- EVALUATION PREVIEW --------------------------- */
+
+    /**
+     * Admin preview endpoint aggregator:
+     * - Student evaluations: answers + persisted score summary (from StudentFeedbackService)
+     * - Panelist evaluations: rubric scores per target (group/student) + criterion metadata + per-target summary
+     */
+    async getEvaluationPreviewBySchedule(
+        scheduleId: UUID,
+        options: {
+            includeStudentAnswers?: boolean;
+            includePanelistScores?: boolean;
+            includePanelistComments?: boolean;
+        } = {},
+    ): Promise<AdminEvaluationPreview | null> {
+        const includeStudentAnswers = options.includeStudentAnswers ?? true;
+        const includePanelistScores = options.includePanelistScores ?? true;
+        const includePanelistComments = options.includePanelistComments ?? true;
+
+        const scheduleRow = await this.getDefenseScheduleByIdDetailed(scheduleId);
+        if (!scheduleRow) return null;
+
+        const [studentItemsRaw, panelistItems] = await Promise.all([
+            this.studentFeedback.listForScheduleDetailed(scheduleId),
+            this.getPanelistEvaluationPreviewsBySchedule(scheduleRow, {
+                includeScores: includePanelistScores,
+                includeComments: includePanelistComments,
+            }),
+        ]);
+
+        const studentItems: AdminStudentFeedbackRow[] = includeStudentAnswers
+            ? studentItemsRaw
+            : studentItemsRaw.map((row) => ({
+                ...row,
+                answers: {} as any,
+            }));
+
+        return {
+            schedule: scheduleRow,
+            student: {
+                items: studentItems,
+                count: studentItems.length,
+                includeAnswers: includeStudentAnswers,
+            },
+            panelist: {
+                items: panelistItems,
+                count: panelistItems.length,
+                includeScores: includePanelistScores,
+                includeComments: includePanelistComments,
+            },
+        };
+    }
+
+    private async getPanelistEvaluationPreviewsBySchedule(
+        schedule: AdminDefenseScheduleView,
+        options: { includeScores: boolean; includeComments: boolean },
+    ): Promise<PanelistEvaluationPreview[]> {
+        const evaluations: EvaluationRow[] = await this.services.evaluations.findMany({
+            where: { schedule_id: schedule.id },
+            orderBy: 'created_at',
+            orderDirection: 'asc',
+            limit: 500,
+        });
+
+        if (evaluations.length === 0) return [];
+
+        // Best-effort overall view (if view exists)
+        let overallRows: EvaluationOverallPercentageRow[] = [];
+        try {
+            overallRows = await (this.services as any).v_evaluation_overall_percentages.findMany({
+                where: { schedule_id: schedule.id },
+                limit: 500,
+            });
+        } catch {
+            overallRows = [];
+        }
+        const overallByEvalId = new Map<UUID, EvaluationOverallPercentageRow>();
+        for (const r of overallRows) overallByEvalId.set(r.evaluation_id, r);
+
+        // Fetch evaluator users
+        const evaluatorIds = Array.from(new Set(evaluations.map((e) => e.evaluator_id)));
+        const evaluatorRows = await Promise.all(
+            evaluatorIds.map(async (id) => this.services.users.findById(id)),
+        );
+        const evaluatorById = new Map<UUID, UserRow>();
+        for (const u of evaluatorRows) {
+            if (u) evaluatorById.set(u.id, u);
+        }
+
+        // Fetch scores per evaluation (avoid assuming "IN" support)
+        const scoresArrays: EvaluationScoreRow[][] = await Promise.all(
+            evaluations.map((ev) =>
+                this.services.evaluation_scores.findMany({
+                    where: { evaluation_id: ev.id },
+                    orderBy: 'criterion_id',
+                    orderDirection: 'asc',
+                    limit: 5000,
+                }),
+            ),
+        );
+
+        const scoresByEvalId = new Map<UUID, EvaluationScoreRow[]>();
+        const allScores: EvaluationScoreRow[] = [];
+        evaluations.forEach((ev, idx) => {
+            const arr = scoresArrays[idx] ?? [];
+            scoresByEvalId.set(ev.id, arr);
+            allScores.push(...arr);
+        });
+
+        // Criterion metadata:
+        // Prefer fetching by rubric_template_id if present; otherwise by unique criterion ids used.
+        const criteriaById = new Map<UUID, RubricCriteriaRow>();
+
+        if (schedule.rubric_template_id) {
+            try {
+                const criteria = await this.services.rubric_criteria.findMany({
+                    where: { template_id: schedule.rubric_template_id },
+                    orderBy: 'created_at',
+                    orderDirection: 'asc',
+                    limit: 5000,
+                });
+                for (const c of criteria) criteriaById.set(c.id, c);
+            } catch {
+                // fall back below
+            }
+        }
+
+        if (criteriaById.size === 0) {
+            const criterionIds = Array.from(new Set(allScores.map((s) => s.criterion_id)));
+            const criterionRows = await Promise.all(
+                criterionIds.map(async (id) => this.services.rubric_criteria.findById(id)),
+            );
+            for (const c of criterionRows) {
+                if (c) criteriaById.set(c.id, c);
+            }
+        }
+
+        // Resolve target names (students) best-effort
+        const studentTargetIds = Array.from(
+            new Set(allScores.filter((s) => s.target_type === 'student').map((s) => s.target_id)),
+        );
+
+        const studentUsers = await Promise.all(
+            studentTargetIds.map(async (id) => this.services.users.findById(id)),
+        );
+
+        const studentNameById = new Map<UUID, string | null>();
+        for (const u of studentUsers) {
+            if (u) studentNameById.set(u.id, u.name ?? null);
+        }
+
+        // Stable ordering: locked/submitted first, then pending; then evaluator name
+        const statusOrder: Record<string, number> = {
+            locked: 1,
+            submitted: 2,
+            pending: 3,
+        };
+
+        const sortedEvals = [...evaluations].sort((a, b) => {
+            const aS = statusOrder[a.status ?? ''] ?? 99;
+            const bS = statusOrder[b.status ?? ''] ?? 99;
+            if (aS !== bS) return aS - bS;
+
+            const aName = (evaluatorById.get(a.evaluator_id)?.name ?? '').toLowerCase();
+            const bName = (evaluatorById.get(b.evaluator_id)?.name ?? '').toLowerCase();
+            return aName.localeCompare(bName);
+        });
+
+        return sortedEvals.map((ev): PanelistEvaluationPreview => {
+            const evaluator = evaluatorById.get(ev.evaluator_id) ?? null;
+            const scores = scoresByEvalId.get(ev.id) ?? [];
+
+            const scoreItems: PanelistScorePreviewItem[] = options.includeScores
+                ? scores.map((s) => {
+                    const c = criteriaById.get(s.criterion_id) ?? null;
+
+                    const targetName =
+                        s.target_type === 'group'
+                            ? schedule.group_title ?? null
+                            : (studentNameById.get(s.target_id) ?? null);
+
+                    return {
+                        id: s.id,
+                        evaluation_id: s.evaluation_id,
+                        evaluator_id: ev.evaluator_id,
+
+                        target_type: s.target_type,
+                        target_id: s.target_id,
+                        target_name: targetName,
+
+                        criterion_id: s.criterion_id,
+                        criterion: c?.criterion ?? null,
+                        criterion_description: c?.description ?? null,
+
+                        weight: (c?.weight ?? null) as any,
+                        min_score: c?.min_score ?? null,
+                        max_score: c?.max_score ?? null,
+
+                        score: s.score,
+                        comment: options.includeComments ? s.comment : null,
+                    };
+                })
+                : [];
+
+            const targets = this.computePanelistTargetSummaries(
+                scores,
+                criteriaById,
+                schedule,
+                studentNameById,
+            );
+
+            const overall = overallByEvalId.get(ev.id) ?? null;
+
+            return {
+                evaluation: {
+                    ...ev,
+                    evaluator_name: evaluator?.name ?? null,
+                    evaluator_email: evaluator?.email ?? null,
+                },
+                overall: overall ? ({ ...overall, schedule_id: schedule.id } as any) : null,
+                targets,
+                scores: scoreItems,
+            };
+        });
+    }
+
+    private computePanelistTargetSummaries(
+        scores: EvaluationScoreRow[],
+        criteriaById: Map<UUID, RubricCriteriaRow>,
+        schedule: AdminDefenseScheduleView,
+        studentNameById: Map<UUID, string | null>,
+    ): PanelistTargetSummary[] {
+        // Aggregate by target_type + target_id
+        type Agg = {
+            target_type: EvaluationPreviewTargetType;
+            target_id: UUID;
+            target_name: string | null;
+            criteria_scored: number;
+            weighted_score: number;
+            weighted_max: number;
+        };
+
+        const map = new Map<string, Agg>();
+
+        for (const s of scores) {
+            const c = criteriaById.get(s.criterion_id) ?? null;
+
+            const weight = dbNumericToNumber(c?.weight ?? null, 0);
+            const maxScore = c?.max_score ?? 0;
+
+            const weightedMax = weight > 0 ? weight : 0;
+            const weightedScore =
+                weightedMax > 0 && maxScore > 0
+                    ? (s.score / maxScore) * weightedMax
+                    : 0;
+
+            const targetName =
+                s.target_type === 'group'
+                    ? schedule.group_title ?? null
+                    : (studentNameById.get(s.target_id) ?? null);
+
+            const key = `${s.target_type}:${s.target_id}`;
+            const existing = map.get(key);
+
+            if (!existing) {
+                map.set(key, {
+                    target_type: s.target_type,
+                    target_id: s.target_id,
+                    target_name: targetName,
+                    criteria_scored: 1,
+                    weighted_score: weightedScore,
+                    weighted_max: weightedMax,
+                });
+            } else {
+                existing.criteria_scored += 1;
+                existing.weighted_score += weightedScore;
+                existing.weighted_max += weightedMax;
+            }
+        }
+
+        const out = Array.from(map.values()).map((a) => {
+            const percentage = a.weighted_max > 0 ? (a.weighted_score / a.weighted_max) * 100 : 0;
+            return {
+                target_type: a.target_type,
+                target_id: a.target_id,
+                target_name: a.target_name,
+                criteria_scored: a.criteria_scored,
+                weighted_score: Number.isFinite(a.weighted_score) ? a.weighted_score : 0,
+                weighted_max: Number.isFinite(a.weighted_max) ? a.weighted_max : 0,
+                percentage: Number.isFinite(percentage) ? percentage : 0,
+            };
+        });
+
+        // Stable ordering: group first then students by name
+        return out.sort((a, b) => {
+            const aP = a.target_type === 'group' ? 0 : 1;
+            const bP = b.target_type === 'group' ? 0 : 1;
+            if (aP !== bP) return aP - bP;
+
+            const aName = (a.target_name ?? '').toLowerCase();
+            const bName = (b.target_name ?? '').toLowerCase();
+            return aName.localeCompare(bName);
+        });
     }
 
     /* ---------------------------------- READ --------------------------------- */
