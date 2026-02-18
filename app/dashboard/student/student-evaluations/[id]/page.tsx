@@ -1106,23 +1106,6 @@ export default function StudentEvaluationDetailPage() {
                             </div>
 
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <div className="relative w-full sm:w-72">
-                                    <Input value={evaluationId} readOnly className="pr-20 font-mono text-xs" />
-                                    <div className="absolute right-2 top-1.5 flex gap-2">
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => {
-                                                navigator.clipboard
-                                                    .writeText(evaluationId)
-                                                    .then(() => toast.success("Copied evaluation ID."))
-                                                    .catch(() => toast.error("Failed to copy."))
-                                            }}
-                                        >
-                                            Copy
-                                        </Button>
-                                    </div>
-                                </div>
 
                                 <Button
                                     variant="outline"

@@ -263,6 +263,11 @@ async function resolveStudentIdFromAlias(
  * - GET /api/student-evaluations/active-form
  * - GET /api/student-evaluations/my
  * - GET /api/student-evaluations/me
+ * - GET /api/student-evaluations/:evaluationId
+ * - GET /api/student-evaluations/:evaluationId/(me|item|detail)
+ * - PATCH /api/student-evaluations/:evaluationId/(answers|draft|response)
+ * - POST/PATCH /api/student-evaluations/:evaluationId/(submit|finalize|lock)
+ * - GET /api/student-evaluations/:evaluationId/score
  */
 async function dispatchStudentSelfEvaluationsRequest(
     req: NextRequest,
@@ -287,6 +292,12 @@ async function dispatchStudentSelfEvaluationsRequest(
                     activeForm: 'GET /api/student-evaluations/active-form',
                     my: 'GET /api/student-evaluations/my',
                     me: 'GET /api/student-evaluations/me',
+                    detail: 'GET /api/student-evaluations/:evaluationId',
+                    detailAliases: 'GET /api/student-evaluations/:evaluationId/(me|item|detail)',
+                    saveDraft: 'PATCH /api/student-evaluations/:evaluationId/(answers|draft|response)',
+                    submit: 'POST /api/student-evaluations/:evaluationId/(submit|finalize)',
+                    lock: 'POST /api/student-evaluations/:evaluationId/lock',
+                    score: 'GET /api/student-evaluations/:evaluationId/score',
                     // Backward/compat:
                     studentsMeSchema: 'GET /api/students/me/student-evaluations/schema',
                     studentsCurrentSchema: 'GET /api/students/current/student-evaluations/schema',
@@ -309,6 +320,11 @@ async function dispatchStudentSelfEvaluationsRequest(
                 activeForm: 'GET /api/student-evaluations/active-form',
                 my: 'GET /api/student-evaluations/my',
                 me: 'GET /api/student-evaluations/me',
+                detail: 'GET /api/student-evaluations/:evaluationId',
+                saveDraft: 'PATCH /api/student-evaluations/:evaluationId',
+                submit: 'POST /api/student-evaluations/:evaluationId/submit',
+                lock: 'POST /api/student-evaluations/:evaluationId/lock',
+                score: 'GET /api/student-evaluations/:evaluationId/score',
             },
         });
     }
@@ -373,6 +389,191 @@ async function dispatchStudentSelfEvaluationsRequest(
 
         return json200({ studentId, items, count: items.length });
     }
+
+    // -------------------- NEW: evaluationId-based self routes --------------------
+    // /api/student-evaluations/:evaluationId
+    // /api/student-evaluations/:evaluationId/(me|item|detail)
+    // /api/student-evaluations/:evaluationId/(answers|draft|response)
+    // /api/student-evaluations/:evaluationId/(submit|finalize|lock|score|status)
+    if (tail.length >= 1 && isUuidLike(tail[0])) {
+        const evaluationId = tail[0] as UUID;
+        const action = (tail[1] ?? '').toLowerCase();
+
+        const studentId = await resolveAuthedStudentId(req, services);
+        if (!studentId) {
+            return json400(
+                'Unable to resolve current student id. Ensure you are signed in and the session cookie is present.',
+            );
+        }
+
+        const getDetail = async () => {
+            const item = await controller.getStudentEvaluation(studentId, evaluationId);
+            if (!item) return null;
+            return item;
+        };
+
+        // GET detail (and alias endpoints used by the frontend)
+        if (
+            method === 'GET' &&
+            (tail.length === 1 ||
+                (tail.length === 2 && (action === 'me' || action === 'item' || action === 'detail')))
+        ) {
+            const item = await getDetail();
+            if (!item) return json404Entity('StudentEvaluation');
+            return json200({ studentId, item });
+        }
+
+        // GET score
+        if (method === 'GET' && tail.length === 2 && action === 'score') {
+            const item = await controller.getStudentEvaluationScore(studentId, evaluationId);
+            if (!item) return json404Entity('StudentEvaluationScore');
+            return json200({ studentId, item });
+        }
+
+        // PATCH answers (supports multiple alias endpoints)
+        if (
+            (method === 'PATCH' || method === 'PUT') &&
+            (tail.length === 1 ||
+                (tail.length === 2 &&
+                    (action === 'answers' || action === 'draft' || action === 'response' || action === 'status')))
+        ) {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const answersRaw = body.answers as unknown | undefined;
+            if (answersRaw !== undefined && !isJsonObject(answersRaw)) {
+                return json400('answers must be a JSON object with JSON-serializable values.');
+            }
+
+            const statusRaw =
+                typeof body.status === 'string' ? body.status.trim().toLowerCase() : null;
+
+            let current = await getDetail();
+            if (!current) return json404Entity('StudentEvaluation');
+
+            // If answers provided, patch them first.
+            if (answersRaw !== undefined) {
+                try {
+                    const patched = await controller.patchStudentEvaluationAnswers(studentId, evaluationId, {
+                        answers: answersRaw as JsonObject,
+                    });
+                    if (!patched) return json404Entity('StudentEvaluation');
+                    current = patched;
+                } catch (err) {
+                    if (err instanceof StudentEvalStateError) {
+                        return json400(err.message);
+                    }
+                    throw err;
+                }
+            }
+
+            // Optional: allow status transition through PATCH for frontend resilience.
+            // (Frontend sometimes falls back to PATCH { answers, status: "submitted" }.)
+            if (statusRaw === 'submitted') {
+                try {
+                    const submitted = await controller.submitStudentEvaluation(studentId, evaluationId);
+                    if (!submitted) return json404Entity('StudentEvaluation');
+                    return json200({ studentId, item: submitted });
+                } catch (err) {
+                    if (err instanceof StudentEvalValidationError) {
+                        return NextResponse.json(
+                            {
+                                error: 'Validation failed.',
+                                message: err.message,
+                                missing: err.missing,
+                            },
+                            { status: 400 },
+                        );
+                    }
+                    if (err instanceof StudentEvalStateError) {
+                        return json400(err.message);
+                    }
+                    throw err;
+                }
+            }
+
+            if (statusRaw === 'locked') {
+                try {
+                    const locked = await controller.lockStudentEvaluation(studentId, evaluationId);
+                    if (!locked) return json404Entity('StudentEvaluation');
+                    return json200({ studentId, item: locked });
+                } catch (err) {
+                    if (err instanceof StudentEvalStateError) {
+                        return json400(err.message);
+                    }
+                    throw err;
+                }
+            }
+
+            return json200({ studentId, item: current });
+        }
+
+        // POST/PATCH submit (aliases: submit, finalize)
+        if (
+            (method === 'POST' || method === 'PATCH') &&
+            tail.length === 2 &&
+            (action === 'submit' || action === 'finalize')
+        ) {
+            const body = await readJsonRecord(req);
+            // body is optional; if provided and has answers, patch first for best UX.
+            const answersRaw = body?.answers as unknown;
+            if (answersRaw !== undefined && !isJsonObject(answersRaw)) {
+                return json400('answers must be a JSON object with JSON-serializable values.');
+            }
+
+            if (answersRaw !== undefined) {
+                try {
+                    const patched = await controller.patchStudentEvaluationAnswers(studentId, evaluationId, {
+                        answers: answersRaw as JsonObject,
+                    });
+                    if (!patched) return json404Entity('StudentEvaluation');
+                } catch (err) {
+                    if (err instanceof StudentEvalStateError) {
+                        return json400(err.message);
+                    }
+                    throw err;
+                }
+            }
+
+            try {
+                const item = await controller.submitStudentEvaluation(studentId, evaluationId);
+                if (!item) return json404Entity('StudentEvaluation');
+                return json200({ studentId, item });
+            } catch (err) {
+                if (err instanceof StudentEvalValidationError) {
+                    return NextResponse.json(
+                        {
+                            error: 'Validation failed.',
+                            message: err.message,
+                            missing: err.missing,
+                        },
+                        { status: 400 },
+                    );
+                }
+                if (err instanceof StudentEvalStateError) {
+                    return json400(err.message);
+                }
+                throw err;
+            }
+        }
+
+        // POST/PATCH lock
+        if ((method === 'POST' || method === 'PATCH') && tail.length === 2 && action === 'lock') {
+            try {
+                const item = await controller.lockStudentEvaluation(studentId, evaluationId);
+                if (!item) return json404Entity('StudentEvaluation');
+                return json200({ studentId, item });
+            } catch (err) {
+                if (err instanceof StudentEvalStateError) {
+                    return json400(err.message);
+                }
+                throw err;
+            }
+        }
+
+        return json404Api();
+    }
+    // -------------------------------------------------------------------------
 
     return json404Api();
 }
