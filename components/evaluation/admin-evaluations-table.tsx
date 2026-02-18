@@ -26,6 +26,7 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import type { AdminEvaluationsPageState } from "./admin-evaluations-hook"
 import { statusBadgeClass } from "./admin-evaluations-model"
@@ -160,12 +161,221 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
         roleLabel,
     } = ctx
 
+    const renderTable = React.useCallback(
+        (rows: typeof groupedFiltered[number]["items"], emptyLabel: "student" | "panelist") => {
+            if (rows.length === 0) {
+                return (
+                    <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
+                        No {emptyLabel} evaluations in this group.
+                    </div>
+                )
+            }
+
+            return (
+                <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead className="min-w-56">Schedule</TableHead>
+                                <TableHead className="min-w-56">Assignee</TableHead>
+                                <TableHead className="min-w-28">Status</TableHead>
+                                <TableHead className="min-w-44">Submitted</TableHead>
+                                <TableHead className="min-w-44">Locked</TableHead>
+                                <TableHead className="min-w-44">Created</TableHead>
+                                <TableHead className="min-w-80 text-right">Actions</TableHead>
+                            </TableRow>
+                        </TableHeader>
+
+                        <TableBody>
+                            {rows.map((row) => {
+                                const status = normalizeStatus(row.status)
+                                const isSubmitBusy = busyKey === `${row.kind}:${row.id}:submit`
+                                const isLockBusy = busyKey === `${row.kind}:${row.id}:lock`
+                                const isPendingBusy = busyKey === `${row.kind}:${row.id}:set-pending`
+                                const isDeleteBusy = busyKey === `${row.kind}:${row.id}:delete`
+                                const confirmDelete =
+                                    pendingDeleteRef?.id === row.id && pendingDeleteRef?.kind === row.kind
+
+                                const schedule = scheduleById.get(row.schedule_id.toLowerCase()) ?? null
+                                const scheduleDate = schedule
+                                    ? formatDateTime(schedule.scheduled_at)
+                                    : "Schedule unavailable"
+                                const scheduleRoom = compactString(schedule?.room)
+
+                                const evaluator = evaluatorById.get(row.evaluator_id.toLowerCase()) ?? null
+                                const evaluatorName =
+                                    compactString(evaluator?.name) ??
+                                    compactString(evaluator?.email) ??
+                                    "Unknown Assignee"
+
+                                const evaluatorEmail = compactString(evaluator?.email)
+                                const evaluatorRole = evaluator ? roleLabel(evaluator.role) : null
+
+                                const evaluatorMeta = [evaluatorEmail, evaluatorRole]
+                                    .filter((part): part is string => !!part)
+                                    .join(" • ")
+
+                                return (
+                                    <TableRow key={`${row.kind}:${row.id}`}>
+                                        <TableCell>
+                                            <div className="space-y-0.5">
+                                                <p className="text-sm">{scheduleDate}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {scheduleRoom ?? "No room assigned"}
+                                                    {schedule?.status ? ` • ${toTitleCase(schedule.status)}` : ""}
+                                                </p>
+                                            </div>
+                                        </TableCell>
+
+                                        <TableCell>
+                                            <div className="space-y-0.5">
+                                                <p className="text-sm font-medium">{evaluatorName}</p>
+                                                <p className="text-xs text-muted-foreground">{evaluatorMeta || "—"}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Flow:{" "}
+                                                    <span className="font-medium text-foreground">
+                                                        {row.assignee_role === "student" ? "Student" : "Panelist"}
+                                                    </span>
+                                                </p>
+                                            </div>
+                                        </TableCell>
+
+                                        <TableCell>
+                                            <span
+                                                className={[
+                                                    "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                    statusBadgeClass(status),
+                                                ].join(" ")}
+                                            >
+                                                {toTitleCase(status)}
+                                            </span>
+                                        </TableCell>
+
+                                        <TableCell className="text-muted-foreground">
+                                            {formatDateTime(row.submitted_at)}
+                                        </TableCell>
+
+                                        <TableCell className="text-muted-foreground">
+                                            {formatDateTime(row.locked_at)}
+                                        </TableCell>
+
+                                        <TableCell className="text-muted-foreground">
+                                            {formatDateTime(row.created_at)}
+                                        </TableCell>
+
+                                        <TableCell>
+                                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                                <Button variant="outline" size="sm" onClick={() => openViewDialog(row)}>
+                                                    View
+                                                </Button>
+
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => openEditForm(row)}
+                                                    disabled={isDeleteBusy}
+                                                >
+                                                    Edit
+                                                </Button>
+
+                                                {!confirmDelete ? (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() =>
+                                                            setPendingDeleteRef({ id: row.id, kind: row.kind })
+                                                        }
+                                                        disabled={isDeleteBusy}
+                                                    >
+                                                        Delete
+                                                    </Button>
+                                                ) : (
+                                                    <>
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            onClick={() => void deleteEvaluation(row)}
+                                                            disabled={isDeleteBusy}
+                                                        >
+                                                            {isDeleteBusy ? "Deleting..." : "Confirm Delete"}
+                                                        </Button>
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            onClick={() => setPendingDeleteRef(null)}
+                                                            disabled={isDeleteBusy}
+                                                        >
+                                                            Cancel
+                                                        </Button>
+                                                    </>
+                                                )}
+
+                                                {status !== "pending" ? (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => void runAction(row, "set-pending")}
+                                                        disabled={isPendingBusy || isDeleteBusy}
+                                                    >
+                                                        {isPendingBusy ? "Updating..." : "Set Pending"}
+                                                    </Button>
+                                                ) : null}
+
+                                                {status === "pending" ? (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => void runAction(row, "submit")}
+                                                        disabled={isSubmitBusy || isDeleteBusy}
+                                                    >
+                                                        {isSubmitBusy ? "Submitting..." : "Submit"}
+                                                    </Button>
+                                                ) : null}
+
+                                                {status !== "locked" ? (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => void runAction(row, "lock")}
+                                                        disabled={isLockBusy || isDeleteBusy}
+                                                    >
+                                                        {isLockBusy ? "Locking..." : "Lock"}
+                                                    </Button>
+                                                ) : null}
+                                            </div>
+                                        </TableCell>
+                                    </TableRow>
+                                )
+                            })}
+                        </TableBody>
+                    </Table>
+                </div>
+            )
+        },
+        [
+            busyKey,
+            deleteEvaluation,
+            evaluatorById,
+            formatDateTime,
+            normalizeStatus,
+            openEditForm,
+            openViewDialog,
+            pendingDeleteRef,
+            roleLabel,
+            scheduleById,
+            setPendingDeleteRef,
+            toTitleCase,
+            compactString,
+            runAction,
+        ],
+    )
+
     return (
         <div className="rounded-lg border bg-card">
             <div className="border-b px-4 py-3">
                 <p className="text-sm font-medium">Evaluations by Group</p>
                 <p className="text-xs text-muted-foreground">
-                    Student and panelist evaluations are displayed together while preserving separate backend flows.
+                    Student and panelist evaluations are separated into tabs inside each thesis group.
                 </p>
             </div>
 
@@ -182,217 +392,71 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
                 <div className="p-8 text-center text-sm text-muted-foreground">No evaluations found.</div>
             ) : (
                 <Accordion type="multiple" className="w-full">
-                    {groupedFiltered.map((group) => (
-                        <AccordionItem key={group.key} value={group.key} className="border-b px-0">
-                            <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                                <div className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between">
-                                    <div className="min-w-0">
-                                        <p className="truncate font-semibold">{group.groupName}</p>
-                                        <p className="text-xs text-muted-foreground">{group.items.length} evaluation(s)</p>
+                    {groupedFiltered.map((group) => {
+                        const panelistItems = group.items.filter((x) => x.assignee_role === "panelist")
+                        const studentItems = group.items.filter((x) => x.assignee_role === "student")
+                        const defaultTab = panelistItems.length > 0 ? "panelist" : "student"
+
+                        return (
+                            <AccordionItem key={group.key} value={group.key} className="border-b px-0">
+                                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                                    <div className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="min-w-0">
+                                            <p className="truncate font-semibold">{group.groupName}</p>
+                                            <p className="text-xs text-muted-foreground">{group.items.length} evaluation(s)</p>
+                                        </div>
+
+                                        <div className="flex flex-wrap items-center gap-2 pr-2">
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Panelists: {panelistItems.length}
+                                            </span>
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Students: {studentItems.length}
+                                            </span>
+
+                                            {group.pending > 0 ? (
+                                                <span className="inline-flex rounded-md border border-muted-foreground/30 bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                    Pending: {group.pending}
+                                                </span>
+                                            ) : null}
+                                            {group.submitted > 0 ? (
+                                                <span className="inline-flex rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-foreground">
+                                                    Submitted: {group.submitted}
+                                                </span>
+                                            ) : null}
+                                            {group.locked > 0 ? (
+                                                <span className="inline-flex rounded-md border border-foreground/30 bg-foreground/10 px-2 py-1 text-xs text-foreground">
+                                                    Locked: {group.locked}
+                                                </span>
+                                            ) : null}
+                                        </div>
                                     </div>
+                                </AccordionTrigger>
 
-                                    <div className="flex flex-wrap items-center gap-2 pr-2">
-                                        {group.pending > 0 ? (
-                                            <span className="inline-flex rounded-md border border-muted-foreground/30 bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Pending: {group.pending}
-                                            </span>
-                                        ) : null}
-                                        {group.submitted > 0 ? (
-                                            <span className="inline-flex rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-foreground">
-                                                Submitted: {group.submitted}
-                                            </span>
-                                        ) : null}
-                                        {group.locked > 0 ? (
-                                            <span className="inline-flex rounded-md border border-foreground/30 bg-foreground/10 px-2 py-1 text-xs text-foreground">
-                                                Locked: {group.locked}
-                                            </span>
-                                        ) : null}
-                                    </div>
-                                </div>
-                            </AccordionTrigger>
+                                <AccordionContent className="px-4 pb-4">
+                                    <Tabs key={`${group.key}-flow-tabs`} defaultValue={defaultTab} className="w-full">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                            <TabsList className="grid w-full grid-cols-2 sm:w-auto">
+                                                <TabsTrigger value="panelist">Panelist ({panelistItems.length})</TabsTrigger>
+                                                <TabsTrigger value="student">Student ({studentItems.length})</TabsTrigger>
+                                            </TabsList>
+                                            <p className="text-xs text-muted-foreground">
+                                                Actions and lifecycle controls remain tied to each flow.
+                                            </p>
+                                        </div>
 
-                            <AccordionContent className="px-4 pb-4">
-                                <div className="overflow-x-auto rounded-md border">
-                                    <Table>
-                                        <TableHeader>
-                                            <TableRow>
-                                                <TableHead className="min-w-56">Schedule</TableHead>
-                                                <TableHead className="min-w-56">Assignee</TableHead>
-                                                <TableHead className="min-w-28">Status</TableHead>
-                                                <TableHead className="min-w-44">Submitted</TableHead>
-                                                <TableHead className="min-w-44">Locked</TableHead>
-                                                <TableHead className="min-w-44">Created</TableHead>
-                                                <TableHead className="min-w-80 text-right">Actions</TableHead>
-                                            </TableRow>
-                                        </TableHeader>
+                                        <TabsContent value="panelist" className="mt-3">
+                                            {renderTable(panelistItems, "panelist")}
+                                        </TabsContent>
 
-                                        <TableBody>
-                                            {group.items.map((row) => {
-                                                const status = normalizeStatus(row.status)
-                                                const isSubmitBusy = busyKey === `${row.kind}:${row.id}:submit`
-                                                const isLockBusy = busyKey === `${row.kind}:${row.id}:lock`
-                                                const isPendingBusy = busyKey === `${row.kind}:${row.id}:set-pending`
-                                                const isDeleteBusy = busyKey === `${row.kind}:${row.id}:delete`
-                                                const confirmDelete =
-                                                    pendingDeleteRef?.id === row.id && pendingDeleteRef?.kind === row.kind
-
-                                                const schedule = scheduleById.get(row.schedule_id.toLowerCase()) ?? null
-                                                const scheduleDate = schedule
-                                                    ? formatDateTime(schedule.scheduled_at)
-                                                    : "Schedule unavailable"
-                                                const scheduleRoom = compactString(schedule?.room)
-
-                                                const evaluator = evaluatorById.get(row.evaluator_id.toLowerCase()) ?? null
-                                                const evaluatorName =
-                                                    compactString(evaluator?.name) ??
-                                                    compactString(evaluator?.email) ??
-                                                    "Unknown Assignee"
-
-                                                const evaluatorEmail = compactString(evaluator?.email)
-                                                const evaluatorRole = evaluator ? roleLabel(evaluator.role) : null
-
-                                                const evaluatorMeta = [evaluatorEmail, evaluatorRole]
-                                                    .filter((part): part is string => !!part)
-                                                    .join(" • ")
-
-                                                return (
-                                                    <TableRow key={`${row.kind}:${row.id}`}>
-                                                        <TableCell>
-                                                            <div className="space-y-0.5">
-                                                                <p className="text-sm">{scheduleDate}</p>
-                                                                <p className="text-xs text-muted-foreground">
-                                                                    {scheduleRoom ?? "No room assigned"}
-                                                                    {schedule?.status ? ` • ${toTitleCase(schedule.status)}` : ""}
-                                                                </p>
-                                                            </div>
-                                                        </TableCell>
-
-                                                        <TableCell>
-                                                            <div className="space-y-0.5">
-                                                                <p className="text-sm font-medium">{evaluatorName}</p>
-                                                                <p className="text-xs text-muted-foreground">{evaluatorMeta || "—"}</p>
-                                                                <p className="text-xs text-muted-foreground">
-                                                                    Flow:{" "}
-                                                                    <span className="font-medium text-foreground">
-                                                                        {row.assignee_role === "student" ? "Student" : "Panelist"}
-                                                                    </span>
-                                                                </p>
-                                                            </div>
-                                                        </TableCell>
-
-                                                        <TableCell>
-                                                            <span
-                                                                className={[
-                                                                    "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                                    statusBadgeClass(status),
-                                                                ].join(" ")}
-                                                            >
-                                                                {toTitleCase(status)}
-                                                            </span>
-                                                        </TableCell>
-
-                                                        <TableCell className="text-muted-foreground">
-                                                            {formatDateTime(row.submitted_at)}
-                                                        </TableCell>
-
-                                                        <TableCell className="text-muted-foreground">
-                                                            {formatDateTime(row.locked_at)}
-                                                        </TableCell>
-
-                                                        <TableCell className="text-muted-foreground">
-                                                            {formatDateTime(row.created_at)}
-                                                        </TableCell>
-
-                                                        <TableCell>
-                                                            <div className="flex flex-wrap items-center justify-end gap-2">
-                                                                <Button variant="outline" size="sm" onClick={() => openViewDialog(row)}>
-                                                                    View
-                                                                </Button>
-
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    onClick={() => openEditForm(row)}
-                                                                    disabled={isDeleteBusy}
-                                                                >
-                                                                    Edit
-                                                                </Button>
-
-                                                                {!confirmDelete ? (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() =>
-                                                                            setPendingDeleteRef({ id: row.id, kind: row.kind })
-                                                                        }
-                                                                        disabled={isDeleteBusy}
-                                                                    >
-                                                                        Delete
-                                                                    </Button>
-                                                                ) : (
-                                                                    <>
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            size="sm"
-                                                                            onClick={() => void deleteEvaluation(row)}
-                                                                            disabled={isDeleteBusy}
-                                                                        >
-                                                                            {isDeleteBusy ? "Deleting..." : "Confirm Delete"}
-                                                                        </Button>
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            size="sm"
-                                                                            onClick={() => setPendingDeleteRef(null)}
-                                                                            disabled={isDeleteBusy}
-                                                                        >
-                                                                            Cancel
-                                                                        </Button>
-                                                                    </>
-                                                                )}
-
-                                                                {status !== "pending" ? (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => void runAction(row, "set-pending")}
-                                                                        disabled={isPendingBusy || isDeleteBusy}
-                                                                    >
-                                                                        {isPendingBusy ? "Updating..." : "Set Pending"}
-                                                                    </Button>
-                                                                ) : null}
-
-                                                                {status === "pending" ? (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => void runAction(row, "submit")}
-                                                                        disabled={isSubmitBusy || isDeleteBusy}
-                                                                    >
-                                                                        {isSubmitBusy ? "Submitting..." : "Submit"}
-                                                                    </Button>
-                                                                ) : null}
-
-                                                                {status !== "locked" ? (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => void runAction(row, "lock")}
-                                                                        disabled={isLockBusy || isDeleteBusy}
-                                                                    >
-                                                                        {isLockBusy ? "Locking..." : "Lock"}
-                                                                    </Button>
-                                                                ) : null}
-                                                            </div>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                )
-                                            })}
-                                        </TableBody>
-                                    </Table>
-                                </div>
-                            </AccordionContent>
-                        </AccordionItem>
-                    ))}
+                                        <TabsContent value="student" className="mt-3">
+                                            {renderTable(studentItems, "student")}
+                                        </TabsContent>
+                                    </Tabs>
+                                </AccordionContent>
+                            </AccordionItem>
+                        )
+                    })}
                 </Accordion>
             )}
         </div>
@@ -422,7 +486,7 @@ export function AdminEvaluationViewDialog({ ctx }: { ctx: AdminEvaluationsPageSt
 
     return (
         <Dialog open={viewOpen} onOpenChange={setViewOpen}>
-            <DialogContent className="sm:max-w-2xl">
+            <DialogContent className="sm:max-w-2xl h-[85svh] flex flex-col overflow-hidden">
                 {selectedViewEvaluation ? (
                     <>
                         <DialogHeader>
@@ -432,77 +496,79 @@ export function AdminEvaluationViewDialog({ ctx }: { ctx: AdminEvaluationsPageSt
                             </DialogDescription>
                         </DialogHeader>
 
-                        <div className="space-y-4">
-                            <div className="rounded-lg border bg-muted/30 p-3">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">Status</span>
-                                    <span
-                                        className={[
-                                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                            statusBadgeClass(selectedViewEvaluation.status),
-                                        ].join(" ")}
-                                    >
-                                        {toTitleCase(normalizeStatus(selectedViewEvaluation.status))}
-                                    </span>
-                                    <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
-                                        {selectedViewEvaluation.assignee_role === "student"
-                                            ? "Student Flow"
-                                            : "Panelist Flow"}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <div className="rounded-lg border p-3">
-                                    <p className="text-xs font-medium text-muted-foreground">Thesis Group</p>
-                                    <p className="mt-1 text-sm font-medium">
-                                        {resolveGroupNameFromSchedule(selectedViewSchedule)}
-                                    </p>
+                        <div className="flex-1 overflow-y-auto pr-2">
+                            <div className="space-y-4">
+                                <div className="rounded-lg border bg-muted/30 p-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-sm font-medium">Status</span>
+                                        <span
+                                            className={[
+                                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                statusBadgeClass(selectedViewEvaluation.status),
+                                            ].join(" ")}
+                                        >
+                                            {toTitleCase(normalizeStatus(selectedViewEvaluation.status))}
+                                        </span>
+                                        <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
+                                            {selectedViewEvaluation.assignee_role === "student"
+                                                ? "Student Flow"
+                                                : "Panelist Flow"}
+                                        </span>
+                                    </div>
                                 </div>
 
-                                <div className="rounded-lg border p-3">
-                                    <p className="text-xs font-medium text-muted-foreground">Schedule</p>
-                                    <p className="mt-1 text-sm">
-                                        {selectedViewSchedule
-                                            ? formatDateTime(selectedViewSchedule.scheduled_at)
-                                            : "Schedule unavailable"}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        {compactString(selectedViewSchedule?.room) ?? "No room assigned"}
-                                        {selectedViewSchedule?.status
-                                            ? ` • ${toTitleCase(selectedViewSchedule.status)}`
-                                            : ""}
-                                    </p>
-                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-lg border p-3">
+                                        <p className="text-xs font-medium text-muted-foreground">Thesis Group</p>
+                                        <p className="mt-1 text-sm font-medium">
+                                            {resolveGroupNameFromSchedule(selectedViewSchedule)}
+                                        </p>
+                                    </div>
 
-                                <div className="rounded-lg border p-3">
-                                    <p className="text-xs font-medium text-muted-foreground">Assignee</p>
-                                    <p className="mt-1 text-sm font-medium">
-                                        {compactString(selectedViewEvaluator?.name) ??
-                                            compactString(selectedViewEvaluator?.email) ??
-                                            "Unknown Assignee"}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        {[
-                                            compactString(selectedViewEvaluator?.email),
-                                            selectedViewEvaluator ? roleLabel(selectedViewEvaluator.role) : null,
-                                        ]
-                                            .filter((part): part is string => !!part)
-                                            .join(" • ") || "—"}
-                                    </p>
-                                </div>
+                                    <div className="rounded-lg border p-3">
+                                        <p className="text-xs font-medium text-muted-foreground">Schedule</p>
+                                        <p className="mt-1 text-sm">
+                                            {selectedViewSchedule
+                                                ? formatDateTime(selectedViewSchedule.scheduled_at)
+                                                : "Schedule unavailable"}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            {compactString(selectedViewSchedule?.room) ?? "No room assigned"}
+                                            {selectedViewSchedule?.status
+                                                ? ` • ${toTitleCase(selectedViewSchedule.status)}`
+                                                : ""}
+                                        </p>
+                                    </div>
 
-                                <div className="rounded-lg border p-3">
-                                    <p className="text-xs font-medium text-muted-foreground">Timeline</p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Created: {formatDateTime(selectedViewEvaluation.created_at)}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Submitted: {formatDateTime(selectedViewEvaluation.submitted_at)}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Locked: {formatDateTime(selectedViewEvaluation.locked_at)}
-                                    </p>
+                                    <div className="rounded-lg border p-3">
+                                        <p className="text-xs font-medium text-muted-foreground">Assignee</p>
+                                        <p className="mt-1 text-sm font-medium">
+                                            {compactString(selectedViewEvaluator?.name) ??
+                                                compactString(selectedViewEvaluator?.email) ??
+                                                "Unknown Assignee"}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            {[
+                                                compactString(selectedViewEvaluator?.email),
+                                                selectedViewEvaluator ? roleLabel(selectedViewEvaluator.role) : null,
+                                            ]
+                                                .filter((part): part is string => !!part)
+                                                .join(" • ") || "—"}
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-lg border p-3">
+                                        <p className="text-xs font-medium text-muted-foreground">Timeline</p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            Created: {formatDateTime(selectedViewEvaluation.created_at)}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            Submitted: {formatDateTime(selectedViewEvaluation.submitted_at)}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            Locked: {formatDateTime(selectedViewEvaluation.locked_at)}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
