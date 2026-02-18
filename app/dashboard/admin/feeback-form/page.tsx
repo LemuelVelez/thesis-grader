@@ -17,6 +17,8 @@ import {
     PowerOff,
     Trash2,
     RefreshCw,
+    Undo2,
+    RotateCcw,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
@@ -105,6 +107,10 @@ type StudentFeedbackForm = {
     createdAt: string
     updatedAt: string
 }
+
+type DeleteTarget =
+    | { kind: "section"; sectionId: string; label: string }
+    | { kind: "question"; sectionId: string; questionId: string; label: string }
 
 /* --------------------------------- UTILS --------------------------------- */
 
@@ -418,9 +424,7 @@ function SchemaPreview({ schema }: { schema: StudentFeedbackSchema }) {
                                                         {q.type}
                                                     </Badge>
                                                     {q.required ? (
-                                                        <Badge className="bg-destructive text-destructive-foreground">
-                                                            Required
-                                                        </Badge>
+                                                        <Badge className="bg-destructive text-white">Required</Badge>
                                                     ) : (
                                                         <Badge variant="secondary">Optional</Badge>
                                                     )}
@@ -513,6 +517,12 @@ export default function AdminFeedbackFormPage() {
     const [createActivate, setCreateActivate] = React.useState(true)
     const [createBase, setCreateBase] = React.useState<"active" | "fallback">("active")
 
+    const [undoStack, setUndoStack] = React.useState<StudentFeedbackSchema[]>([])
+    const lastHistoryAtRef = React.useRef(0)
+
+    const [deleteOpen, setDeleteOpen] = React.useState(false)
+    const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(null)
+
     const activeForm = React.useMemo(() => forms.find((f) => f.active) ?? null, [forms])
 
     const selectedForm = React.useMemo(() => {
@@ -583,6 +593,8 @@ export default function AdminFeedbackFormPage() {
         if (!selectedForm) return
         setDraftSchema(cloneJson(selectedForm.schema))
         setDirty(false)
+        setUndoStack([])
+        lastHistoryAtRef.current = 0
     }, [selectedForm?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
     const requestSwitchForm = React.useCallback(
@@ -603,19 +615,64 @@ export default function AdminFeedbackFormPage() {
         setDiscardOpen(false)
         setPendingSwitchId(null)
         setDirty(false)
+        setUndoStack([])
+        lastHistoryAtRef.current = 0
         if (nextId) setActiveId(nextId)
     }, [pendingSwitchId])
 
-    const updateDraftSchema = React.useCallback((updater: (prev: StudentFeedbackSchema) => StudentFeedbackSchema) => {
-        setDraftSchema((prev) => updater(prev))
-        setDirty(true)
+    const pushUndo = React.useCallback((prev: StudentFeedbackSchema, mode: "edit" | "structural") => {
+        const now = Date.now()
+
+        // Coalesce rapid input edits to keep undo useful and lightweight
+        if (mode === "edit" && now - lastHistoryAtRef.current < 900) return
+
+        lastHistoryAtRef.current = now
+        setUndoStack((stack) => {
+            const next = [cloneJson(prev), ...stack]
+            return next.slice(0, 50)
+        })
     }, [])
 
-    const resetToFallbackTemplate = React.useCallback(() => {
-        setDraftSchema(getFallbackSchema())
-        setDirty(true)
-        toast.success("Template reset.")
+    const undoLast = React.useCallback(() => {
+        setUndoStack((stack) => {
+            const head = stack[0]
+            if (!head) return stack
+            setDraftSchema(cloneJson(head))
+            setDirty(true)
+            lastHistoryAtRef.current = Date.now()
+            return stack.slice(1)
+        })
     }, [])
+
+    const updateDraftSchema = React.useCallback(
+        (updater: (prev: StudentFeedbackSchema) => StudentFeedbackSchema, opts?: { mode?: "edit" | "structural" }) => {
+            setDraftSchema((prev) => {
+                pushUndo(prev, opts?.mode ?? "edit")
+                return updater(prev)
+            })
+            setDirty(true)
+        },
+        [pushUndo],
+    )
+
+    const resetToFallbackTemplate = React.useCallback(() => {
+        updateDraftSchema(() => getFallbackSchema(), { mode: "structural" })
+        toast.success("Template reset.", {
+            action: { label: "Undo", onClick: undoLast },
+        })
+    }, [undoLast, updateDraftSchema])
+
+    const revertToOriginal = React.useCallback(() => {
+        const baseline = selectedForm ? cloneJson(selectedForm.schema) : cloneJson(getFallbackSchema())
+        setUndoStack((stack) => [cloneJson(draftSchema), ...stack].slice(0, 50))
+        setDraftSchema(baseline)
+        setDirty(false)
+        lastHistoryAtRef.current = Date.now()
+
+        toast("Reverted to original state.", {
+            action: { label: "Undo", onClick: undoLast },
+        })
+    }, [draftSchema, selectedForm, undoLast])
 
     /* ------------------------------- API CALLS ------------------------------- */
 
@@ -729,6 +786,8 @@ export default function AdminFeedbackFormPage() {
             setActiveId(created.id)
             setDraftSchema(cloneJson(created.schema))
             setDirty(false)
+            setUndoStack([])
+            lastHistoryAtRef.current = 0
 
             toast.success(createActivate ? "Form created and activated." : "Form created.")
         } catch (err) {
@@ -768,6 +827,8 @@ export default function AdminFeedbackFormPage() {
                 setActiveId(created.id)
                 setDraftSchema(cloneJson(created.schema))
                 setDirty(false)
+                setUndoStack([])
+                lastHistoryAtRef.current = 0
 
                 toast.success(activate ? "Form created and activated." : "Form created.")
             } catch (err) {
@@ -804,6 +865,8 @@ export default function AdminFeedbackFormPage() {
             setForms((prev) => prev.map((f) => (f.id === updated.id ? updated : f)))
             setDraftSchema(cloneJson(updated.schema))
             setDirty(false)
+            setUndoStack([])
+            lastHistoryAtRef.current = 0
             toast.success("Saved changes.")
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to save changes."
@@ -876,35 +939,43 @@ export default function AdminFeedbackFormPage() {
 
     const addSection = React.useCallback(() => {
         if (!canEdit) return
-        updateDraftSchema((prev) => {
-            const next = cloneJson(prev)
-            next.sections = [...next.sections]
-            next.sections.push({
-                id: makeId("section"),
-                title: `New Section ${next.sections.length + 1}`,
-                questions: [],
-            })
-            return next
-        })
-    }, [canEdit, updateDraftSchema])
+        updateDraftSchema(
+            (prev) => {
+                const next = cloneJson(prev)
+                next.sections = [...next.sections]
+                next.sections.push({
+                    id: makeId("section"),
+                    title: `New Section ${next.sections.length + 1}`,
+                    questions: [],
+                })
+                return next
+            },
+            { mode: "structural" },
+        )
 
-    const removeSection = React.useCallback(
+        toast.success("Section added.", { action: { label: "Undo", onClick: undoLast } })
+    }, [canEdit, undoLast, updateDraftSchema])
+
+    const removeSectionNow = React.useCallback(
         (sectionId: string) => {
             if (!canEdit) return
-            updateDraftSchema((prev) => {
-                const next = cloneJson(prev)
-                next.sections = next.sections.filter((s) => s.id !== sectionId)
-                if (next.sections.length === 0) {
-                    next.sections = [
-                        {
-                            id: makeId("section"),
-                            title: "Section 1",
-                            questions: [],
-                        },
-                    ]
-                }
-                return next
-            })
+            updateDraftSchema(
+                (prev) => {
+                    const next = cloneJson(prev)
+                    next.sections = next.sections.filter((s) => s.id !== sectionId)
+                    if (next.sections.length === 0) {
+                        next.sections = [
+                            {
+                                id: makeId("section"),
+                                title: "Section 1",
+                                questions: [],
+                            },
+                        ]
+                    }
+                    return next
+                },
+                { mode: "structural" },
+            )
         },
         [canEdit, updateDraftSchema],
     )
@@ -912,20 +983,24 @@ export default function AdminFeedbackFormPage() {
     const moveSection = React.useCallback(
         (sectionId: string, dir: -1 | 1) => {
             if (!canEdit) return
-            updateDraftSchema((prev) => {
-                const next = cloneJson(prev)
-                const idx = next.sections.findIndex((s) => s.id === sectionId)
-                if (idx < 0) return next
-                const target = idx + dir
-                if (target < 0 || target >= next.sections.length) return next
-                const copy = [...next.sections]
-                const [item] = copy.splice(idx, 1)
-                copy.splice(target, 0, item)
-                next.sections = copy
-                return next
-            })
+            updateDraftSchema(
+                (prev) => {
+                    const next = cloneJson(prev)
+                    const idx = next.sections.findIndex((s) => s.id === sectionId)
+                    if (idx < 0) return next
+                    const target = idx + dir
+                    if (target < 0 || target >= next.sections.length) return next
+                    const copy = [...next.sections]
+                    const [item] = copy.splice(idx, 1)
+                    copy.splice(target, 0, item)
+                    next.sections = copy
+                    return next
+                },
+                { mode: "structural" },
+            )
+            toast("Section moved.", { action: { label: "Undo", onClick: undoLast } })
         },
-        [canEdit, updateDraftSchema],
+        [canEdit, undoLast, updateDraftSchema],
     )
 
     const updateSectionTitle = React.useCallback(
@@ -943,36 +1018,43 @@ export default function AdminFeedbackFormPage() {
     const addQuestion = React.useCallback(
         (sectionId: string) => {
             if (!canEdit) return
-            updateDraftSchema((prev) => {
-                const next = cloneJson(prev)
-                next.sections = next.sections.map((s) => {
-                    if (s.id !== sectionId) return s
-                    const q: FeedbackQuestion = {
-                        id: makeId("q"),
-                        type: "rating",
-                        label: "New question",
-                        required: false,
-                        scale: { min: 1, max: 5, minLabel: "Low", maxLabel: "High" },
-                    }
-                    return { ...s, questions: [...(s.questions ?? []), q] }
-                })
-                return next
-            })
+            updateDraftSchema(
+                (prev) => {
+                    const next = cloneJson(prev)
+                    next.sections = next.sections.map((s) => {
+                        if (s.id !== sectionId) return s
+                        const q: FeedbackQuestion = {
+                            id: makeId("q"),
+                            type: "rating",
+                            label: "New question",
+                            required: false,
+                            scale: { min: 1, max: 5, minLabel: "Low", maxLabel: "High" },
+                        }
+                        return { ...s, questions: [...(s.questions ?? []), q] }
+                    })
+                    return next
+                },
+                { mode: "structural" },
+            )
+            toast.success("Question added.", { action: { label: "Undo", onClick: undoLast } })
         },
-        [canEdit, updateDraftSchema],
+        [canEdit, undoLast, updateDraftSchema],
     )
 
-    const removeQuestion = React.useCallback(
+    const removeQuestionNow = React.useCallback(
         (sectionId: string, questionId: string) => {
             if (!canEdit) return
-            updateDraftSchema((prev) => {
-                const next = cloneJson(prev)
-                next.sections = next.sections.map((s) => {
-                    if (s.id !== sectionId) return s
-                    return { ...s, questions: (s.questions ?? []).filter((q) => q.id !== questionId) }
-                })
-                return next
-            })
+            updateDraftSchema(
+                (prev) => {
+                    const next = cloneJson(prev)
+                    next.sections = next.sections.map((s) => {
+                        if (s.id !== sectionId) return s
+                        return { ...s, questions: (s.questions ?? []).filter((q) => q.id !== questionId) }
+                    })
+                    return next
+                },
+                { mode: "structural" },
+            )
         },
         [canEdit, updateDraftSchema],
     )
@@ -1009,6 +1091,28 @@ export default function AdminFeedbackFormPage() {
         [canEdit, updateDraftSchema],
     )
 
+    const requestDelete = React.useCallback((target: DeleteTarget) => {
+        setDeleteTarget(target)
+        setDeleteOpen(true)
+    }, [])
+
+    const confirmDelete = React.useCallback(() => {
+        const target = deleteTarget
+        if (!target) return
+
+        setDeleteOpen(false)
+        setDeleteTarget(null)
+
+        if (target.kind === "section") {
+            removeSectionNow(target.sectionId)
+            toast.success("Section deleted.", { action: { label: "Undo", onClick: undoLast } })
+            return
+        }
+
+        removeQuestionNow(target.sectionId, target.questionId)
+        toast.success("Question deleted.", { action: { label: "Undo", onClick: undoLast } })
+    }, [deleteTarget, removeQuestionNow, removeSectionNow, undoLast])
+
     const headerPill = selectedForm ? statusPill(selectedForm.active) : statusPill(false)
 
     return (
@@ -1022,7 +1126,9 @@ export default function AdminFeedbackFormPage() {
                         <AlertTitle>Student feedback forms storage not ready</AlertTitle>
                         <AlertDescription>
                             {storageWarning}
-                            {storageMessage ? <span className="block mt-2 text-xs text-muted-foreground">{storageMessage}</span> : null}
+                            {storageMessage ? (
+                                <span className="mt-2 block text-xs text-muted-foreground">{storageMessage}</span>
+                            ) : null}
                         </AlertDescription>
                     </Alert>
                 ) : null}
@@ -1116,7 +1222,11 @@ export default function AdminFeedbackFormPage() {
 
                                             <div className="space-y-2">
                                                 <Label>Version</Label>
-                                                <Input value={createVersion} onChange={(e) => setCreateVersion(e.target.value)} type="number" />
+                                                <Input
+                                                    value={createVersion}
+                                                    onChange={(e) => setCreateVersion(e.target.value)}
+                                                    type="number"
+                                                />
                                             </div>
 
                                             <div className="space-y-2 md:col-span-2">
@@ -1151,7 +1261,9 @@ export default function AdminFeedbackFormPage() {
                                             <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/10 p-3 md:col-span-2">
                                                 <div className="min-w-0">
                                                     <p className="text-sm font-medium">Activate after create</p>
-                                                    <p className="text-xs text-muted-foreground">Make this the active form for student evaluations</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Make this the active form for student evaluations
+                                                    </p>
                                                 </div>
                                                 <Switch checked={createActivate} onCheckedChange={setCreateActivate} />
                                             </div>
@@ -1268,9 +1380,7 @@ export default function AdminFeedbackFormPage() {
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div className="space-y-1">
                                     <CardTitle className="flex flex-wrap items-center gap-2">
-                                        <span className="min-w-0 truncate">
-                                            {selectedForm ? selectedForm.title : "Default template"}
-                                        </span>
+                                        <span className="min-w-0 truncate">{selectedForm ? selectedForm.title : "Default template"}</span>
 
                                         {selectedForm ? (
                                             <span
@@ -1292,8 +1402,13 @@ export default function AdminFeedbackFormPage() {
                                             </Badge>
                                         ) : null}
 
-                                        {selectedForm ? <Badge variant="secondary" className="font-mono">{selectedForm.key}</Badge> : null}
-                                        {dirty ? <Badge className="bg-amber-500 text-black">Unsaved</Badge> : null}
+                                        {selectedForm ? (
+                                            <Badge variant="secondary" className="font-mono">
+                                                {selectedForm.key}
+                                            </Badge>
+                                        ) : null}
+
+                                        {dirty ? <Badge className="bg-destructive text-white">Unsaved</Badge> : null}
                                     </CardTitle>
 
                                     <CardDescription className="max-w-3xl">
@@ -1316,6 +1431,28 @@ export default function AdminFeedbackFormPage() {
                                     <Button variant="outline" onClick={exportCurrent} className="gap-2">
                                         <Download className="h-4 w-4" />
                                         Export
+                                    </Button>
+
+                                    <Button
+                                        variant="outline"
+                                        onClick={undoLast}
+                                        disabled={undoStack.length === 0}
+                                        className="gap-2"
+                                        aria-label="Undo last change"
+                                    >
+                                        <Undo2 className="h-4 w-4" />
+                                        Undo
+                                    </Button>
+
+                                    <Button
+                                        variant="outline"
+                                        onClick={revertToOriginal}
+                                        disabled={!dirty}
+                                        className="gap-2"
+                                        aria-label="Revert to original state"
+                                    >
+                                        <RotateCcw className="h-4 w-4" />
+                                        Revert
                                     </Button>
 
                                     {selectedForm ? (
@@ -1356,6 +1493,18 @@ export default function AdminFeedbackFormPage() {
                                                     <DropdownMenuItem onClick={duplicateSelected} className="gap-2">
                                                         <CopyPlus className="h-4 w-4" />
                                                         Duplicate
+                                                    </DropdownMenuItem>
+
+                                                    <DropdownMenuSeparator />
+
+                                                    <DropdownMenuItem onClick={undoLast} disabled={undoStack.length === 0} className="gap-2">
+                                                        <Undo2 className="h-4 w-4" />
+                                                        Undo last change
+                                                    </DropdownMenuItem>
+
+                                                    <DropdownMenuItem onClick={revertToOriginal} disabled={!dirty} className="gap-2">
+                                                        <RotateCcw className="h-4 w-4" />
+                                                        Revert to original
                                                     </DropdownMenuItem>
 
                                                     <DropdownMenuSeparator />
@@ -1429,7 +1578,8 @@ export default function AdminFeedbackFormPage() {
                                         <div className="space-y-1">
                                             <p className="text-sm font-medium">Starter template</p>
                                             <p className="text-xs text-muted-foreground">
-                                                Edit this template, then click <span className="font-medium">Create & Activate</span> to generate the first saved form.
+                                                Edit this template, then click <span className="font-medium">Create & Activate</span> to
+                                                generate the first saved form.
                                             </p>
                                         </div>
                                         <div className="flex flex-wrap items-center gap-2">
@@ -1570,7 +1720,13 @@ export default function AdminFeedbackFormPage() {
                                                                 <Button
                                                                     variant="outline"
                                                                     size="icon"
-                                                                    onClick={() => removeSection(section.id)}
+                                                                    onClick={() =>
+                                                                        requestDelete({
+                                                                            kind: "section",
+                                                                            sectionId: section.id,
+                                                                            label: section.title || `Section ${sIdx + 1}`,
+                                                                        })
+                                                                    }
                                                                     aria-label="Delete section"
                                                                     className="text-destructive focus:text-destructive"
                                                                 >
@@ -1592,8 +1748,7 @@ export default function AdminFeedbackFormPage() {
 
                                                         {section.questions.map((q, qIdx) => {
                                                             const isRating = q.type === "rating"
-                                                            const scale =
-                                                                q.scale ?? { min: 1, max: 5, minLabel: "Low", maxLabel: "High" }
+                                                            const scale = q.scale ?? { min: 1, max: 5, minLabel: "Low", maxLabel: "High" }
 
                                                             return (
                                                                 <div key={q.id} className="rounded-lg border bg-card p-3">
@@ -1760,7 +1915,14 @@ export default function AdminFeedbackFormPage() {
                                                                             <Button
                                                                                 variant="outline"
                                                                                 size="icon"
-                                                                                onClick={() => removeQuestion(section.id, q.id)}
+                                                                                onClick={() =>
+                                                                                    requestDelete({
+                                                                                        kind: "question",
+                                                                                        sectionId: section.id,
+                                                                                        questionId: q.id,
+                                                                                        label: q.label || `Question ${sIdx + 1}.${qIdx + 1}`,
+                                                                                    })
+                                                                                }
                                                                                 aria-label="Delete question"
                                                                                 className="text-destructive focus:text-destructive"
                                                                             >
@@ -1816,6 +1978,39 @@ export default function AdminFeedbackFormPage() {
                 </AlertDialogContent>
             </AlertDialog>
 
+            {/* DELETE CONFIRM */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirm deletion</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {deleteTarget ? (
+                                <>
+                                    You are about to delete{" "}
+                                    <span className="font-medium">{deleteTarget.kind === "section" ? "a section" : "a question"}</span>:{" "}
+                                    <span className="font-medium">{deleteTarget.label}</span>. This action can be undone.
+                                </>
+                            ) : (
+                                "You are about to delete an item. This action can be undone."
+                            )}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="gap-2 sm:gap-0">
+                        <AlertDialogCancel
+                            onClick={() => {
+                                setDeleteOpen(false)
+                                setDeleteTarget(null)
+                            }}
+                        >
+                            Cancel
+                        </AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmDelete} className="ml-2">
+                            Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
             {/* DEACTIVATE CONFIRM */}
             <AlertDialog open={deactivateOpen} onOpenChange={setDeactivateOpen}>
                 <AlertDialogContent>
@@ -1827,7 +2022,7 @@ export default function AdminFeedbackFormPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2 sm:gap-0">
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => void deactivateSelected()} className="gap-2 ml-2">
+                        <AlertDialogAction onClick={() => void deactivateSelected()} className="ml-2 gap-2">
                             <PowerOff className="h-4 w-4" />
                             Deactivate
                         </AlertDialogAction>
