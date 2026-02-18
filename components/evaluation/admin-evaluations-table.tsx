@@ -166,7 +166,7 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
             if (rows.length === 0) {
                 return (
                     <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
-                        No {emptyLabel} evaluations in this group.
+                        No {emptyLabel === "student" ? "student feedback" : "panelist rubric"} evaluations in this group.
                     </div>
                 )
             }
@@ -215,6 +215,9 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
                                     .filter((part): part is string => !!part)
                                     .join(" • ")
 
+                                const flowLabel =
+                                    row.assignee_role === "student" ? "Student Feedback" : "Panelist Rubric"
+
                                 return (
                                     <TableRow key={`${row.kind}:${row.id}`}>
                                         <TableCell>
@@ -233,9 +236,7 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
                                                 <p className="text-xs text-muted-foreground">{evaluatorMeta || "—"}</p>
                                                 <p className="text-xs text-muted-foreground">
                                                     Flow:{" "}
-                                                    <span className="font-medium text-foreground">
-                                                        {row.assignee_role === "student" ? "Student" : "Panelist"}
-                                                    </span>
+                                                    <span className="font-medium text-foreground">{flowLabel}</span>
                                                 </p>
                                             </div>
                                         </TableCell>
@@ -375,7 +376,7 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
             <div className="border-b px-4 py-3">
                 <p className="text-sm font-medium">Evaluations by Group</p>
                 <p className="text-xs text-muted-foreground">
-                    Student and panelist evaluations are separated into tabs inside each thesis group.
+                    Panelist rubric scoring and student feedback are separated into tabs inside each thesis group.
                 </p>
             </div>
 
@@ -408,10 +409,10 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
 
                                         <div className="flex flex-wrap items-center gap-2 pr-2">
                                             <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Panelists: {panelistItems.length}
+                                                Panelist Rubric: {panelistItems.length}
                                             </span>
                                             <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Students: {studentItems.length}
+                                                Student Feedback: {studentItems.length}
                                             </span>
 
                                             {group.pending > 0 ? (
@@ -437,11 +438,11 @@ export function AdminEvaluationsGroupedTable({ ctx }: { ctx: AdminEvaluationsPag
                                     <Tabs key={`${group.key}-flow-tabs`} defaultValue={defaultTab} className="w-full">
                                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                             <TabsList className="grid w-full grid-cols-2 sm:w-auto">
-                                                <TabsTrigger value="panelist">Panelist ({panelistItems.length})</TabsTrigger>
-                                                <TabsTrigger value="student">Student ({studentItems.length})</TabsTrigger>
+                                                <TabsTrigger value="panelist">Panelist Rubric ({panelistItems.length})</TabsTrigger>
+                                                <TabsTrigger value="student">Student Feedback ({studentItems.length})</TabsTrigger>
                                             </TabsList>
                                             <p className="text-xs text-muted-foreground">
-                                                Actions and lifecycle controls remain tied to each flow.
+                                                Preview and lifecycle actions remain tied to each flow (no mixed previews).
                                             </p>
                                         </div>
 
@@ -511,8 +512,8 @@ export function AdminEvaluationViewDialog({ ctx }: { ctx: AdminEvaluationsPageSt
                                         </span>
                                         <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
                                             {selectedViewEvaluation.assignee_role === "student"
-                                                ? "Student Flow"
-                                                : "Panelist Flow"}
+                                                ? "Student Feedback Flow"
+                                                : "Panelist Rubric Flow"}
                                         </span>
                                     </div>
                                 </div>

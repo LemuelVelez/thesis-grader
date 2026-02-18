@@ -38,7 +38,6 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type PreviewResponse = {
     preview?: unknown
@@ -96,6 +95,163 @@ function prettyValue(value: unknown): string {
     }
 }
 
+function humanizeQuestionLabel(input: string): string {
+    const raw = input.trim()
+    if (!raw) return "Question"
+
+    // prefer last segment for dotted paths
+    const last = raw.includes(".") ? raw.split(".").filter(Boolean).slice(-1)[0] ?? raw : raw
+
+    // split camelCase
+    const withSpaces = last.replace(/([a-z])([A-Z])/g, "$1 $2")
+
+    // normalize separators
+    let s = withSpaces.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()
+
+    // remove noisy prefixes
+    s = s.replace(/^(question|q|ans|answer)\s*[:\-]?\s*/i, "")
+    s = s.replace(/^(q)\s*(\d+)\s*/i, "Q$2 ")
+    s = s.replace(/^\d+\s*[:\-]?\s*/i, "")
+
+    // title-case
+    const small = new Set(["a", "an", "and", "or", "of", "to", "in", "on", "for", "with"])
+    const words = s.split(" ").filter(Boolean)
+    const titled = words
+        .map((w, i) => {
+            const lower = w.toLowerCase()
+            if (i !== 0 && small.has(lower)) return lower
+            return lower.charAt(0).toUpperCase() + lower.slice(1)
+        })
+        .join(" ")
+
+    return titled || "Question"
+}
+
+type NormalizedAnswer = {
+    question: string
+    answer: unknown
+    score?: unknown
+    max?: unknown
+}
+
+function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
+    if (!answers) return []
+
+    if (Array.isArray(answers)) {
+        return answers
+            .map((raw) => {
+                if (!isRecord(raw)) return null
+                const q =
+                    getString(raw.question) ??
+                    getString(raw.label) ??
+                    getString(raw.prompt) ??
+                    getString(raw.title) ??
+                    getString(raw.name) ??
+                    null
+
+                const a =
+                    raw.answer ??
+                    raw.value ??
+                    raw.response ??
+                    raw.selected ??
+                    raw.text ??
+                    raw.result ??
+                    null
+
+                const score = raw.score ?? raw.points ?? raw.rating ?? undefined
+                const max = raw.max ?? raw.max_score ?? raw.out_of ?? undefined
+
+                return {
+                    question: q ? q : "Question",
+                    answer: a,
+                    score,
+                    max,
+                }
+            })
+            .filter((x): x is NormalizedAnswer => !!x)
+    }
+
+    if (isRecord(answers)) {
+        return Object.entries(answers).map(([k, v]) => {
+            if (isRecord(v)) {
+                const q =
+                    getString(v.question) ??
+                    getString(v.label) ??
+                    getString(v.prompt) ??
+                    getString(v.title) ??
+                    getString(v.name) ??
+                    null
+
+                const a = v.answer ?? v.value ?? v.response ?? v.selected ?? v.text ?? v.result ?? v
+                const score = v.score ?? v.points ?? v.rating ?? undefined
+                const max = v.max ?? v.max_score ?? v.out_of ?? undefined
+
+                return {
+                    question: q ? q : humanizeQuestionLabel(k),
+                    answer: a,
+                    score,
+                    max,
+                }
+            }
+
+            return {
+                question: humanizeQuestionLabel(k),
+                answer: v,
+            }
+        })
+    }
+
+    return [
+        {
+            question: "Answer",
+            answer: answers,
+        },
+    ]
+}
+
+function pickPanelistPreviewItem(panelistItems: unknown[], selectedEvaluationId: string | null): Record<string, unknown> | null {
+    if (!selectedEvaluationId) return null
+    const target = selectedEvaluationId.toLowerCase()
+
+    for (const raw of panelistItems) {
+        const row = isRecord(raw) ? raw : null
+        if (!row) continue
+
+        const evaluation = isRecord(row.evaluation) ? (row.evaluation as Record<string, unknown>) : null
+        const candidate =
+            getString(evaluation?.id) ??
+            getString(row.id) ??
+            getString(row.evaluation_id) ??
+            null
+
+        if (candidate && candidate.toLowerCase() === target) return row
+    }
+
+    return null
+}
+
+function pickStudentPreviewItem(studentItems: unknown[], selectedEvaluationId: string | null, selectedStudentId: string | null): Record<string, unknown> | null {
+    const evalId = selectedEvaluationId ? selectedEvaluationId.toLowerCase() : null
+    const studentId = selectedStudentId ? selectedStudentId.toLowerCase() : null
+
+    for (const raw of studentItems) {
+        const row = isRecord(raw) ? raw : null
+        if (!row) continue
+
+        const candidateEvalId = getString(row.id)?.toLowerCase() ?? getString(row.student_evaluation_id)?.toLowerCase() ?? null
+        const candidateStudentId =
+            getString(row.student_id)?.toLowerCase() ??
+            getString(row.evaluator_id)?.toLowerCase() ??
+            getString(row.user_id)?.toLowerCase() ??
+            null
+
+        if (evalId && candidateEvalId && candidateEvalId === evalId) return row
+        if (!evalId && studentId && candidateStudentId && candidateStudentId === studentId) return row
+    }
+
+    return null
+}
+
 function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState }) {
     const {
         viewOpen,
@@ -118,9 +274,9 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
     } = ctx
 
     const scheduleId = selectedViewEvaluation?.schedule_id ?? null
-
-    type PreviewTab = "student" | "panelist"
-    const [previewTab, setPreviewTab] = React.useState<PreviewTab>("student")
+    const selectedKind = selectedViewEvaluation?.kind ?? null
+    const selectedEvaluationId = selectedViewEvaluation?.id ?? null
+    const selectedAssigneeId = selectedViewEvaluation?.evaluator_id ?? null
 
     const [includeStudentAnswers, setIncludeStudentAnswers] = React.useState(true)
     const [includePanelistScores, setIncludePanelistScores] = React.useState(true)
@@ -132,9 +288,14 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
 
     React.useEffect(() => {
         if (!viewOpen) return
-        const next: PreviewTab = selectedViewEvaluation?.kind === "panelist" ? "panelist" : "student"
-        setPreviewTab(next)
-    }, [selectedViewEvaluation?.kind, viewOpen])
+        // sensible defaults per flow
+        if (selectedKind === "panelist") {
+            setIncludePanelistScores(true)
+            setIncludePanelistComments(true)
+        } else {
+            setIncludeStudentAnswers(true)
+        }
+    }, [selectedKind, viewOpen])
 
     const fetchPreview = React.useCallback(
         async (signal?: AbortSignal) => {
@@ -199,17 +360,384 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
 
     const studentBlock = preview && isRecord(preview.student) ? (preview.student as Record<string, unknown>) : null
     const studentItems = studentBlock && Array.isArray(studentBlock.items) ? (studentBlock.items as unknown[]) : []
-    const studentCount = getNumber(studentBlock?.count) ?? studentItems.length
 
     const panelistBlock = preview && isRecord(preview.panelist) ? (preview.panelist as Record<string, unknown>) : null
     const panelistItems = panelistBlock && Array.isArray(panelistBlock.items) ? (panelistBlock.items as unknown[]) : []
-    const panelistCount = getNumber(panelistBlock?.count) ?? panelistItems.length
-
-    const selectedKind = selectedViewEvaluation?.kind ?? null
-    const selectedEvaluationId = selectedViewEvaluation?.id ?? null
-    const selectedAssigneeId = selectedViewEvaluation?.evaluator_id ?? null
 
     const currentStatus = selectedViewEvaluation ? normalizeStatus(selectedViewEvaluation.status) : null
+
+    const selectedPanelistPreview = React.useMemo(() => {
+        if (selectedKind !== "panelist") return null
+        return pickPanelistPreviewItem(panelistItems, selectedEvaluationId)
+    }, [panelistItems, selectedEvaluationId, selectedKind])
+
+    const selectedStudentPreview = React.useMemo(() => {
+        if (selectedKind !== "student") return null
+        return pickStudentPreviewItem(studentItems, selectedEvaluationId, selectedAssigneeId)
+    }, [selectedAssigneeId, selectedEvaluationId, selectedKind, studentItems])
+
+    const headerTitle =
+        selectedKind === "panelist"
+            ? "Panelist Rubric Preview"
+            : selectedKind === "student"
+                ? "Student Feedback Preview"
+                : "Evaluation Preview"
+
+    const headerDescription =
+        selectedKind === "panelist"
+            ? "This preview is strictly the selected panelist’s rubric scoring (criteria + scores). Student feedback evaluations are a separate flow and have their own preview."
+            : selectedKind === "student"
+                ? "This preview is strictly the selected student’s feedback evaluation (questions + answers + score). Panelist rubric scoring is a separate flow and has its own preview."
+                : "Preview is limited to the selected evaluation assignment."
+
+    function renderPanelistPreview(row: Record<string, unknown>) {
+        const evaluation = isRecord(row.evaluation) ? (row.evaluation as Record<string, unknown>) : {}
+        const evalId = getString(evaluation.id) ?? selectedEvaluationId ?? "—"
+
+        const status = getString(evaluation.status) ?? "pending"
+        const statusNorm = normalizeStatus(status)
+
+        const overall = isRecord(row.overall) ? (row.overall as Record<string, unknown>) : null
+        const overallPct = overall ? (overall.percentage ?? overall.overall_percentage ?? overall.score_percentage ?? overallPct) : null
+
+        const targets = Array.isArray(row.targets) ? (row.targets as unknown[]) : []
+        const scores = Array.isArray(row.scores) ? (row.scores as unknown[]) : []
+
+        const groupedByTarget = new Map<string, { title: string; type: string; items: Record<string, unknown>[] }>()
+        for (const sRaw of scores) {
+            const s = isRecord(sRaw) ? (sRaw as Record<string, unknown>) : {}
+            const tType = getString(s.target_type) ?? "unknown"
+            const tId = getString(s.target_id) ?? "unknown"
+            const tName = getString(s.target_name) ?? (tType === "group" ? "Thesis Group" : "Student")
+            const key = `${tType}:${tId}`
+
+            if (!groupedByTarget.has(key)) {
+                groupedByTarget.set(key, { title: tName, type: tType, items: [] })
+            }
+            groupedByTarget.get(key)!.items.push(s)
+        }
+
+        const targetGroups = Array.from(groupedByTarget.values()).sort((a, b) => {
+            const aP = a.type === "group" ? 0 : 1
+            const bP = b.type === "group" ? 0 : 1
+            if (aP !== bP) return aP - bP
+            return a.title.localeCompare(b.title)
+        })
+
+        return (
+            <div className="space-y-3">
+                <div className="rounded-lg border bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span
+                            className={[
+                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                statusBadgeClass(statusNorm),
+                            ].join(" ")}
+                        >
+                            {toTitleCase(statusNorm)}
+                        </span>
+
+                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                            Overall: {formatPercent(overallPct)}
+                        </span>
+
+                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                            Targets: {targets.length}
+                        </span>
+
+                        <span className="ml-auto text-xs text-muted-foreground">
+                            Evaluation ID: <span className="font-medium text-foreground">{evalId}</span>
+                        </span>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                        Rubric scoring can include <span className="font-medium text-foreground">group</span> and{" "}
+                        <span className="font-medium text-foreground">individual student</span> targets. These are rubric targets (not student feedback evaluations).
+                    </p>
+                </div>
+
+                <div className="rounded-md border p-3">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-sm font-medium">Rubric Targets Summary</p>
+                        <p className="text-xs text-muted-foreground">
+                            {targets.length} target(s) • {includePanelistScores ? "scores included" : "scores hidden"}
+                        </p>
+                    </div>
+
+                    {targets.length === 0 ? (
+                        <div className="mt-2 text-sm text-muted-foreground">No rubric targets available yet.</div>
+                    ) : (
+                        <div className="mt-2 overflow-x-auto rounded-md border">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead className="min-w-60">Target</TableHead>
+                                        <TableHead className="min-w-28">Target Type</TableHead>
+                                        <TableHead className="min-w-32">Criteria Scored</TableHead>
+                                        <TableHead className="min-w-32">Percentage</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {targets.map((tRaw: unknown, tIdx: number) => {
+                                        const t = isRecord(tRaw) ? (tRaw as Record<string, unknown>) : {}
+                                        const tName = getString(t.target_name) ?? "Unnamed target"
+                                        const tTypeRaw = getString(t.target_type) ?? "—"
+                                        const tType =
+                                            normalizeStatus(tTypeRaw) === "student"
+                                                ? "Individual Student"
+                                                : normalizeStatus(tTypeRaw) === "group"
+                                                    ? "Thesis Group"
+                                                    : toTitleCase(tTypeRaw)
+                                        const criteria = getNumber(t.criteria_scored)
+                                        const pct = t.percentage
+                                        return (
+                                            <TableRow key={`${evalId}-t-${tIdx}`}>
+                                                <TableCell className="font-medium">{tName}</TableCell>
+                                                <TableCell className="text-muted-foreground">{tType}</TableCell>
+                                                <TableCell className="text-muted-foreground">{criteria ?? "—"}</TableCell>
+                                                <TableCell className="text-muted-foreground">{formatPercent(pct)}</TableCell>
+                                            </TableRow>
+                                        )
+                                    })}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    )}
+                </div>
+
+                <div className="rounded-md border p-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="space-y-0.5">
+                            <p className="text-sm font-medium">Rubric Scores</p>
+                            <p className="text-xs text-muted-foreground">
+                                Criteria from the rubric template with scores (and optional comments).
+                            </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                                size="sm"
+                                variant={includePanelistScores ? "default" : "outline"}
+                                onClick={() => setIncludePanelistScores((v) => !v)}
+                            >
+                                {includePanelistScores ? "Scores: ON" : "Scores: OFF"}
+                            </Button>
+
+                            <Button
+                                size="sm"
+                                variant={includePanelistComments ? "default" : "outline"}
+                                onClick={() => setIncludePanelistComments((v) => !v)}
+                                disabled={!includePanelistScores}
+                            >
+                                {includePanelistComments ? "Comments: ON" : "Comments: OFF"}
+                            </Button>
+                        </div>
+                    </div>
+
+                    {!includePanelistScores ? (
+                        <div className="mt-2 text-sm text-muted-foreground">Rubric scores are currently hidden.</div>
+                    ) : scores.length === 0 ? (
+                        <div className="mt-2 text-sm text-muted-foreground">No rubric scores recorded yet.</div>
+                    ) : targetGroups.length === 0 ? (
+                        <div className="mt-2 text-sm text-muted-foreground">No grouped rubric scores available.</div>
+                    ) : (
+                        <Accordion type="multiple" className="mt-3 w-full">
+                            {targetGroups.map((g, gIdx) => (
+                                <AccordionItem key={`${evalId}-g-${gIdx}`} value={`${evalId}-g-${gIdx}`} className="rounded-lg border px-0">
+                                    <AccordionTrigger className="px-3 py-3 hover:no-underline">
+                                        <div className="flex w-full flex-col gap-1 text-left sm:flex-row sm:items-center sm:justify-between">
+                                            <p className="truncate text-sm font-semibold">{g.title}</p>
+                                            <p className="text-xs text-muted-foreground">
+                                                {g.type === "student" ? "Individual Student" : g.type === "group" ? "Thesis Group" : toTitleCase(g.type)} •{" "}
+                                                {g.items.length} criterion item(s)
+                                            </p>
+                                        </div>
+                                    </AccordionTrigger>
+
+                                    <AccordionContent className="px-3 pb-3">
+                                        <div className="overflow-x-auto rounded-md border">
+                                            <Table>
+                                                <TableHeader>
+                                                    <TableRow>
+                                                        <TableHead className="min-w-72">Criterion</TableHead>
+                                                        <TableHead className="min-w-24">Score</TableHead>
+                                                        <TableHead className="min-w-24">Max</TableHead>
+                                                        <TableHead className="min-w-24">Weight</TableHead>
+                                                        {includePanelistComments ? <TableHead className="min-w-96">Comment</TableHead> : null}
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {g.items.map((s, sIdx) => {
+                                                        const criterion = getString(s.criterion) ?? "—"
+                                                        const score = getNumber(s.score)
+                                                        const maxScore = getNumber(s.max_score)
+                                                        const weight = s.weight
+                                                        const comment = includePanelistComments ? getString(s.comment) : null
+
+                                                        return (
+                                                            <TableRow key={`${evalId}-g-${gIdx}-s-${sIdx}`}>
+                                                                <TableCell>
+                                                                    <div className="space-y-0.5">
+                                                                        <p className="text-sm font-medium">{criterion}</p>
+                                                                        {getString(s.criterion_description) ? (
+                                                                            <p className="text-xs text-muted-foreground">
+                                                                                {getString(s.criterion_description)}
+                                                                            </p>
+                                                                        ) : null}
+                                                                    </div>
+                                                                </TableCell>
+                                                                <TableCell className="text-muted-foreground">{score ?? "—"}</TableCell>
+                                                                <TableCell className="text-muted-foreground">{maxScore ?? "—"}</TableCell>
+                                                                <TableCell className="text-muted-foreground">{formatMaybeScore(weight)}</TableCell>
+                                                                {includePanelistComments ? (
+                                                                    <TableCell className="text-muted-foreground">
+                                                                        <div className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-break-word">
+                                                                            {comment ?? "—"}
+                                                                        </div>
+                                                                    </TableCell>
+                                                                ) : null}
+                                                            </TableRow>
+                                                        )
+                                                    })}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    </AccordionContent>
+                                </AccordionItem>
+                            ))}
+                        </Accordion>
+                    )}
+                </div>
+            </div>
+        )
+    }
+
+    function renderStudentPreview(row: Record<string, unknown>) {
+        const studentId =
+            getString(row.student_id) ??
+            getString(row.evaluator_id) ??
+            getString(row.user_id) ??
+            selectedAssigneeId ??
+            null
+
+        const studentName =
+            getString(row.student_name) ??
+            getString(row.name) ??
+            getString(row.student_email) ??
+            compactString(selectedViewEvaluator?.name) ??
+            compactString(selectedViewEvaluator?.email) ??
+            "Student"
+
+        const studentEmail = getString(row.student_email) ?? getString(row.email) ?? compactString(selectedViewEvaluator?.email)
+
+        const status = getString(row.status) ?? "pending"
+        const statusNorm = normalizeStatus(status)
+
+        const scoreTotal = row.score_total ?? row.total_score ?? row.total
+        const scoreMax = row.score_max ?? row.max_score ?? row.max
+        const scorePercent = row.score_percentage ?? row.percentage
+
+        const answersRaw = row.answers ?? row.responses ?? row.feedback ?? null
+        const normalizedAnswers = normalizeStudentAnswers(answersRaw)
+
+        return (
+            <div className="space-y-3">
+                <div className="rounded-lg border bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span
+                            className={[
+                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                statusBadgeClass(statusNorm),
+                            ].join(" ")}
+                        >
+                            {toTitleCase(statusNorm)}
+                        </span>
+
+                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                            Score: {formatPercent(scorePercent)}
+                        </span>
+
+                        <span className="ml-auto text-xs text-muted-foreground">
+                            Student ID: <span className="font-medium text-foreground">{studentId ?? "—"}</span>
+                        </span>
+                    </div>
+
+                    <div className="mt-2">
+                        <p className="text-sm font-semibold">{studentName}</p>
+                        <p className="text-xs text-muted-foreground">{studentEmail ?? "No email"}</p>
+                    </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Total</p>
+                        <p className="mt-1 text-sm font-semibold">{formatMaybeScore(scoreTotal)}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Max</p>
+                        <p className="mt-1 text-sm font-semibold">{formatMaybeScore(scoreMax)}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Percentage</p>
+                        <p className="mt-1 text-sm font-semibold">{formatPercent(scorePercent)}</p>
+                    </div>
+                </div>
+
+                <div className="rounded-md border p-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="space-y-0.5">
+                            <p className="text-sm font-medium">Feedback Answers</p>
+                            <p className="text-xs text-muted-foreground">
+                                Questions are shown with human-friendly labels (not raw attribute keys).
+                            </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                                size="sm"
+                                variant={includeStudentAnswers ? "default" : "outline"}
+                                onClick={() => setIncludeStudentAnswers((v) => !v)}
+                            >
+                                {includeStudentAnswers ? "Answers: ON" : "Answers: OFF"}
+                            </Button>
+                        </div>
+                    </div>
+
+                    {!includeStudentAnswers ? (
+                        <div className="mt-2 text-sm text-muted-foreground">Student answers are currently hidden.</div>
+                    ) : normalizedAnswers.length === 0 ? (
+                        <div className="mt-2 text-sm text-muted-foreground">No feedback answers available yet.</div>
+                    ) : (
+                        <div className="mt-3 max-h-96 overflow-y-auto rounded-md border bg-muted/10 p-2">
+                            <div className="space-y-2">
+                                {normalizedAnswers.map((a, idx) => {
+                                    const q = a.question ? a.question : `Question ${idx + 1}`
+                                    const friendly = q === a.question ? q : q
+                                    const score = a.score
+                                    const max = a.max
+
+                                    return (
+                                        <div key={`ans-${idx}`} className="rounded-md border bg-card p-3">
+                                            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                                <p className="text-sm font-semibold">{friendly}</p>
+                                                {score !== undefined || max !== undefined ? (
+                                                    <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                        Score: {formatMaybeScore(score)}{max !== undefined ? ` / ${formatMaybeScore(max)}` : ""}
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                            <pre className="mt-2 whitespace-pre-wrap wrap-break-word text-sm text-muted-foreground">
+                                                {prettyValue(a.answer)}
+                                            </pre>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )
+    }
 
     return (
         <Dialog
@@ -222,18 +750,15 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                 {selectedViewEvaluation ? (
                     <>
                         <DialogHeader>
-                            <DialogTitle>Evaluation Details & Preview</DialogTitle>
-                            <DialogDescription>
-                                Student and panelist data are shown in separate tabs (no mixed flow UI). Actions below
-                                apply to the selected assignment.
-                            </DialogDescription>
+                            <DialogTitle>{headerTitle}</DialogTitle>
+                            <DialogDescription>{headerDescription}</DialogDescription>
                         </DialogHeader>
 
                         <div className="flex-1 overflow-y-auto pr-2">
                             <div className="space-y-4">
                                 <div className="rounded-lg border bg-muted/30 p-3">
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-sm font-medium">Status</span>
+                                        <span className="text-sm font-medium">Assignment Status</span>
                                         <span
                                             className={[
                                                 "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
@@ -244,7 +769,9 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                                         </span>
 
                                         <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
-                                            {selectedViewEvaluation.assignee_role === "student" ? "Student Flow" : "Panelist Flow"}
+                                            {selectedViewEvaluation.assignee_role === "student"
+                                                ? "Student Feedback Flow"
+                                                : "Panelist Rubric Flow"}
                                         </span>
 
                                         <span className="ml-auto text-xs text-muted-foreground">
@@ -302,478 +829,67 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                                 </div>
 
                                 <div className="rounded-lg border bg-card p-3">
-                                    <div className="space-y-3">
-                                        <div className="space-y-1">
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="space-y-0.5">
                                             <p className="text-sm font-medium">Preview</p>
                                             <p className="text-xs text-muted-foreground">
-                                                Switch tabs to preview student feedback vs panelist rubric scoring.
+                                                Preview is strictly scoped to the selected assignment (no mixed flow UI).
                                             </p>
                                         </div>
 
-                                        <Tabs value={previewTab} onValueChange={(v) => setPreviewTab(v as PreviewTab)} className="w-full">
-                                            <TabsList className="grid w-full grid-cols-2">
-                                                <TabsTrigger value="student">
-                                                    Student Evaluation ({studentCount})
-                                                </TabsTrigger>
-                                                <TabsTrigger value="panelist">
-                                                    Panelist Evaluation ({panelistCount})
-                                                </TabsTrigger>
-                                            </TabsList>
-
-                                            <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    {previewTab === "student" ? (
-                                                        <Button
-                                                            size="sm"
-                                                            variant={includeStudentAnswers ? "default" : "outline"}
-                                                            onClick={() => setIncludeStudentAnswers((v) => !v)}
-                                                        >
-                                                            {includeStudentAnswers ? "Student answers: ON" : "Student answers: OFF"}
-                                                        </Button>
-                                                    ) : (
-                                                        <>
-                                                            <Button
-                                                                size="sm"
-                                                                variant={includePanelistScores ? "default" : "outline"}
-                                                                onClick={() => setIncludePanelistScores((v) => !v)}
-                                                            >
-                                                                {includePanelistScores ? "Panelist scores: ON" : "Panelist scores: OFF"}
-                                                            </Button>
-
-                                                            <Button
-                                                                size="sm"
-                                                                variant={includePanelistComments ? "default" : "outline"}
-                                                                onClick={() => setIncludePanelistComments((v) => !v)}
-                                                                disabled={!includePanelistScores}
-                                                            >
-                                                                {includePanelistComments ? "Comments: ON" : "Comments: OFF"}
-                                                            </Button>
-                                                        </>
-                                                    )}
-                                                </div>
-
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        onClick={() => void fetchPreview()}
-                                                        disabled={loadingPreview || !scheduleId}
-                                                    >
-                                                        {loadingPreview ? "Loading..." : "Refresh Preview"}
-                                                    </Button>
-                                                </div>
-                                            </div>
-
-                                            {previewError ? (
-                                                <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                                                    {previewError}
-                                                </div>
-                                            ) : null}
-
-                                            {loadingPreview ? (
-                                                <div className="mt-3 space-y-2">
-                                                    {Array.from({ length: 4 }).map((_, i) => (
-                                                        <div key={`preview-skel-${i}`} className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
-                                                    ))}
-                                                </div>
-                                            ) : null}
-
-                                            {!loadingPreview && !previewError ? (
-                                                <>
-                                                    <TabsContent value="student" className="mt-4">
-                                                        {studentItems.length === 0 ? (
-                                                            <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                                                                No student feedback entries found for this schedule.
-                                                            </div>
-                                                        ) : (
-                                                            <Accordion type="multiple" className="w-full">
-                                                                {studentItems.map((raw: unknown, idx: number) => {
-                                                                    const row = isRecord(raw) ? raw : {}
-                                                                    const id = getString(row.id) ?? `student-${idx}`
-                                                                    const studentId =
-                                                                        getString(row.student_id) ??
-                                                                        getString(row.evaluator_id) ??
-                                                                        getString(row.user_id) ??
-                                                                        null
-
-                                                                    const studentName =
-                                                                        getString(row.student_name) ??
-                                                                        getString(row.name) ??
-                                                                        getString(row.student_email) ??
-                                                                        "Unnamed Student"
-
-                                                                    const studentEmail = getString(row.student_email) ?? getString(row.email)
-
-                                                                    const status = getString(row.status) ?? "pending"
-                                                                    const statusNorm = normalizeStatus(status)
-
-                                                                    const scoreTotal = row.score_total
-                                                                    const scoreMax = row.score_max
-                                                                    const scorePercent = row.score_percentage
-
-                                                                    const answers = row.answers
-
-                                                                    const isSelected =
-                                                                        selectedKind === "student" &&
-                                                                        !!studentId &&
-                                                                        !!selectedAssigneeId &&
-                                                                        studentId.toLowerCase() === selectedAssigneeId.toLowerCase()
-
-                                                                    return (
-                                                                        <AccordionItem
-                                                                            key={id}
-                                                                            value={id}
-                                                                            className={[
-                                                                                "rounded-lg border px-0",
-                                                                                isSelected ? "border-primary/40 bg-primary/5" : "",
-                                                                            ].join(" ")}
-                                                                        >
-                                                                            <AccordionTrigger className="px-3 py-3 hover:no-underline">
-                                                                                <div className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between">
-                                                                                    <div className="min-w-0">
-                                                                                        <p className="truncate text-sm font-semibold">
-                                                                                            {studentName}
-                                                                                        </p>
-                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                            {studentEmail ?? "No email"}
-                                                                                            {studentId ? ` • ${studentId}` : ""}
-                                                                                        </p>
-                                                                                    </div>
-
-                                                                                    <div className="flex flex-wrap items-center gap-2 pr-2">
-                                                                                        <span
-                                                                                            className={[
-                                                                                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                                                                statusBadgeClass(statusNorm),
-                                                                                            ].join(" ")}
-                                                                                        >
-                                                                                            {toTitleCase(statusNorm)}
-                                                                                        </span>
-
-                                                                                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                                                            Score: {formatPercent(scorePercent)}
-                                                                                        </span>
-
-                                                                                        {isSelected ? (
-                                                                                            <span className="inline-flex rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-medium">
-                                                                                                Selected
-                                                                                            </span>
-                                                                                        ) : null}
-                                                                                    </div>
-                                                                                </div>
-                                                                            </AccordionTrigger>
-
-                                                                            <AccordionContent className="px-3 pb-3">
-                                                                                <div className="grid gap-3 sm:grid-cols-3">
-                                                                                    <div className="rounded-md border p-3">
-                                                                                        <p className="text-xs text-muted-foreground">Total</p>
-                                                                                        <p className="mt-1 text-sm font-semibold">
-                                                                                            {formatMaybeScore(scoreTotal)}
-                                                                                        </p>
-                                                                                    </div>
-                                                                                    <div className="rounded-md border p-3">
-                                                                                        <p className="text-xs text-muted-foreground">Max</p>
-                                                                                        <p className="mt-1 text-sm font-semibold">
-                                                                                            {formatMaybeScore(scoreMax)}
-                                                                                        </p>
-                                                                                    </div>
-                                                                                    <div className="rounded-md border p-3">
-                                                                                        <p className="text-xs text-muted-foreground">Percentage</p>
-                                                                                        <p className="mt-1 text-sm font-semibold">
-                                                                                            {formatPercent(scorePercent)}
-                                                                                        </p>
-                                                                                    </div>
-                                                                                </div>
-
-                                                                                <div className="mt-3 rounded-md border p-3">
-                                                                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                                                                        <p className="text-sm font-medium">Answers</p>
-                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                            {includeStudentAnswers ? "Included" : "Hidden"} (toggle above)
-                                                                                        </p>
-                                                                                    </div>
-
-                                                                                    {!includeStudentAnswers ? (
-                                                                                        <div className="mt-2 text-sm text-muted-foreground">
-                                                                                            Student answers are currently hidden.
-                                                                                        </div>
-                                                                                    ) : (
-                                                                                        <div className="mt-2 max-h-80 overflow-y-auto rounded-md border bg-muted/20 p-2">
-                                                                                            {isRecord(answers) ? (
-                                                                                                <div className="space-y-2">
-                                                                                                    {Object.entries(answers).map(([k, v]) => (
-                                                                                                        <div key={k} className="rounded-md border bg-card p-2">
-                                                                                                            <p className="text-xs font-medium">{k}</p>
-                                                                                                            <pre className="mt-1 whitespace-pre-wrap wrap-break-word text-xs text-muted-foreground">
-                                                                                                                {prettyValue(v)}
-                                                                                                            </pre>
-                                                                                                        </div>
-                                                                                                    ))}
-                                                                                                </div>
-                                                                                            ) : (
-                                                                                                <pre className="whitespace-pre-wrap wrap-break-word text-xs text-muted-foreground">
-                                                                                                    {prettyValue(answers)}
-                                                                                                </pre>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    )}
-                                                                                </div>
-                                                                            </AccordionContent>
-                                                                        </AccordionItem>
-                                                                    )
-                                                                })}
-                                                            </Accordion>
-                                                        )}
-                                                    </TabsContent>
-
-                                                    <TabsContent value="panelist" className="mt-4">
-                                                        {panelistItems.length === 0 ? (
-                                                            <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                                                                No panelist evaluations found for this schedule.
-                                                            </div>
-                                                        ) : (
-                                                            <Accordion type="multiple" className="w-full">
-                                                                {panelistItems.map((raw: unknown, idx: number) => {
-                                                                    const row = isRecord(raw) ? raw : {}
-                                                                    const evaluation = isRecord(row.evaluation) ? (row.evaluation as Record<string, unknown>) : {}
-                                                                    const evalId = getString(evaluation.id) ?? `panelist-${idx}`
-                                                                    const evaluatorName =
-                                                                        getString(evaluation.evaluator_name) ??
-                                                                        getString(evaluation.evaluator_email) ??
-                                                                        getString(evaluation.evaluator_id) ??
-                                                                        "Unknown Panelist"
-                                                                    const evaluatorEmail = getString(evaluation.evaluator_email)
-
-                                                                    const status = getString(evaluation.status) ?? getString(row.status) ?? "pending"
-                                                                    const statusNorm = normalizeStatus(status)
-
-                                                                    const overall = isRecord(row.overall) ? (row.overall as Record<string, unknown>) : null
-                                                                    const overallPct = overall ? (overall.percentage ?? overall.overall_percentage ?? overall.score_percentage) : null
-
-                                                                    const targets = Array.isArray(row.targets) ? (row.targets as unknown[]) : []
-                                                                    const scores = Array.isArray(row.scores) ? (row.scores as unknown[]) : []
-
-                                                                    const isSelected = selectedKind === "panelist" && selectedEvaluationId === evalId
-
-                                                                    const groupedByTarget = new Map<string, { title: string; type: string; items: Record<string, unknown>[] }>()
-                                                                    for (const sRaw of scores) {
-                                                                        const s = isRecord(sRaw) ? (sRaw as Record<string, unknown>) : {}
-                                                                        const tType = getString(s.target_type) ?? "unknown"
-                                                                        const tId = getString(s.target_id) ?? "unknown"
-                                                                        const tName = getString(s.target_name) ?? (tType === "group" ? "Group" : "Student")
-                                                                        const key = `${tType}:${tId}`
-
-                                                                        if (!groupedByTarget.has(key)) {
-                                                                            groupedByTarget.set(key, { title: tName, type: tType, items: [] })
-                                                                        }
-                                                                        groupedByTarget.get(key)!.items.push(s)
-                                                                    }
-
-                                                                    const targetGroups = Array.from(groupedByTarget.values()).sort((a, b) => {
-                                                                        const aP = a.type === "group" ? 0 : 1
-                                                                        const bP = b.type === "group" ? 0 : 1
-                                                                        if (aP !== bP) return aP - bP
-                                                                        return a.title.localeCompare(b.title)
-                                                                    })
-
-                                                                    return (
-                                                                        <AccordionItem
-                                                                            key={evalId}
-                                                                            value={evalId}
-                                                                            className={[
-                                                                                "rounded-lg border px-0",
-                                                                                isSelected ? "border-primary/40 bg-primary/5" : "",
-                                                                            ].join(" ")}
-                                                                        >
-                                                                            <AccordionTrigger className="px-3 py-3 hover:no-underline">
-                                                                                <div className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between">
-                                                                                    <div className="min-w-0">
-                                                                                        <p className="truncate text-sm font-semibold">{evaluatorName}</p>
-                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                            {evaluatorEmail ?? "No email"} • {evalId}
-                                                                                        </p>
-                                                                                    </div>
-
-                                                                                    <div className="flex flex-wrap items-center gap-2 pr-2">
-                                                                                        <span
-                                                                                            className={[
-                                                                                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                                                                statusBadgeClass(statusNorm),
-                                                                                            ].join(" ")}
-                                                                                        >
-                                                                                            {toTitleCase(statusNorm)}
-                                                                                        </span>
-
-                                                                                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                                                            Overall: {formatPercent(overallPct)}
-                                                                                        </span>
-
-                                                                                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                                                            Targets: {targets.length}
-                                                                                        </span>
-
-                                                                                        {isSelected ? (
-                                                                                            <span className="inline-flex rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-medium">
-                                                                                                Selected
-                                                                                            </span>
-                                                                                        ) : null}
-                                                                                    </div>
-                                                                                </div>
-                                                                            </AccordionTrigger>
-
-                                                                            <AccordionContent className="px-3 pb-3">
-                                                                                <div className="rounded-md border p-3">
-                                                                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                                                                        <p className="text-sm font-medium">Targets Summary</p>
-                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                            {targets.length} target(s) • {includePanelistScores ? "Scores included" : "Scores hidden"}
-                                                                                        </p>
-                                                                                    </div>
-
-                                                                                    {targets.length === 0 ? (
-                                                                                        <div className="mt-2 text-sm text-muted-foreground">
-                                                                                            No target summaries available yet.
-                                                                                        </div>
-                                                                                    ) : (
-                                                                                        <div className="mt-2 overflow-x-auto rounded-md border">
-                                                                                            <Table>
-                                                                                                <TableHeader>
-                                                                                                    <TableRow>
-                                                                                                        <TableHead className="min-w-60">Target</TableHead>
-                                                                                                        <TableHead className="min-w-24">Type</TableHead>
-                                                                                                        <TableHead className="min-w-32">Criteria</TableHead>
-                                                                                                        <TableHead className="min-w-32">Percentage</TableHead>
-                                                                                                    </TableRow>
-                                                                                                </TableHeader>
-                                                                                                <TableBody>
-                                                                                                    {targets.map((tRaw: unknown, tIdx: number) => {
-                                                                                                        const t = isRecord(tRaw) ? (tRaw as Record<string, unknown>) : {}
-                                                                                                        const tName = getString(t.target_name) ?? "Unnamed target"
-                                                                                                        const tType = getString(t.target_type) ?? "—"
-                                                                                                        const criteria = getNumber(t.criteria_scored)
-                                                                                                        const pct = t.percentage
-                                                                                                        return (
-                                                                                                            <TableRow key={`${evalId}-t-${tIdx}`}>
-                                                                                                                <TableCell className="font-medium">{tName}</TableCell>
-                                                                                                                <TableCell className="text-muted-foreground">
-                                                                                                                    {toTitleCase(tType)}
-                                                                                                                </TableCell>
-                                                                                                                <TableCell className="text-muted-foreground">
-                                                                                                                    {criteria ?? "—"}
-                                                                                                                </TableCell>
-                                                                                                                <TableCell className="text-muted-foreground">
-                                                                                                                    {formatPercent(pct)}
-                                                                                                                </TableCell>
-                                                                                                            </TableRow>
-                                                                                                        )
-                                                                                                    })}
-                                                                                                </TableBody>
-                                                                                            </Table>
-                                                                                        </div>
-                                                                                    )}
-                                                                                </div>
-
-                                                                                <div className="mt-3 rounded-md border p-3">
-                                                                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                                                                        <p className="text-sm font-medium">Detailed Scores</p>
-                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                            {includePanelistScores ? "Included" : "Hidden"} • Comments{" "}
-                                                                                            {includePanelistComments ? "ON" : "OFF"}
-                                                                                        </p>
-                                                                                    </div>
-
-                                                                                    {!includePanelistScores ? (
-                                                                                        <div className="mt-2 text-sm text-muted-foreground">
-                                                                                            Panelist rubric scores are currently hidden.
-                                                                                        </div>
-                                                                                    ) : scores.length === 0 ? (
-                                                                                        <div className="mt-2 text-sm text-muted-foreground">
-                                                                                            No rubric scores recorded yet for this panelist.
-                                                                                        </div>
-                                                                                    ) : (
-                                                                                        <div className="mt-2 space-y-3">
-                                                                                            {targetGroups.map((g, gIdx) => (
-                                                                                                <div key={`${evalId}-g-${gIdx}`} className="rounded-md border p-3">
-                                                                                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                                                                                        <p className="text-sm font-semibold">
-                                                                                                            {g.title}
-                                                                                                        </p>
-                                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                                            {toTitleCase(g.type)} • {g.items.length} criterion item(s)
-                                                                                                        </p>
-                                                                                                    </div>
-
-                                                                                                    <div className="mt-2 overflow-x-auto rounded-md border">
-                                                                                                        <Table>
-                                                                                                            <TableHeader>
-                                                                                                                <TableRow>
-                                                                                                                    <TableHead className="min-w-72">Criterion</TableHead>
-                                                                                                                    <TableHead className="min-w-24">Score</TableHead>
-                                                                                                                    <TableHead className="min-w-24">Max</TableHead>
-                                                                                                                    <TableHead className="min-w-24">Weight</TableHead>
-                                                                                                                    {includePanelistComments ? (
-                                                                                                                        <TableHead className="min-w-96">Comment</TableHead>
-                                                                                                                    ) : null}
-                                                                                                                </TableRow>
-                                                                                                            </TableHeader>
-                                                                                                            <TableBody>
-                                                                                                                {g.items.map((s, sIdx) => {
-                                                                                                                    const criterion = getString(s.criterion) ?? "—"
-                                                                                                                    const score = getNumber(s.score)
-                                                                                                                    const maxScore = getNumber(s.max_score)
-                                                                                                                    const weight = s.weight
-                                                                                                                    const comment = includePanelistComments ? getString(s.comment) : null
-
-                                                                                                                    return (
-                                                                                                                        <TableRow key={`${evalId}-g-${gIdx}-s-${sIdx}`}>
-                                                                                                                            <TableCell>
-                                                                                                                                <div className="space-y-0.5">
-                                                                                                                                    <p className="text-sm font-medium">{criterion}</p>
-                                                                                                                                    {getString(s.criterion_description) ? (
-                                                                                                                                        <p className="text-xs text-muted-foreground">
-                                                                                                                                            {getString(s.criterion_description)}
-                                                                                                                                        </p>
-                                                                                                                                    ) : null}
-                                                                                                                                </div>
-                                                                                                                            </TableCell>
-                                                                                                                            <TableCell className="text-muted-foreground">
-                                                                                                                                {score ?? "—"}
-                                                                                                                            </TableCell>
-                                                                                                                            <TableCell className="text-muted-foreground">
-                                                                                                                                {maxScore ?? "—"}
-                                                                                                                            </TableCell>
-                                                                                                                            <TableCell className="text-muted-foreground">
-                                                                                                                                {formatMaybeScore(weight)}
-                                                                                                                            </TableCell>
-                                                                                                                            {includePanelistComments ? (
-                                                                                                                                <TableCell className="text-muted-foreground">
-                                                                                                                                    <div className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-break-word">
-                                                                                                                                        {comment ?? "—"}
-                                                                                                                                    </div>
-                                                                                                                                </TableCell>
-                                                                                                                            ) : null}
-                                                                                                                        </TableRow>
-                                                                                                                    )
-                                                                                                                })}
-                                                                                                            </TableBody>
-                                                                                                        </Table>
-                                                                                                    </div>
-                                                                                                </div>
-                                                                                            ))}
-                                                                                        </div>
-                                                                                    )}
-                                                                                </div>
-                                                                            </AccordionContent>
-                                                                        </AccordionItem>
-                                                                    )
-                                                                })}
-                                                            </Accordion>
-                                                        )}
-                                                    </TabsContent>
-                                                </>
-                                            ) : null}
-                                        </Tabs>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => void fetchPreview()}
+                                                disabled={loadingPreview || !scheduleId}
+                                            >
+                                                {loadingPreview ? "Loading..." : "Refresh Preview"}
+                                            </Button>
+                                        </div>
                                     </div>
+
+                                    {previewError ? (
+                                        <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                                            {previewError}
+                                        </div>
+                                    ) : null}
+
+                                    {loadingPreview ? (
+                                        <div className="mt-3 space-y-2">
+                                            {Array.from({ length: 4 }).map((_, i) => (
+                                                <div key={`preview-skel-${i}`} className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
+                                            ))}
+                                        </div>
+                                    ) : null}
+
+                                    {!loadingPreview && !previewError ? (
+                                        <div className="mt-4">
+                                            {selectedKind === "panelist" ? (
+                                                selectedPanelistPreview ? (
+                                                    renderPanelistPreview(selectedPanelistPreview)
+                                                ) : (
+                                                    <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                                                        No matching panelist preview found for this assignment. Try{" "}
+                                                        <span className="font-medium text-foreground">Refresh Preview</span>, or verify the evaluation exists.
+                                                    </div>
+                                                )
+                                            ) : selectedKind === "student" ? (
+                                                selectedStudentPreview ? (
+                                                    renderStudentPreview(selectedStudentPreview)
+                                                ) : (
+                                                    <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                                                        No matching student feedback preview found for this assignment. Try{" "}
+                                                        <span className="font-medium text-foreground">Refresh Preview</span>, or verify the student evaluation exists.
+                                                    </div>
+                                                )
+                                            ) : (
+                                                <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                                                    Unknown evaluation kind. Please refresh the page.
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : null}
                                 </div>
                             </div>
                         </div>
@@ -855,7 +971,7 @@ export default function AdminEvaluationsPage() {
     return (
         <DashboardLayout
             title="Evaluations"
-            description="Assign panelist and student evaluations in distinct flows, then manage lifecycle and status in one user-friendly workspace."
+            description="Assign panelist rubric scoring and student feedback in distinct flows, then manage lifecycle and status in one user-friendly workspace."
         >
             <div className="space-y-4">
                 <AdminEvaluationsToolbar ctx={ctx} />
