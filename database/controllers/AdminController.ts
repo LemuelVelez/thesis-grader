@@ -122,6 +122,10 @@ export class AdminController {
         return this.studentFeedback.getSchema();
     }
 
+    getStudentFeedbackSeedAnswersTemplate(): JsonObject {
+        return this.studentFeedback.getSeedAnswersTemplate();
+    }
+
     async assignStudentFeedbackFormsForSchedule(
         scheduleId: UUID,
         input: AssignStudentFeedbackFormsInput = {},

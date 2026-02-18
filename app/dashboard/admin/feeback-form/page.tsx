@@ -42,7 +42,7 @@ type FeedbackQuestion = {
     id: string
     type: "rating" | "text" | (string & {})
     label: string
-    required?: boolean
+    required: boolean
     placeholder?: string
     maxLength?: number
     scale?: RatingScale
@@ -92,7 +92,7 @@ type FeedbackRow = {
     locked_at: string | null
     updated_at: string | null
     created_at: string | null
-    student?: StudentInfo
+    student: StudentInfo | null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -145,18 +145,26 @@ function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
             if (!isRecord(s)) return null
             const id = safeString(s.id)
             const sTitle = safeString(s.title)
+
             const questionsRaw = Array.isArray(s.questions) ? s.questions : []
             const questions: FeedbackQuestion[] = questionsRaw
                 .map((q) => {
                     if (!isRecord(q)) return null
+
                     const qid = safeString(q.id)
                     const type = safeString(q.type) as FeedbackQuestion["type"]
                     const label = safeString(q.label)
                     if (!qid || !label) return null
 
                     const required = typeof q.required === "boolean" ? q.required : false
-                    const placeholder = typeof q.placeholder === "string" ? q.placeholder : undefined
-                    const maxLength = typeof q.maxLength === "number" ? q.maxLength : undefined
+
+                    const placeholderRaw = typeof q.placeholder === "string" ? q.placeholder.trim() : ""
+                    const placeholder = placeholderRaw.length > 0 ? placeholderRaw : undefined
+
+                    const maxLength =
+                        typeof q.maxLength === "number" && Number.isFinite(q.maxLength)
+                            ? q.maxLength
+                            : undefined
 
                     let scale: RatingScale | undefined
                     if (isRecord(q.scale)) {
@@ -167,15 +175,18 @@ function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
                         scale = { min, max, minLabel, maxLabel }
                     }
 
-                    return {
+                    const out: FeedbackQuestion = {
                         id: qid,
                         type: type || "text",
                         label,
                         required,
-                        placeholder,
-                        maxLength,
-                        scale,
                     }
+
+                    if (placeholder) out.placeholder = placeholder
+                    if (typeof maxLength === "number") out.maxLength = maxLength
+                    if (scale) out.scale = scale
+
+                    return out
                 })
                 .filter((x): x is FeedbackQuestion => x !== null)
 
@@ -185,13 +196,15 @@ function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
         .filter((x): x is FeedbackSection => x !== null)
 
     if (!key || !title || sections.length === 0) return null
-    return {
+
+    const out: StudentFeedbackSchema = {
         version: Math.max(1, Math.floor(version)),
         key,
         title,
-        description,
         sections,
     }
+    if (description.trim().length > 0) out.description = description.trim()
+    return out
 }
 
 function getFallbackSchema(): StudentFeedbackSchema {
@@ -220,11 +233,59 @@ function getFallbackSchema(): StudentFeedbackSchema {
                         required: true,
                     },
                     {
+                        id: "notification_timeliness",
+                        type: "rating",
+                        label: "Timeliness of announcements and notifications (schedule updates, room changes, etc.)",
+                        scale: { min: 1, max: 5, minLabel: "Late", maxLabel: "On time" },
+                        required: true,
+                    },
+                    {
                         id: "time_management",
                         type: "rating",
-                        label: "Time management during the defense",
+                        label: "Time management during the defense (start/end, pacing, Q&A time)",
                         scale: { min: 1, max: 5, minLabel: "Poor", maxLabel: "Excellent" },
                         required: true,
+                    },
+                    {
+                        id: "venue_comfort",
+                        type: "rating",
+                        label: "Comfort and suitability of the venue for presenting",
+                        scale: { min: 1, max: 5, minLabel: "Poor", maxLabel: "Excellent" },
+                        required: false,
+                    },
+                ],
+            },
+            {
+                id: "preparation",
+                title: "Preparation & Support",
+                questions: [
+                    {
+                        id: "rubric_clarity",
+                        type: "rating",
+                        label: "Clarity of rubric/criteria shared before the defense",
+                        scale: { min: 1, max: 5, minLabel: "Unclear", maxLabel: "Very clear" },
+                        required: true,
+                    },
+                    {
+                        id: "adviser_support",
+                        type: "rating",
+                        label: "Support from adviser prior to the defense",
+                        scale: { min: 1, max: 5, minLabel: "Low", maxLabel: "High" },
+                        required: false,
+                    },
+                    {
+                        id: "staff_support",
+                        type: "rating",
+                        label: "Support from staff/office in preparing requirements (documents, forms, venue guidance)",
+                        scale: { min: 1, max: 5, minLabel: "Low", maxLabel: "High" },
+                        required: false,
+                    },
+                    {
+                        id: "prep_time_sufficiency",
+                        type: "rating",
+                        label: "Sufficiency of time to prepare after schedule was announced",
+                        scale: { min: 1, max: 5, minLabel: "Not enough", maxLabel: "Enough" },
+                        required: false,
                     },
                 ],
             },
@@ -253,6 +314,47 @@ function getFallbackSchema(): StudentFeedbackSchema {
                         scale: { min: 1, max: 5, minLabel: "Unclear", maxLabel: "Very clear" },
                         required: true,
                     },
+                    {
+                        id: "qa_opportunity",
+                        type: "rating",
+                        label: "Opportunity to answer questions and clarify points",
+                        scale: { min: 1, max: 5, minLabel: "Too little", maxLabel: "Enough" },
+                        required: false,
+                    },
+                    {
+                        id: "respectful_environment",
+                        type: "rating",
+                        label: "Respectful and supportive environment during the defense",
+                        scale: { min: 1, max: 5, minLabel: "Not respectful", maxLabel: "Very respectful" },
+                        required: true,
+                    },
+                ],
+            },
+            {
+                id: "facilities",
+                title: "Facilities & Logistics",
+                questions: [
+                    {
+                        id: "venue_readiness",
+                        type: "rating",
+                        label: "Venue readiness (room, equipment, setup)",
+                        scale: { min: 1, max: 5, minLabel: "Poor", maxLabel: "Excellent" },
+                        required: true,
+                    },
+                    {
+                        id: "audio_visual",
+                        type: "rating",
+                        label: "Audio/visual support and presentation setup",
+                        scale: { min: 1, max: 5, minLabel: "Poor", maxLabel: "Excellent" },
+                        required: true,
+                    },
+                    {
+                        id: "technical_support",
+                        type: "rating",
+                        label: "Technical support availability when issues occur (projector, audio, files, connectivity)",
+                        scale: { min: 1, max: 5, minLabel: "Not available", maxLabel: "Very available" },
+                        required: false,
+                    },
                 ],
             },
             {
@@ -268,10 +370,26 @@ function getFallbackSchema(): StudentFeedbackSchema {
                         maxLength: 1000,
                     },
                     {
+                        id: "most_helpful_feedback",
+                        type: "text",
+                        label: "What was the most helpful feedback you received?",
+                        placeholder: "Share the most useful comment/recommendation...",
+                        required: false,
+                        maxLength: 1000,
+                    },
+                    {
                         id: "what_to_improve",
                         type: "text",
                         label: "What should be improved?",
                         placeholder: "Share suggestions...",
+                        required: false,
+                        maxLength: 1000,
+                    },
+                    {
+                        id: "other_comments",
+                        type: "text",
+                        label: "Other comments",
+                        placeholder: "Anything else you want to add...",
                         required: false,
                         maxLength: 1000,
                     },
@@ -498,12 +616,13 @@ export default function AdminFeedbackFormPage() {
             const normalized: FeedbackRow[] = itemsRaw
                 .map((r) => {
                     if (!isRecord(r)) return null
+
                     const id = safeString(r.id)
                     const schedule_id = safeString(r.schedule_id ?? data.scheduleId ?? sid)
                     const student_id = safeString(r.student_id)
                     const status = safeString(r.status || "pending")
 
-                    const student = isRecord(r.student)
+                    const student: StudentInfo | null = isRecord(r.student)
                         ? {
                             id: safeString(r.student.id ?? student_id),
                             name: typeof r.student.name === "string" ? r.student.name : null,
@@ -511,7 +630,7 @@ export default function AdminFeedbackFormPage() {
                             program: typeof r.student.program === "string" ? r.student.program : null,
                             section: typeof r.student.section === "string" ? r.student.section : null,
                         }
-                        : undefined
+                        : null
 
                     if (!id || !schedule_id || !student_id) return null
 
@@ -636,11 +755,13 @@ export default function AdminFeedbackFormPage() {
                                                 <CardContent className="space-y-3">
                                                     {section.questions.map((q, qIdx) => {
                                                         const required = !!q.required
+                                                        const scaleCount =
+                                                            q.type === "rating" && q.scale
+                                                                ? Math.max(0, q.scale.max - q.scale.min + 1)
+                                                                : 0
+
                                                         return (
-                                                            <div
-                                                                key={q.id}
-                                                                className="rounded-lg border bg-card p-3"
-                                                            >
+                                                            <div key={q.id} className="rounded-lg border bg-card p-3">
                                                                 <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                                                                     <div className="min-w-0">
                                                                         <p className="text-sm font-medium">
@@ -672,6 +793,9 @@ export default function AdminFeedbackFormPage() {
                                                                         {q.type === "text" && typeof q.maxLength === "number" ? (
                                                                             <Badge variant="secondary">Max {q.maxLength} chars</Badge>
                                                                         ) : null}
+                                                                        {q.type === "rating" && scaleCount > 0 ? (
+                                                                            <Badge variant="secondary">{scaleCount} choices</Badge>
+                                                                        ) : null}
                                                                     </div>
                                                                 </div>
 
@@ -681,11 +805,11 @@ export default function AdminFeedbackFormPage() {
                                                                             <span>{q.scale.minLabel ?? "Low"}</span>
                                                                             <span>{q.scale.maxLabel ?? "High"}</span>
                                                                         </div>
-                                                                        <div className="mt-2 grid grid-cols-5 gap-2">
-                                                                            {Array.from({ length: q.scale.max - q.scale.min + 1 }).map((_, i) => (
+                                                                        <div className="mt-2 flex flex-wrap gap-2">
+                                                                            {Array.from({ length: scaleCount }).map((_, i) => (
                                                                                 <div
                                                                                     key={`${q.id}-rating-${i}`}
-                                                                                    className="flex h-9 items-center justify-center rounded-md border bg-card text-sm font-medium"
+                                                                                    className="flex h-9 w-10 items-center justify-center rounded-md border bg-card text-sm font-medium"
                                                                                 >
                                                                                     {q.scale!.min + i}
                                                                                 </div>

@@ -37,11 +37,59 @@ export const DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA: StudentFeedbackFormSchema = {
                     required: true,
                 },
                 {
+                    id: 'notification_timeliness',
+                    type: 'rating',
+                    label: 'Timeliness of announcements/notifications (schedule updates, room changes, etc.)',
+                    scale: { min: 1, max: 5, minLabel: 'Late', maxLabel: 'On time' },
+                    required: true,
+                },
+                {
                     id: 'time_management',
                     type: 'rating',
-                    label: 'Time management during the defense',
+                    label: 'Time management during the defense (start/end, pacing, Q&A time)',
                     scale: { min: 1, max: 5, minLabel: 'Poor', maxLabel: 'Excellent' },
                     required: true,
+                },
+                {
+                    id: 'venue_comfort',
+                    type: 'rating',
+                    label: 'Comfort and suitability of the venue for presenting',
+                    scale: { min: 1, max: 5, minLabel: 'Poor', maxLabel: 'Excellent' },
+                    required: false,
+                },
+            ],
+        },
+        {
+            id: 'preparation',
+            title: 'Preparation & Support',
+            questions: [
+                {
+                    id: 'rubric_clarity',
+                    type: 'rating',
+                    label: 'Clarity of rubric/criteria shared before the defense',
+                    scale: { min: 1, max: 5, minLabel: 'Unclear', maxLabel: 'Very clear' },
+                    required: true,
+                },
+                {
+                    id: 'adviser_support',
+                    type: 'rating',
+                    label: 'Support from adviser prior to the defense',
+                    scale: { min: 1, max: 5, minLabel: 'Low', maxLabel: 'High' },
+                    required: false,
+                },
+                {
+                    id: 'staff_support',
+                    type: 'rating',
+                    label: 'Support from staff/office in preparing requirements (documents, forms, venue guidance)',
+                    scale: { min: 1, max: 5, minLabel: 'Low', maxLabel: 'High' },
+                    required: false,
+                },
+                {
+                    id: 'prep_time_sufficiency',
+                    type: 'rating',
+                    label: 'Sufficiency of time to prepare after schedule was announced',
+                    scale: { min: 1, max: 5, minLabel: 'Not enough', maxLabel: 'Enough' },
+                    required: false,
                 },
             ],
         },
@@ -70,6 +118,20 @@ export const DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA: StudentFeedbackFormSchema = {
                     scale: { min: 1, max: 5, minLabel: 'Unclear', maxLabel: 'Very clear' },
                     required: true,
                 },
+                {
+                    id: 'qa_opportunity',
+                    type: 'rating',
+                    label: 'Opportunity to answer questions and clarify points',
+                    scale: { min: 1, max: 5, minLabel: 'Too little', maxLabel: 'Enough' },
+                    required: false,
+                },
+                {
+                    id: 'respectful_environment',
+                    type: 'rating',
+                    label: 'Respectful and supportive environment during the defense',
+                    scale: { min: 1, max: 5, minLabel: 'Not respectful', maxLabel: 'Very respectful' },
+                    required: true,
+                },
             ],
         },
         {
@@ -90,6 +152,13 @@ export const DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA: StudentFeedbackFormSchema = {
                     scale: { min: 1, max: 5, minLabel: 'Poor', maxLabel: 'Excellent' },
                     required: true,
                 },
+                {
+                    id: 'technical_support',
+                    type: 'rating',
+                    label: 'Technical support availability when issues occur (projector, audio, files, connectivity)',
+                    scale: { min: 1, max: 5, minLabel: 'Not available', maxLabel: 'Very available' },
+                    required: false,
+                },
             ],
         },
         {
@@ -101,6 +170,14 @@ export const DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA: StudentFeedbackFormSchema = {
                     type: 'text',
                     label: 'What went well during the defense?',
                     placeholder: 'Share what worked best...',
+                    required: false,
+                    maxLength: 1000,
+                },
+                {
+                    id: 'most_helpful_feedback',
+                    type: 'text',
+                    label: 'What was the most helpful feedback you received?',
+                    placeholder: 'Share the most useful comment/recommendation...',
                     required: false,
                     maxLength: 1000,
                 },
@@ -209,11 +286,43 @@ function uniqueUuids(values: UUID[]): UUID[] {
     return out;
 }
 
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function buildSeedAnswersFromSchema(schema: StudentFeedbackFormSchema): JsonObject {
+    const out: JsonObject = {};
+
+    if (!isRecord(schema)) return out;
+    const sections = Array.isArray(schema.sections) ? schema.sections : [];
+
+    for (const s of sections) {
+        if (!isRecord(s)) continue;
+        const questions = Array.isArray(s.questions) ? s.questions : [];
+        for (const q of questions) {
+            if (!isRecord(q)) continue;
+            const id = typeof q.id === 'string' ? q.id.trim() : '';
+            if (!id) continue;
+
+            const type = typeof q.type === 'string' ? q.type.trim().toLowerCase() : '';
+            // text -> empty string, rating/other -> null
+            out[id] = type === 'text' ? '' : null;
+        }
+    }
+
+    return out;
+}
+
 export class StudentFeedbackService {
     constructor(private readonly services: Services) { }
 
     getSchema(): StudentFeedbackFormSchema {
-        return DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA;
+        // Return a fresh copy to avoid accidental mutation by callers.
+        return cloneJson(DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA);
+    }
+
+    getSeedAnswersTemplate(): JsonObject {
+        return buildSeedAnswersFromSchema(this.getSchema());
     }
 
     async assignForSchedule(
@@ -222,7 +331,11 @@ export class StudentFeedbackService {
     ): Promise<AssignStudentFeedbackFormsResult | null> {
         const overwritePending = input.overwritePending ?? false;
         const initialStatus: StudentEvalStatus = input.initialStatus ?? 'pending';
-        const seedAnswers = toJsonObject(input.seedAnswers);
+
+        const seedAnswers =
+            input.seedAnswers !== undefined
+                ? toJsonObject(input.seedAnswers)
+                : this.getSeedAnswersTemplate();
 
         return this.services.transaction(async (tx) => {
             const schedule = await tx.defense_schedules.findById(scheduleId);

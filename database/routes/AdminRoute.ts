@@ -218,7 +218,8 @@ async function dispatchAdminStudentFeedbackRequest(
     if (tail.length === 1 && tail[0] === 'schema') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const item = controller.getStudentFeedbackFormSchema();
-        return json200({ item });
+        // Return both keys for frontend resilience (item/schema).
+        return json200({ item, schema: item });
     }
 
     if (tail[0] === 'schedule' && tail.length >= 2) {
