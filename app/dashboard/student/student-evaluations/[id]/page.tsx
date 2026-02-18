@@ -23,6 +23,7 @@ type StudentEvaluationDetail = {
     program: string | null
     term: string | null
     created_at: string | null
+    updated_at: string | null
     submitted_at: string | null
     locked_at: string | null
     answers: Record<string, unknown> | null
@@ -161,6 +162,7 @@ function normalizeDetail(raw: unknown): StudentEvaluationDetail | null {
         program: toNullableString(source.program ?? group?.program),
         term: toNullableString(source.term ?? group?.term),
         created_at: toNullableString(source.created_at ?? source.createdAt),
+        updated_at: toNullableString(source.updated_at ?? source.updatedAt),
         submitted_at: toNullableString(source.submitted_at ?? source.submittedAt),
         locked_at: toNullableString(source.locked_at ?? source.lockedAt),
         answers: toJsonObject(source.answers),
@@ -749,7 +751,7 @@ export default function StudentEvaluationDetailPage() {
         setDraftAnswers(next)
         setDirty(false)
         lastSavedSnapshotRef.current = JSON.stringify(next)
-        setLastSavedAt(item?.updated_at ?? null)
+        setLastSavedAt(item?.updated_at ?? item?.created_at ?? null)
     }, [item?.id]) // only when switching items
 
     const headerTitle = item?.title ?? item?.group_title ?? "Student Feedback"
@@ -875,7 +877,7 @@ export default function StudentEvaluationDetailPage() {
             const updated = extractDetailFromPayload(result.payload)
             if (updated) {
                 setItem(updated)
-                setLastSavedAt(new Date().toISOString())
+                setLastSavedAt(updated.updated_at ?? new Date().toISOString())
             } else {
                 setLastSavedAt(new Date().toISOString())
             }
@@ -1703,13 +1705,14 @@ export default function StudentEvaluationDetailPage() {
                                                             const label = info.label ?? labelById[id] ?? humanizeKey(id)
                                                             const hasValue = info.value !== null && info.value !== undefined
                                                             return (
-                                                                <button
+                                                                <Button
                                                                     key={id}
                                                                     type="button"
+                                                                    variant="ghost"
+                                                                    className="h-auto w-full justify-start rounded-none px-3 py-2 text-left hover:bg-muted/40"
                                                                     onClick={() => scrollToQuestion(id)}
-                                                                    className="w-full px-3 py-2 text-left hover:bg-muted/40"
                                                                 >
-                                                                    <div className="flex items-start justify-between gap-3">
+                                                                    <div className="flex w-full items-start justify-between gap-3">
                                                                         <div className="space-y-1">
                                                                             <p className="text-xs text-muted-foreground">Question</p>
                                                                             <p className="text-sm font-medium">{label}</p>
@@ -1725,7 +1728,7 @@ export default function StudentEvaluationDetailPage() {
                                                                             </p>
                                                                         </div>
                                                                     </div>
-                                                                </button>
+                                                                </Button>
                                                             )
                                                         })}
                                                 </div>
