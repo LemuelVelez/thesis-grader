@@ -139,8 +139,9 @@ function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
 
     if (Array.isArray(answers)) {
         return answers
-            .map((raw) => {
+            .map<NormalizedAnswer | null>((raw): NormalizedAnswer | null => {
                 if (!isRecord(raw)) return null
+
                 const q =
                     getString(raw.question) ??
                     getString(raw.label) ??
@@ -149,7 +150,7 @@ function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
                     getString(raw.name) ??
                     null
 
-                const a =
+                const a: unknown =
                     raw.answer ??
                     raw.value ??
                     raw.response ??
@@ -158,17 +159,17 @@ function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
                     raw.result ??
                     null
 
-                const score = raw.score ?? raw.points ?? raw.rating ?? undefined
-                const max = raw.max ?? raw.max_score ?? raw.out_of ?? undefined
+                const score: unknown | undefined = raw.score ?? raw.points ?? raw.rating ?? undefined
+                const max: unknown | undefined = raw.max ?? raw.max_score ?? raw.out_of ?? undefined
 
                 return {
-                    question: q ? q : "Question",
+                    question: q ?? "Question",
                     answer: a,
                     score,
                     max,
                 }
             })
-            .filter((x): x is NormalizedAnswer => !!x)
+            .filter((x): x is NormalizedAnswer => x !== null)
     }
 
     if (isRecord(answers)) {
@@ -182,12 +183,12 @@ function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
                     getString(v.name) ??
                     null
 
-                const a = v.answer ?? v.value ?? v.response ?? v.selected ?? v.text ?? v.result ?? v
-                const score = v.score ?? v.points ?? v.rating ?? undefined
-                const max = v.max ?? v.max_score ?? v.out_of ?? undefined
+                const a: unknown = v.answer ?? v.value ?? v.response ?? v.selected ?? v.text ?? v.result ?? v
+                const score: unknown | undefined = v.score ?? v.points ?? v.rating ?? undefined
+                const max: unknown | undefined = v.max ?? v.max_score ?? v.out_of ?? undefined
 
                 return {
-                    question: q ? q : humanizeQuestionLabel(k),
+                    question: q ?? humanizeQuestionLabel(k),
                     answer: a,
                     score,
                     max,
@@ -398,7 +399,14 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
         const statusNorm = normalizeStatus(status)
 
         const overall = isRecord(row.overall) ? (row.overall as Record<string, unknown>) : null
-        const overallPct = overall ? (overall.percentage ?? overall.overall_percentage ?? overall.score_percentage ?? overallPct) : null
+        const overallPct =
+            (overall?.percentage ??
+                overall?.overall_percentage ??
+                overall?.score_percentage ??
+                row.overall_percentage ??
+                row.score_percentage ??
+                row.percentage) ??
+            null
 
         const targets = Array.isArray(row.targets) ? (row.targets as unknown[]) : []
         const scores = Array.isArray(row.scores) ? (row.scores as unknown[]) : []
@@ -711,14 +719,13 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                             <div className="space-y-2">
                                 {normalizedAnswers.map((a, idx) => {
                                     const q = a.question ? a.question : `Question ${idx + 1}`
-                                    const friendly = q === a.question ? q : q
                                     const score = a.score
                                     const max = a.max
 
                                     return (
                                         <div key={`ans-${idx}`} className="rounded-md border bg-card p-3">
                                             <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                                                <p className="text-sm font-semibold">{friendly}</p>
+                                                <p className="text-sm font-semibold">{q}</p>
                                                 {score !== undefined || max !== undefined ? (
                                                     <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
                                                         Score: {formatMaybeScore(score)}{max !== undefined ? ` / ${formatMaybeScore(max)}` : ""}
