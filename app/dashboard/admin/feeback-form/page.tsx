@@ -5,16 +5,21 @@ import { toast } from "sonner"
 import {
     ClipboardList,
     Copy,
-    RefreshCcw,
-    Send,
-    ShieldCheck,
-    FileJson2,
+    Download,
+    GripVertical,
     LayoutTemplate,
+    MoreVertical,
+    Plus,
+    Save,
+    ShieldCheck,
+    Trash2,
+    CopyPlus,
+    Pencil,
 } from "lucide-react"
 
 import DashboardLayout from "@/components/dashboard-layout"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -22,14 +27,44 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
+    Dialog,
+    DialogClose,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from "@/components/ui/dialog"
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
+
+/* --------------------------------- TYPES --------------------------------- */
 
 type RatingScale = {
     min: number
@@ -62,38 +97,19 @@ type StudentFeedbackSchema = {
     sections: FeedbackSection[]
 }
 
-type AssignResult = {
-    scheduleId: string
-    groupId: string
-    message?: string
-    counts?: {
-        targeted: number
-        created: number
-        updated: number
-        existing: number
-    }
-    targetedStudentIds?: string[]
+type FeedbackTemplate = {
+    id: string
+    name: string
+    schema: StudentFeedbackSchema
+    createdAt: string
+    updatedAt: string
+    isDefault?: boolean
 }
 
-type StudentInfo = {
-    id: string
-    name: string | null
-    email: string | null
-    program: string | null
-    section: string | null
-}
+/* --------------------------------- UTILS --------------------------------- */
 
-type FeedbackRow = {
-    id: string
-    schedule_id: string
-    student_id: string
-    status: string
-    submitted_at: string | null
-    locked_at: string | null
-    updated_at: string | null
-    created_at: string | null
-    student: StudentInfo | null
-}
+const LOCAL_KEY = "thesis-grader:feedback-templates:v1"
+const DEFAULT_TEMPLATE_ID = "default"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -131,6 +147,25 @@ function formatDateTime(value: string | null | undefined) {
     return d.toLocaleString()
 }
 
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T
+}
+
+function nowIso() {
+    return new Date().toISOString()
+}
+
+function makeId(prefix: string) {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c = (globalThis as any)?.crypto
+        if (c?.randomUUID) return `${prefix}_${c.randomUUID()}`
+    } catch {
+        // ignore
+    }
+    return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`
+}
+
 function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
     if (!isRecord(value)) return null
 
@@ -162,9 +197,7 @@ function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
                     const placeholder = placeholderRaw.length > 0 ? placeholderRaw : undefined
 
                     const maxLength =
-                        typeof q.maxLength === "number" && Number.isFinite(q.maxLength)
-                            ? q.maxLength
-                            : undefined
+                        typeof q.maxLength === "number" && Number.isFinite(q.maxLength) ? q.maxLength : undefined
 
                     let scale: RatingScale | undefined
                     if (isRecord(q.scale)) {
@@ -177,7 +210,7 @@ function normalizeSchema(value: unknown): StudentFeedbackSchema | null {
 
                     const out: FeedbackQuestion = {
                         id: qid,
-                        type: type || "text",
+                        type: (type || "text") as FeedbackQuestion["type"],
                         label,
                         required,
                     }
@@ -399,35 +432,52 @@ function getFallbackSchema(): StudentFeedbackSchema {
     }
 }
 
-function statusBadgeVariant(status: string): { label: string; className: string } {
-    const s = String(status || "").toLowerCase()
-    if (s === "submitted") {
-        return { label: "Submitted", className: "border-primary/40 bg-primary/10 text-foreground" }
+function loadLocalTemplates(): FeedbackTemplate[] {
+    try {
+        const raw = localStorage.getItem(LOCAL_KEY)
+        if (!raw) return []
+        const parsed = JSON.parse(raw) as unknown
+        if (!Array.isArray(parsed)) return []
+
+        const out: FeedbackTemplate[] = []
+        for (const item of parsed) {
+            if (!isRecord(item)) continue
+            const id = safeString(item.id)
+            const name = safeString(item.name)
+            const createdAt = safeString(item.createdAt)
+            const updatedAt = safeString(item.updatedAt)
+            const schema = normalizeSchema(item.schema)
+
+            if (!id || !name || !schema) continue
+            out.push({
+                id,
+                name,
+                schema,
+                createdAt: createdAt || nowIso(),
+                updatedAt: updatedAt || nowIso(),
+            })
+        }
+        return out
+    } catch {
+        return []
     }
-    if (s === "locked") {
-        return { label: "Locked", className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400" }
-    }
-    if (s === "pending") {
-        return { label: "Pending", className: "border-muted-foreground/30 bg-muted text-muted-foreground" }
-    }
-    return { label: status || "Unknown", className: "border-muted-foreground/30 bg-muted text-muted-foreground" }
 }
 
-function parseStudentIds(input: string): string[] {
-    const raw = input
-        .split(/[\n,]+/g)
-        .map((x) => x.trim())
-        .filter(Boolean)
-
-    const seen = new Set<string>()
-    const out: string[] = []
-    for (const id of raw) {
-        const key = id.toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
-        out.push(id)
+function saveLocalTemplates(templates: FeedbackTemplate[]) {
+    try {
+        const safe = templates
+            .filter((t) => t.id !== DEFAULT_TEMPLATE_ID)
+            .map((t) => ({
+                id: t.id,
+                name: t.name,
+                schema: t.schema,
+                createdAt: t.createdAt,
+                updatedAt: t.updatedAt,
+            }))
+        localStorage.setItem(LOCAL_KEY, JSON.stringify(safe))
+    } catch {
+        // ignore
     }
-    return out
 }
 
 async function copyText(text: string) {
@@ -439,656 +489,1319 @@ async function copyText(text: string) {
     }
 }
 
+function downloadJson(filename: string, data: unknown) {
+    try {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        toast.success("Exported JSON.")
+    } catch {
+        toast.error("Failed to export JSON.")
+    }
+}
+
+function clampInt(n: number, min: number, max: number) {
+    if (!Number.isFinite(n)) return min
+    return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+function statusPill(isDefault?: boolean) {
+    return isDefault
+        ? { label: "Default", className: "border-primary/40 bg-primary/10 text-foreground" }
+        : { label: "Custom", className: "border-muted-foreground/30 bg-muted text-muted-foreground" }
+}
+
+/* --------------------------------- UI HELPERS ----------------------------- */
+
+function SchemaPreview({ schema }: { schema: StudentFeedbackSchema }) {
+    const totalQuestions = schema.sections.reduce((sum, s) => sum + (s.questions?.length ?? 0), 0)
+
+    return (
+        <div className="space-y-4">
+            <Card>
+                <CardHeader className="space-y-1">
+                    <CardTitle className="flex flex-wrap items-center gap-2">
+                        <span className="min-w-0 truncate">{schema.title}</span>
+                        <Badge variant="outline" className="gap-1">
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                            v{schema.version}
+                        </Badge>
+                        <Badge variant="secondary" className="gap-1">
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            {schema.sections.length} section(s)
+                        </Badge>
+                        <Badge variant="secondary">{totalQuestions} question(s)</Badge>
+                    </CardTitle>
+                    {schema.description ? (
+                        <CardDescription className="max-w-3xl">{schema.description}</CardDescription>
+                    ) : null}
+                </CardHeader>
+            </Card>
+
+            <div className="space-y-3">
+                {schema.sections.map((section, sIdx) => (
+                    <Card key={section.id} className="border-muted/60">
+                        <CardHeader className="pb-3">
+                            <CardTitle className="text-base">
+                                {sIdx + 1}. {section.title}
+                            </CardTitle>
+                            <CardDescription>{section.questions.length} question(s) in this section</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                            {section.questions.map((q, qIdx) => {
+                                const scaleCount =
+                                    q.type === "rating" && q.scale ? Math.max(0, q.scale.max - q.scale.min + 1) : 0
+
+                                return (
+                                    <div key={q.id} className="rounded-lg border bg-card p-3">
+                                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-medium">
+                                                    {sIdx + 1}.{qIdx + 1} {q.label}
+                                                </p>
+                                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                    <Badge variant="outline" className="capitalize">
+                                                        {q.type}
+                                                    </Badge>
+                                                    {q.required ? (
+                                                        <Badge className="bg-destructive text-destructive-foreground">Required</Badge>
+                                                    ) : (
+                                                        <Badge variant="secondary">Optional</Badge>
+                                                    )}
+                                                    <Badge variant="secondary" className="font-mono">
+                                                        {q.id}
+                                                    </Badge>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                {q.type === "rating" && q.scale ? (
+                                                    <Badge variant="secondary">
+                                                        Scale: {q.scale.min}–{q.scale.max}
+                                                    </Badge>
+                                                ) : null}
+                                                {q.type === "text" && typeof q.maxLength === "number" ? (
+                                                    <Badge variant="secondary">Max {q.maxLength} chars</Badge>
+                                                ) : null}
+                                                {q.type === "rating" && scaleCount > 0 ? (
+                                                    <Badge variant="secondary">{scaleCount} choices</Badge>
+                                                ) : null}
+                                            </div>
+                                        </div>
+
+                                        {q.type === "rating" && q.scale ? (
+                                            <div className="mt-3 rounded-md border bg-muted/20 p-3">
+                                                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                                                    <span>{q.scale.minLabel ?? "Low"}</span>
+                                                    <span>{q.scale.maxLabel ?? "High"}</span>
+                                                </div>
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                    {Array.from({ length: scaleCount }).map((_, i) => (
+                                                        <div
+                                                            key={`${q.id}-rating-${i}`}
+                                                            className="flex h-9 w-10 items-center justify-center rounded-md border bg-card text-sm font-medium"
+                                                        >
+                                                            {q.scale!.min + i}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ) : null}
+
+                                        {q.type === "text" ? (
+                                            <div className="mt-3">
+                                                <Label className="text-xs text-muted-foreground">Preview</Label>
+                                                <Textarea
+                                                    className="mt-2"
+                                                    placeholder={q.placeholder ?? "Type your answer..."}
+                                                    value=""
+                                                    readOnly
+                                                />
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                )
+                            })}
+                        </CardContent>
+                    </Card>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+/* --------------------------------- PAGE ---------------------------------- */
+
 export default function AdminFeedbackFormPage() {
-    const [loading, setLoading] = React.useState(true)
-    const [error, setError] = React.useState<string | null>(null)
+    const [loadingDefault, setLoadingDefault] = React.useState(true)
+    const [defaultSchema, setDefaultSchema] = React.useState<StudentFeedbackSchema>(getFallbackSchema())
 
-    const [schema, setSchema] = React.useState<StudentFeedbackSchema>(getFallbackSchema())
-    const [schemaJson, setSchemaJson] = React.useState<string>(JSON.stringify(getFallbackSchema(), null, 2))
-    const [schemaJsonError, setSchemaJsonError] = React.useState<string | null>(null)
+    const [templates, setTemplates] = React.useState<FeedbackTemplate[]>([])
+    const [query, setQuery] = React.useState("")
+    const [activeId, setActiveId] = React.useState<string>(DEFAULT_TEMPLATE_ID)
 
-    const [scheduleId, setScheduleId] = React.useState("")
-    const [studentIdsText, setStudentIdsText] = React.useState("")
-    const [overwritePending, setOverwritePending] = React.useState(false)
+    const [draftName, setDraftName] = React.useState<string>("Default template")
+    const [draftSchema, setDraftSchema] = React.useState<StudentFeedbackSchema>(getFallbackSchema())
+    const [dirty, setDirty] = React.useState(false)
 
-    const [assigning, setAssigning] = React.useState(false)
-    const [assignResult, setAssignResult] = React.useState<AssignResult | null>(null)
+    const [createOpen, setCreateOpen] = React.useState(false)
+    const [renameOpen, setRenameOpen] = React.useState(false)
+    const [deleteOpen, setDeleteOpen] = React.useState(false)
+    const [discardOpen, setDiscardOpen] = React.useState(false)
 
-    const [listing, setListing] = React.useState(false)
-    const [rows, setRows] = React.useState<FeedbackRow[]>([])
-    const [rowsError, setRowsError] = React.useState<string | null>(null)
+    const [pendingSwitchId, setPendingSwitchId] = React.useState<string | null>(null)
 
-    const totalQuestions = React.useMemo(() => {
-        return schema.sections.reduce((sum, s) => sum + (s.questions?.length ?? 0), 0)
-    }, [schema.sections])
+    const [createName, setCreateName] = React.useState("")
+    const [createKey, setCreateKey] = React.useState("")
+    const [renameValue, setRenameValue] = React.useState("")
 
-    const loadSchema = React.useCallback(async () => {
-        setLoading(true)
-        setError(null)
-        setSchemaJsonError(null)
+    const activeTemplate = React.useMemo(() => {
+        if (activeId === DEFAULT_TEMPLATE_ID) {
+            return {
+                id: DEFAULT_TEMPLATE_ID,
+                name: "Default template",
+                schema: defaultSchema,
+                createdAt: "",
+                updatedAt: "",
+                isDefault: true,
+            } satisfies FeedbackTemplate
+        }
+        return templates.find((t) => t.id === activeId) ?? null
+    }, [activeId, defaultSchema, templates])
 
+    const filteredTemplates = React.useMemo(() => {
+        const q = query.trim().toLowerCase()
+        const all: FeedbackTemplate[] = [
+            {
+                id: DEFAULT_TEMPLATE_ID,
+                name: "Default template",
+                schema: defaultSchema,
+                createdAt: "",
+                updatedAt: "",
+                isDefault: true,
+            },
+            ...templates,
+        ]
+        if (!q) return all
+        return all.filter((t) => t.name.toLowerCase().includes(q) || t.schema.title.toLowerCase().includes(q))
+    }, [query, templates, defaultSchema])
+
+    const loadDefaultFromApi = React.useCallback(async () => {
+        setLoadingDefault(true)
         try {
             const res = await fetch("/api/admin/student-feedback/schema", { cache: "no-store" })
             const data = await readJsonRecord(res)
-
-            if (!res.ok) {
-                throw new Error(await readErrorMessage(res))
-            }
+            if (!res.ok) throw new Error(await readErrorMessage(res))
 
             const item = data.item ?? data.schema ?? data
             const normalized = normalizeSchema(item)
+            if (!normalized) throw new Error("Schema payload is invalid.")
 
-            if (!normalized) {
-                throw new Error("Schema payload is invalid.")
-            }
-
-            setSchema(normalized)
-            setSchemaJson(JSON.stringify(normalized, null, 2))
+            setDefaultSchema(normalized)
         } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to load feedback form schema."
-            setError(message)
+            const message = err instanceof Error ? err.message : "Failed to load default feedback template."
             toast.error(message)
-
-            const fallback = getFallbackSchema()
-            setSchema(fallback)
-            setSchemaJson(JSON.stringify(fallback, null, 2))
+            setDefaultSchema(getFallbackSchema())
         } finally {
-            setLoading(false)
+            setLoadingDefault(false)
         }
     }, [])
 
     React.useEffect(() => {
-        void loadSchema()
-    }, [loadSchema])
+        // local templates
+        const local = loadLocalTemplates()
+        setTemplates(local)
 
-    const resetToDefault = React.useCallback(() => {
-        const fallback = getFallbackSchema()
-        setSchema(fallback)
-        setSchemaJson(JSON.stringify(fallback, null, 2))
-        setSchemaJsonError(null)
-        toast.success("Reset to default template.")
-    }, [])
+        // default schema
+        void loadDefaultFromApi()
+    }, [loadDefaultFromApi])
 
-    const applyJsonToPreview = React.useCallback(() => {
-        setSchemaJsonError(null)
-        try {
-            const parsed = JSON.parse(schemaJson) as unknown
-            const normalized = normalizeSchema(parsed)
-            if (!normalized) {
-                setSchemaJsonError("Invalid schema shape. Please check required fields (key, title, sections, questions).")
-                toast.error("Invalid schema JSON.")
+    // Keep draft in sync when active changes (unless dirty with a pending discard flow)
+    React.useEffect(() => {
+        if (!activeTemplate) return
+
+        setDraftName(activeTemplate.name)
+        setDraftSchema(cloneJson(activeTemplate.schema))
+        setDirty(false)
+    }, [activeId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    const requestSwitchTemplate = React.useCallback(
+        (id: string) => {
+            if (id === activeId) return
+            if (!dirty) {
+                setActiveId(id)
                 return
             }
-            setSchema(normalized)
-            setSchemaJson(JSON.stringify(normalized, null, 2))
-            toast.success("Preview updated from JSON.")
-        } catch {
-            setSchemaJsonError("Invalid JSON format. Please fix JSON syntax.")
-            toast.error("Invalid JSON format.")
-        }
-    }, [schemaJson])
+            setPendingSwitchId(id)
+            setDiscardOpen(true)
+        },
+        [activeId, dirty],
+    )
 
-    const assignForms = React.useCallback(async () => {
-        const sid = scheduleId.trim()
-        if (!sid) {
-            toast.error("Schedule ID is required.")
+    const confirmDiscardAndSwitch = React.useCallback(() => {
+        const nextId = pendingSwitchId
+        setDiscardOpen(false)
+        setPendingSwitchId(null)
+        setDirty(false)
+        if (nextId) setActiveId(nextId)
+    }, [pendingSwitchId])
+
+    const updateDraftSchema = React.useCallback((updater: (prev: StudentFeedbackSchema) => StudentFeedbackSchema) => {
+        setDraftSchema((prev) => {
+            const next = updater(prev)
+            return next
+        })
+        setDirty(true)
+    }, [])
+
+    const isDefaultActive = activeId === DEFAULT_TEMPLATE_ID
+    const canEdit = !isDefaultActive
+
+    const createTemplateFromDefault = React.useCallback(
+        (name: string, key?: string) => {
+            const cleanName = name.trim()
+            if (!cleanName) {
+                toast.error("Template name is required.")
+                return null
+            }
+
+            const base = cloneJson(defaultSchema)
+            const id = makeId("fb_tpl")
+            const createdAt = nowIso()
+
+            const schema: StudentFeedbackSchema = {
+                ...base,
+                key: (key?.trim() || base.key || `student-feedback-${id}`).slice(0, 120),
+                title: base.title,
+            }
+
+            const item: FeedbackTemplate = {
+                id,
+                name: cleanName,
+                schema,
+                createdAt,
+                updatedAt: createdAt,
+                isDefault: false,
+            }
+
+            return item
+        },
+        [defaultSchema],
+    )
+
+    const openCreate = React.useCallback(() => {
+        setCreateName("")
+        setCreateKey("")
+        setCreateOpen(true)
+    }, [])
+
+    const submitCreate = React.useCallback(() => {
+        const created = createTemplateFromDefault(createName, createKey)
+        if (!created) return
+
+        setTemplates((prev) => {
+            const next = [created, ...prev]
+            saveLocalTemplates(next)
+            return next
+        })
+
+        setCreateOpen(false)
+        toast.success("Template created.")
+        setActiveId(created.id)
+    }, [createKey, createName, createTemplateFromDefault])
+
+    const openRename = React.useCallback(() => {
+        if (!activeTemplate || activeTemplate.id === DEFAULT_TEMPLATE_ID) return
+        setRenameValue(activeTemplate.name)
+        setRenameOpen(true)
+    }, [activeTemplate])
+
+    const submitRename = React.useCallback(() => {
+        const value = renameValue.trim()
+        if (!value) {
+            toast.error("Name is required.")
             return
         }
+        if (!activeTemplate || activeTemplate.id === DEFAULT_TEMPLATE_ID) return
 
-        setAssigning(true)
-        setAssignResult(null)
-        setRows([])
-        setRowsError(null)
-
-        try {
-            const studentIds = parseStudentIds(studentIdsText)
-            const body: Record<string, unknown> = {
-                overwritePending,
-            }
-            if (studentIds.length > 0) body.studentIds = studentIds
-
-            const res = await fetch(`/api/admin/student-feedback/schedule/${encodeURIComponent(sid)}/assign`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-            })
-
-            const data = await readJsonRecord(res)
-            if (!res.ok) {
-                throw new Error(await readErrorMessage(res))
-            }
-
-            const result: AssignResult = {
-                scheduleId: safeString(data.scheduleId ?? data.schedule_id ?? sid),
-                groupId: safeString(data.groupId ?? data.group_id ?? ""),
-                message: typeof data.message === "string" ? data.message : undefined,
-                counts: isRecord(data.counts)
-                    ? {
-                        targeted: toNumber(data.counts.targeted, 0),
-                        created: toNumber(data.counts.created, 0),
-                        updated: toNumber(data.counts.updated, 0),
-                        existing: toNumber(data.counts.existing, 0),
-                    }
-                    : undefined,
-                targetedStudentIds: Array.isArray(data.targetedStudentIds) ? (data.targetedStudentIds as string[]) : undefined,
-            }
-
-            setAssignResult(result)
-
-            const created = result.counts?.created ?? 0
-            const updated = result.counts?.updated ?? 0
-            const existing = result.counts?.existing ?? 0
-
-            toast.success(
-                result.message ||
-                `Assigned feedback forms. Created: ${created}, Updated: ${updated}, Existing: ${existing}.`,
+        setTemplates((prev) => {
+            const next = prev.map((t) =>
+                t.id === activeTemplate.id ? { ...t, name: value, updatedAt: nowIso() } : t,
             )
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to assign feedback forms."
-            toast.error(message)
-        } finally {
-            setAssigning(false)
-        }
-    }, [overwritePending, scheduleId, studentIdsText])
+            saveLocalTemplates(next)
+            return next
+        })
 
-    const loadAssignedForSchedule = React.useCallback(async () => {
-        const sid = scheduleId.trim()
-        if (!sid) {
-            toast.error("Schedule ID is required.")
+        setDraftName(value)
+        setDirty(true)
+        setRenameOpen(false)
+        toast.success("Renamed.")
+    }, [activeTemplate, renameValue])
+
+    const openDelete = React.useCallback(() => {
+        if (!activeTemplate || activeTemplate.id === DEFAULT_TEMPLATE_ID) return
+        setDeleteOpen(true)
+    }, [activeTemplate])
+
+    const confirmDelete = React.useCallback(() => {
+        if (!activeTemplate || activeTemplate.id === DEFAULT_TEMPLATE_ID) return
+
+        setTemplates((prev) => {
+            const next = prev.filter((t) => t.id !== activeTemplate.id)
+            saveLocalTemplates(next)
+            return next
+        })
+
+        setDeleteOpen(false)
+        toast.success("Template deleted.")
+        setActiveId(DEFAULT_TEMPLATE_ID)
+    }, [activeTemplate])
+
+    const duplicateActive = React.useCallback(() => {
+        if (!activeTemplate) return
+        const baseName = activeTemplate.name === "Default template" ? "New template" : `${activeTemplate.name} (copy)`
+        const created = createTemplateFromDefault(baseName, activeTemplate.schema.key)
+        if (!created) return
+
+        created.schema = cloneJson(draftSchema)
+        created.schema.key = (createKey?.trim() || created.schema.key || created.schema.key).slice(0, 120)
+
+        setTemplates((prev) => {
+            const next = [created, ...prev]
+            saveLocalTemplates(next)
+            return next
+        })
+
+        toast.success("Template duplicated.")
+        setActiveId(created.id)
+    }, [activeTemplate, createKey, createTemplateFromDefault, draftSchema])
+
+    const saveDraft = React.useCallback(() => {
+        if (isDefaultActive) {
+            toast.error("Default template cannot be edited. Duplicate it first.")
             return
         }
 
-        setListing(true)
-        setRows([])
-        setRowsError(null)
-
-        try {
-            const res = await fetch(`/api/admin/student-feedback/schedule/${encodeURIComponent(sid)}`, {
-                cache: "no-store",
-            })
-
-            const data = await readJsonRecord(res)
-            if (!res.ok) {
-                throw new Error(await readErrorMessage(res))
-            }
-
-            const itemsRaw = Array.isArray(data.items) ? data.items : []
-            const normalized: FeedbackRow[] = itemsRaw
-                .map((r) => {
-                    if (!isRecord(r)) return null
-
-                    const id = safeString(r.id)
-                    const schedule_id = safeString(r.schedule_id ?? data.scheduleId ?? sid)
-                    const student_id = safeString(r.student_id)
-                    const status = safeString(r.status || "pending")
-
-                    const student: StudentInfo | null = isRecord(r.student)
-                        ? {
-                            id: safeString(r.student.id ?? student_id),
-                            name: typeof r.student.name === "string" ? r.student.name : null,
-                            email: typeof r.student.email === "string" ? r.student.email : null,
-                            program: typeof r.student.program === "string" ? r.student.program : null,
-                            section: typeof r.student.section === "string" ? r.student.section : null,
-                        }
-                        : null
-
-                    if (!id || !schedule_id || !student_id) return null
-
-                    return {
-                        id,
-                        schedule_id,
-                        student_id,
-                        status,
-                        submitted_at: typeof r.submitted_at === "string" ? r.submitted_at : null,
-                        locked_at: typeof r.locked_at === "string" ? r.locked_at : null,
-                        updated_at: typeof r.updated_at === "string" ? r.updated_at : null,
-                        created_at: typeof r.created_at === "string" ? r.created_at : null,
-                        student,
-                    }
-                })
-                .filter((x): x is FeedbackRow => x !== null)
-
-            setRows(normalized)
-            toast.success(`Loaded ${normalized.length} feedback row(s).`)
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to load assigned feedback forms."
-            setRowsError(message)
-            toast.error(message)
-        } finally {
-            setListing(false)
+        const normalized = normalizeSchema(draftSchema)
+        if (!normalized) {
+            toast.error("Template is invalid. Please complete required fields (key, title, sections, questions).")
+            return
         }
-    }, [scheduleId])
+
+        if (!draftName.trim()) {
+            toast.error("Template name is required.")
+            return
+        }
+
+        setTemplates((prev) => {
+            const now = nowIso()
+            const next = prev.map((t) =>
+                t.id === activeId
+                    ? {
+                        ...t,
+                        name: draftName.trim(),
+                        schema: normalized,
+                        updatedAt: now,
+                    }
+                    : t,
+            )
+            saveLocalTemplates(next)
+            return next
+        })
+
+        setDraftSchema(normalized)
+        setDirty(false)
+        toast.success("Saved changes.")
+    }, [activeId, draftName, draftSchema, isDefaultActive])
+
+    const exportActive = React.useCallback(() => {
+        if (!activeTemplate) return
+        const filenameBase = (draftName || activeTemplate.name || "feedback-template")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 60)
+
+        downloadJson(`${filenameBase || "feedback-template"}.json`, {
+            name: draftName,
+            schema: draftSchema,
+            exportedAt: nowIso(),
+        })
+    }, [activeTemplate, draftName, draftSchema])
+
+    /* ----------------------------- EDITOR ACTIONS ---------------------------- */
+
+    const addSection = React.useCallback(() => {
+        if (!canEdit) {
+            toast.error("Duplicate the default template to customize.")
+            return
+        }
+        updateDraftSchema((prev) => {
+            const next = cloneJson(prev)
+            next.sections = [...next.sections]
+            next.sections.push({
+                id: makeId("section"),
+                title: `New Section ${next.sections.length + 1}`,
+                questions: [],
+            })
+            return next
+        })
+    }, [canEdit, updateDraftSchema])
+
+    const removeSection = React.useCallback(
+        (sectionId: string) => {
+            if (!canEdit) return
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                next.sections = next.sections.filter((s) => s.id !== sectionId)
+                if (next.sections.length === 0) {
+                    next.sections = [
+                        {
+                            id: makeId("section"),
+                            title: "Section 1",
+                            questions: [],
+                        },
+                    ]
+                }
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
+
+    const moveSection = React.useCallback(
+        (sectionId: string, dir: -1 | 1) => {
+            if (!canEdit) return
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                const idx = next.sections.findIndex((s) => s.id === sectionId)
+                if (idx < 0) return next
+                const target = idx + dir
+                if (target < 0 || target >= next.sections.length) return next
+                const copy = [...next.sections]
+                const [item] = copy.splice(idx, 1)
+                copy.splice(target, 0, item)
+                next.sections = copy
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
+
+    const updateSectionTitle = React.useCallback(
+        (sectionId: string, title: string) => {
+            if (!canEdit) return
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                next.sections = next.sections.map((s) => (s.id === sectionId ? { ...s, title } : s))
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
+
+    const addQuestion = React.useCallback(
+        (sectionId: string) => {
+            if (!canEdit) {
+                toast.error("Duplicate the default template to customize.")
+                return
+            }
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                next.sections = next.sections.map((s) => {
+                    if (s.id !== sectionId) return s
+                    const q: FeedbackQuestion = {
+                        id: makeId("q"),
+                        type: "rating",
+                        label: "New question",
+                        required: false,
+                        scale: { min: 1, max: 5, minLabel: "Low", maxLabel: "High" },
+                    }
+                    return { ...s, questions: [...(s.questions ?? []), q] }
+                })
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
+
+    const removeQuestion = React.useCallback(
+        (sectionId: string, questionId: string) => {
+            if (!canEdit) return
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                next.sections = next.sections.map((s) => {
+                    if (s.id !== sectionId) return s
+                    return { ...s, questions: (s.questions ?? []).filter((q) => q.id !== questionId) }
+                })
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
+
+    const updateQuestion = React.useCallback(
+        (sectionId: string, questionId: string, patch: Partial<FeedbackQuestion>) => {
+            if (!canEdit) return
+            updateDraftSchema((prev) => {
+                const next = cloneJson(prev)
+                next.sections = next.sections.map((s) => {
+                    if (s.id !== sectionId) return s
+                    const questions = (s.questions ?? []).map((q) => {
+                        if (q.id !== questionId) return q
+                        const merged: FeedbackQuestion = { ...q, ...patch }
+                        if (merged.type === "rating") {
+                            const sc = merged.scale ?? { min: 1, max: 5 }
+                            merged.scale = {
+                                min: clampInt(toNumber(sc.min, 1), 1, 10),
+                                max: clampInt(toNumber(sc.max, 5), 1, 10),
+                                minLabel: sc.minLabel,
+                                maxLabel: sc.maxLabel,
+                            }
+                            if (merged.scale.max < merged.scale.min) {
+                                merged.scale.max = merged.scale.min
+                            }
+                        } else {
+                            // text
+                            delete merged.scale
+                        }
+                        return merged
+                    })
+                    return { ...s, questions }
+                })
+                return next
+            })
+        },
+        [canEdit, updateDraftSchema],
+    )
 
     return (
         <DashboardLayout
-            title="Student Feedback Form Template"
-            description="Preview the feedback template, copy JSON, and assign feedback forms to a defense schedule."
+            title="Feedback Form Templates"
+            description="Create, edit, duplicate, and export student feedback form templates (default included)."
         >
             <div className="space-y-4">
-                {error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                        {error}
-                    </div>
-                ) : null}
-
-                <Tabs defaultValue="template">
-                    <TabsList className="flex w-full flex-wrap justify-start gap-2">
-                        <TabsTrigger value="template" className="gap-2">
-                            <LayoutTemplate className="h-4 w-4" />
-                            Template Preview
-                        </TabsTrigger>
-                        <TabsTrigger value="json" className="gap-2">
-                            <FileJson2 className="h-4 w-4" />
-                            JSON Editor
-                        </TabsTrigger>
-                        <TabsTrigger value="assign" className="gap-2">
-                            <Send className="h-4 w-4" />
-                            Assign to Schedule
-                        </TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="template" className="mt-4 space-y-4">
-                        <Card>
-                            <CardHeader className="space-y-1">
-                                <CardTitle className="flex flex-wrap items-center gap-2">
-                                    <span>{schema.title}</span>
-                                    <Badge variant="outline" className="gap-1">
-                                        <ShieldCheck className="h-3.5 w-3.5" />
-                                        v{schema.version}
-                                    </Badge>
-                                    <Badge variant="secondary" className="gap-1">
-                                        <ClipboardList className="h-3.5 w-3.5" />
-                                        {schema.sections.length} section(s)
-                                    </Badge>
-                                    <Badge variant="secondary">{totalQuestions} question(s)</Badge>
-                                </CardTitle>
-                                {schema.description ? (
-                                    <CardDescription className="max-w-3xl">{schema.description}</CardDescription>
-                                ) : null}
-                            </CardHeader>
-                            <CardContent className="space-y-3">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void loadSchema()}
-                                        disabled={loading}
-                                        className="gap-2"
-                                    >
-                                        <RefreshCcw className="h-4 w-4" />
-                                        {loading ? "Loading..." : "Reload from API"}
-                                    </Button>
-
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void copyText(JSON.stringify(schema, null, 2))}
-                                        className="gap-2"
-                                    >
-                                        <Copy className="h-4 w-4" />
-                                        Copy JSON
-                                    </Button>
-
-                                    <Button variant="outline" onClick={resetToDefault}>
-                                        Reset to default
-                                    </Button>
+                <div className="grid gap-4 lg:grid-cols-12">
+                    {/* LEFT: TEMPLATES LIST */}
+                    <Card className="lg:col-span-4">
+                        <CardHeader className="space-y-2">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                    <CardTitle className="flex items-center gap-2">
+                                        <LayoutTemplate className="h-5 w-5" />
+                                        Templates
+                                    </CardTitle>
+                                    <CardDescription className="max-w-sm">
+                                        Manage reusable feedback form templates.
+                                    </CardDescription>
                                 </div>
 
-                                <Separator />
+                                <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                                    <DialogTrigger asChild>
+                                        <Button onClick={openCreate} className="gap-2">
+                                            <Plus className="h-4 w-4" />
+                                            New
+                                        </Button>
+                                    </DialogTrigger>
+                                    <DialogContent>
+                                        <DialogHeader>
+                                            <DialogTitle>Create template</DialogTitle>
+                                            <DialogDescription>
+                                                Starts from the default template, then you can customize it.
+                                            </DialogDescription>
+                                        </DialogHeader>
 
-                                <div className="space-y-3">
-                                    {loading ? (
-                                        <div className="space-y-2">
-                                            <div className="h-10 w-full animate-pulse rounded-md bg-muted/50" />
-                                            <div className="h-10 w-full animate-pulse rounded-md bg-muted/50" />
-                                            <div className="h-10 w-full animate-pulse rounded-md bg-muted/50" />
+                                        <div className="space-y-3">
+                                            <div className="space-y-2">
+                                                <Label>Template name</Label>
+                                                <Input
+                                                    value={createName}
+                                                    onChange={(e) => setCreateName(e.target.value)}
+                                                    placeholder="e.g., Midterm Defense Feedback"
+                                                />
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <Label>Template key (optional)</Label>
+                                                <Input
+                                                    value={createKey}
+                                                    onChange={(e) => setCreateKey(e.target.value)}
+                                                    placeholder="e.g., student-feedback-midterm-v1"
+                                                />
+                                                <p className="text-xs text-muted-foreground">
+                                                    Keys help identify templates in exports/analytics.
+                                                </p>
+                                            </div>
                                         </div>
-                                    ) : (
-                                        schema.sections.map((section, sIdx) => (
-                                            <Card key={section.id} className="border-muted/60">
-                                                <CardHeader className="pb-3">
-                                                    <CardTitle className="text-base">
-                                                        {sIdx + 1}. {section.title}
-                                                    </CardTitle>
-                                                    <CardDescription>
-                                                        {section.questions.length} question(s) in this section
-                                                    </CardDescription>
-                                                </CardHeader>
-                                                <CardContent className="space-y-3">
-                                                    {section.questions.map((q, qIdx) => {
-                                                        const required = !!q.required
-                                                        const scaleCount =
-                                                            q.type === "rating" && q.scale
-                                                                ? Math.max(0, q.scale.max - q.scale.min + 1)
-                                                                : 0
 
-                                                        return (
-                                                            <div key={q.id} className="rounded-lg border bg-card p-3">
-                                                                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                                                                    <div className="min-w-0">
-                                                                        <p className="text-sm font-medium">
-                                                                            {sIdx + 1}.{qIdx + 1} {q.label}
-                                                                        </p>
-                                                                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                                                                            <Badge variant="outline" className="capitalize">
-                                                                                {q.type}
-                                                                            </Badge>
-                                                                            {required ? (
-                                                                                <Badge className="bg-destructive text-destructive-foreground">
-                                                                                    Required
-                                                                                </Badge>
-                                                                            ) : (
-                                                                                <Badge variant="secondary">Optional</Badge>
-                                                                            )}
-                                                                            <Badge variant="secondary" className="font-mono">
-                                                                                {q.id}
-                                                                            </Badge>
-                                                                        </div>
-                                                                    </div>
+                                        <DialogFooter className="gap-2 sm:gap-0">
+                                            <DialogClose asChild>
+                                                <Button variant="outline">Cancel</Button>
+                                            </DialogClose>
+                                            <Button onClick={submitCreate} className="gap-2">
+                                                <Plus className="h-4 w-4" />
+                                                Create
+                                            </Button>
+                                        </DialogFooter>
+                                    </DialogContent>
+                                </Dialog>
+                            </div>
 
-                                                                    <div className="flex flex-wrap items-center gap-2">
-                                                                        {q.type === "rating" && q.scale ? (
-                                                                            <Badge variant="secondary">
-                                                                                Scale: {q.scale.min}–{q.scale.max}
-                                                                            </Badge>
-                                                                        ) : null}
-                                                                        {q.type === "text" && typeof q.maxLength === "number" ? (
-                                                                            <Badge variant="secondary">Max {q.maxLength} chars</Badge>
-                                                                        ) : null}
-                                                                        {q.type === "rating" && scaleCount > 0 ? (
-                                                                            <Badge variant="secondary">{scaleCount} choices</Badge>
-                                                                        ) : null}
-                                                                    </div>
-                                                                </div>
-
-                                                                {q.type === "rating" && q.scale ? (
-                                                                    <div className="mt-3 rounded-md border bg-muted/20 p-3">
-                                                                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                                                                            <span>{q.scale.minLabel ?? "Low"}</span>
-                                                                            <span>{q.scale.maxLabel ?? "High"}</span>
-                                                                        </div>
-                                                                        <div className="mt-2 flex flex-wrap gap-2">
-                                                                            {Array.from({ length: scaleCount }).map((_, i) => (
-                                                                                <div
-                                                                                    key={`${q.id}-rating-${i}`}
-                                                                                    className="flex h-9 w-10 items-center justify-center rounded-md border bg-card text-sm font-medium"
-                                                                                >
-                                                                                    {q.scale!.min + i}
-                                                                                </div>
-                                                                            ))}
-                                                                        </div>
-                                                                    </div>
-                                                                ) : null}
-
-                                                                {q.type === "text" ? (
-                                                                    <div className="mt-3">
-                                                                        <Label className="text-xs text-muted-foreground">Preview</Label>
-                                                                        <Textarea
-                                                                            className="mt-2"
-                                                                            placeholder={q.placeholder ?? "Type your answer..."}
-                                                                            value=""
-                                                                            readOnly
-                                                                        />
-                                                                    </div>
-                                                                ) : null}
-                                                            </div>
-                                                        )
-                                                    })}
-                                                </CardContent>
-                                            </Card>
-                                        ))
-                                    )}
-                                </div>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-
-                    <TabsContent value="json" className="mt-4 space-y-4">
-                        <Card>
-                            <CardHeader className="space-y-1">
-                                <CardTitle>JSON Template Editor</CardTitle>
-                                <CardDescription>
-                                    Paste/edit the schema JSON and apply it to the preview. (This edits preview only.)
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-3">
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <Button onClick={applyJsonToPreview} className="gap-2">
-                                        <LayoutTemplate className="h-4 w-4" />
-                                        Apply to Preview
-                                    </Button>
-                                    <Button variant="outline" onClick={() => void copyText(schemaJson)} className="gap-2">
-                                        <Copy className="h-4 w-4" />
-                                        Copy JSON
-                                    </Button>
-                                    <Button variant="outline" onClick={resetToDefault}>
-                                        Reset to default
-                                    </Button>
-                                </div>
-
-                                {schemaJsonError ? (
-                                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                                        {schemaJsonError}
-                                    </div>
-                                ) : null}
-
-                                <Textarea
-                                    value={schemaJson}
-                                    onChange={(e) => {
-                                        setSchemaJson(e.target.value)
-                                        if (schemaJsonError) setSchemaJsonError(null)
-                                    }}
-                                    className="min-h-105 font-mono text-xs leading-5"
-                                    spellCheck={false}
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">Search</Label>
+                                <Input
+                                    value={query}
+                                    onChange={(e) => setQuery(e.target.value)}
+                                    placeholder="Search templates..."
                                 />
+                            </div>
+                        </CardHeader>
 
-                                <p className="text-xs text-muted-foreground">
-                                    Tip: Keep IDs stable (section/question IDs) to avoid breaking downstream analytics.
-                                </p>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
+                        <CardContent className="pt-0">
+                            <Separator className="mb-3" />
+                            <ScrollArea className="h-96">
+                                <div className="space-y-1">
+                                    {filteredTemplates.map((t) => {
+                                        const active = t.id === activeId
+                                        const pill = statusPill(t.isDefault)
+                                        return (
+                                            <button
+                                                key={t.id}
+                                                onClick={() => requestSwitchTemplate(t.id)}
+                                                className={[
+                                                    "w-full rounded-lg border p-3 text-left transition",
+                                                    active ? "border-primary/40 bg-primary/5" : "border-muted/60 hover:bg-muted/30",
+                                                ].join(" ")}
+                                            >
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <p className="truncate text-sm font-medium">{t.name}</p>
+                                                        <p className="mt-1 truncate text-xs text-muted-foreground">{t.schema.title}</p>
+                                                    </div>
+                                                    <span
+                                                        className={[
+                                                            "inline-flex shrink-0 rounded-md border px-2 py-1 text-xs font-medium",
+                                                            pill.className,
+                                                        ].join(" ")}
+                                                    >
+                                                        {pill.label}
+                                                    </span>
+                                                </div>
 
-                    <TabsContent value="assign" className="mt-4 space-y-4">
-                        <Card>
-                            <CardHeader className="space-y-1">
-                                <CardTitle>Assign Feedback Forms</CardTitle>
-                                <CardDescription>
-                                    Create (or optionally reset) feedback rows for students in a defense schedule.
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <div className="grid gap-3 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label>Defense Schedule ID</Label>
-                                        <Input
-                                            placeholder="Paste schedule UUID..."
-                                            value={scheduleId}
-                                            onChange={(e) => setScheduleId(e.target.value)}
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                            Use the schedule ID from your Defense Schedules page.
-                                        </p>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label>Overwrite pending rows</Label>
-                                        <div className="flex items-center justify-between gap-3 rounded-lg border bg-card p-3">
-                                            <div className="min-w-0">
-                                                <p className="text-sm font-medium">Reset pending answers</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    When enabled, pending rows can be reset to the seed template. Submitted/locked are never overwritten.
-                                                </p>
-                                            </div>
-                                            <Switch checked={overwritePending} onCheckedChange={setOverwritePending} />
-                                        </div>
-                                    </div>
+                                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                    <Badge variant="secondary" className="font-mono">
+                                                        {t.schema.key}
+                                                    </Badge>
+                                                    {!t.isDefault ? (
+                                                        <span className="truncate">
+                                                            Updated: {formatDateTime(t.updatedAt)}
+                                                        </span>
+                                                    ) : loadingDefault ? (
+                                                        <span className="truncate">Loading default…</span>
+                                                    ) : (
+                                                        <span className="truncate">Loaded from API</span>
+                                                    )}
+                                                </div>
+                                            </button>
+                                        )
+                                    })}
                                 </div>
+                            </ScrollArea>
 
-                                <div className="space-y-2">
-                                    <Label>Optional: Target specific Student IDs</Label>
-                                    <Textarea
-                                        value={studentIdsText}
-                                        onChange={(e) => setStudentIdsText(e.target.value)}
-                                        placeholder="Paste student UUIDs (comma or newline separated). Leave blank to auto-detect group members."
-                                        className="min-h-24"
-                                    />
+                            <Separator className="my-3" />
+
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <Button
+                                    variant="outline"
+                                    onClick={() => void loadDefaultFromApi()}
+                                    disabled={loadingDefault}
+                                    className="gap-2"
+                                >
+                                    <GripVertical className="h-4 w-4" />
+                                    {loadingDefault ? "Refreshing…" : "Refresh default"}
+                                </Button>
+
+                                <Button
+                                    variant="outline"
+                                    onClick={() => void copyText(JSON.stringify(defaultSchema, null, 2))}
+                                    className="gap-2"
+                                >
+                                    <Copy className="h-4 w-4" />
+                                    Copy default JSON
+                                </Button>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* RIGHT: EDITOR */}
+                    <Card className="lg:col-span-8">
+                        <CardHeader className="space-y-2">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                    <CardTitle className="flex flex-wrap items-center gap-2">
+                                        <span className="min-w-0 truncate">{draftName}</span>
+                                        {isDefaultActive ? (
+                                            <Badge variant="outline" className="gap-1">
+                                                <ShieldCheck className="h-3.5 w-3.5" />
+                                                Default
+                                            </Badge>
+                                        ) : dirty ? (
+                                            <Badge className="bg-amber-500 text-black">Unsaved</Badge>
+                                        ) : (
+                                            <Badge variant="secondary">Saved</Badge>
+                                        )}
+                                    </CardTitle>
+                                    <CardDescription className="max-w-3xl">
+                                        {isDefaultActive
+                                            ? "Duplicate the default template to customize it."
+                                            : "Edit sections and questions, then save your template."}
+                                    </CardDescription>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <Button onClick={() => void assignForms()} disabled={assigning} className="gap-2">
-                                        <Send className="h-4 w-4" />
-                                        {assigning ? "Assigning..." : "Assign forms"}
-                                    </Button>
-
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void loadAssignedForSchedule()}
-                                        disabled={listing}
-                                        className="gap-2"
-                                    >
-                                        <RefreshCcw className="h-4 w-4" />
-                                        {listing ? "Loading..." : "Load assigned list"}
-                                    </Button>
-
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void copyText(JSON.stringify(schema, null, 2))}
-                                        className="gap-2"
-                                    >
+                                    <Button variant="outline" onClick={() => void copyText(JSON.stringify(draftSchema, null, 2))} className="gap-2">
                                         <Copy className="h-4 w-4" />
-                                        Copy template JSON
+                                        Copy JSON
                                     </Button>
+
+                                    <Button variant="outline" onClick={exportActive} className="gap-2">
+                                        <Download className="h-4 w-4" />
+                                        Export
+                                    </Button>
+
+                                    <Button variant="outline" onClick={duplicateActive} className="gap-2">
+                                        <CopyPlus className="h-4 w-4" />
+                                        Duplicate
+                                    </Button>
+
+                                    <Button onClick={saveDraft} disabled={!dirty || isDefaultActive} className="gap-2">
+                                        <Save className="h-4 w-4" />
+                                        Save
+                                    </Button>
+
+                                    <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                            <Button variant="outline" size="icon" aria-label="Template actions">
+                                                <MoreVertical className="h-4 w-4" />
+                                            </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent align="end" className="w-56">
+                                            <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                            <DropdownMenuSeparator />
+
+                                            <DropdownMenuItem
+                                                onClick={() => void copyText(JSON.stringify(draftSchema, null, 2))}
+                                                className="gap-2"
+                                            >
+                                                <Copy className="h-4 w-4" />
+                                                Copy JSON
+                                            </DropdownMenuItem>
+
+                                            <DropdownMenuItem onClick={exportActive} className="gap-2">
+                                                <Download className="h-4 w-4" />
+                                                Export JSON
+                                            </DropdownMenuItem>
+
+                                            <DropdownMenuItem onClick={duplicateActive} className="gap-2">
+                                                <CopyPlus className="h-4 w-4" />
+                                                Duplicate
+                                            </DropdownMenuItem>
+
+                                            <DropdownMenuSeparator />
+
+                                            <DropdownMenuItem
+                                                onClick={openRename}
+                                                disabled={isDefaultActive}
+                                                className="gap-2"
+                                            >
+                                                <Pencil className="h-4 w-4" />
+                                                Rename
+                                            </DropdownMenuItem>
+
+                                            <DropdownMenuItem
+                                                onClick={openDelete}
+                                                disabled={isDefaultActive}
+                                                className="gap-2 text-destructive focus:text-destructive"
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                                Delete
+                                            </DropdownMenuItem>
+                                        </DropdownMenuContent>
+                                    </DropdownMenu>
                                 </div>
+                            </div>
+                        </CardHeader>
 
-                                {assignResult ? (
-                                    <div className="rounded-lg border bg-muted/20 p-3">
-                                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                            <div className="space-y-1">
-                                                <p className="text-sm font-medium">Latest assignment</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    Schedule: <span className="font-mono">{assignResult.scheduleId}</span>{" "}
-                                                    {assignResult.groupId ? (
-                                                        <>
-                                                            · Group: <span className="font-mono">{assignResult.groupId}</span>
-                                                        </>
-                                                    ) : null}
-                                                </p>
-                                            </div>
+                        <CardContent className="space-y-4">
+                            <Tabs defaultValue="builder">
+                                <TabsList className="flex w-full flex-wrap justify-start gap-2">
+                                    <TabsTrigger value="builder" className="gap-2">
+                                        <LayoutTemplate className="h-4 w-4" />
+                                        Builder
+                                    </TabsTrigger>
+                                    <TabsTrigger value="preview" className="gap-2">
+                                        <ClipboardList className="h-4 w-4" />
+                                        Preview
+                                    </TabsTrigger>
+                                </TabsList>
 
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <Badge variant="secondary">
-                                                    Targeted: {assignResult.counts?.targeted ?? 0}
-                                                </Badge>
-                                                <Badge variant="secondary">
-                                                    Created: {assignResult.counts?.created ?? 0}
-                                                </Badge>
-                                                <Badge variant="secondary">
-                                                    Updated: {assignResult.counts?.updated ?? 0}
-                                                </Badge>
-                                                <Badge variant="secondary">
-                                                    Existing: {assignResult.counts?.existing ?? 0}
-                                                </Badge>
+                                <TabsContent value="builder" className="mt-4 space-y-4">
+                                    {isDefaultActive ? (
+                                        <div className="rounded-lg border bg-muted/20 p-3">
+                                            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                                <div className="space-y-1">
+                                                    <p className="text-sm font-medium">Default template is protected</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Duplicate it to create a custom template you can edit and save.
+                                                    </p>
+                                                </div>
+                                                <Button onClick={duplicateActive} className="gap-2">
+                                                    <CopyPlus className="h-4 w-4" />
+                                                    Duplicate now
+                                                </Button>
                                             </div>
                                         </div>
+                                    ) : null}
 
-                                        {assignResult.message ? (
-                                            <p className="mt-2 text-sm text-muted-foreground">{assignResult.message}</p>
-                                        ) : null}
-                                    </div>
-                                ) : null}
+                                    {/* TEMPLATE META */}
+                                    <Card className="border-muted/60">
+                                        <CardHeader className="pb-3">
+                                            <CardTitle className="text-base">Template details</CardTitle>
+                                            <CardDescription>These fields are used in exports and UI labels.</CardDescription>
+                                        </CardHeader>
+                                        <CardContent className="grid gap-3 md:grid-cols-2">
+                                            <div className="space-y-2">
+                                                <Label>Template name</Label>
+                                                <Input
+                                                    value={draftName}
+                                                    onChange={(e) => {
+                                                        setDraftName(e.target.value)
+                                                        setDirty(true)
+                                                    }}
+                                                    disabled={!canEdit}
+                                                    placeholder="Internal template name..."
+                                                />
+                                            </div>
 
-                                {rowsError ? (
-                                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                                        {rowsError}
-                                    </div>
-                                ) : null}
+                                            <div className="space-y-2">
+                                                <Label>Schema key</Label>
+                                                <Input
+                                                    value={draftSchema.key}
+                                                    onChange={(e) =>
+                                                        updateDraftSchema((prev) => ({ ...prev, key: e.target.value }))
+                                                    }
+                                                    disabled={!canEdit}
+                                                    placeholder="student-feedback-v1"
+                                                />
+                                            </div>
 
-                                <div className="overflow-x-auto rounded-lg border bg-card">
-                                    <Table>
-                                        <TableHeader>
-                                            <TableRow>
-                                                <TableHead className="min-w-60">Student</TableHead>
-                                                <TableHead className="min-w-44">Program / Section</TableHead>
-                                                <TableHead className="min-w-28">Status</TableHead>
-                                                <TableHead className="min-w-52">Submitted</TableHead>
-                                                <TableHead className="min-w-52">Updated</TableHead>
-                                            </TableRow>
-                                        </TableHeader>
-                                        <TableBody>
-                                            {listing ? (
-                                                Array.from({ length: 6 }).map((_, i) => (
-                                                    <TableRow key={`sk-${i}`}>
-                                                        <TableCell colSpan={5}>
-                                                            <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ))
-                                            ) : rows.length === 0 ? (
-                                                <TableRow>
-                                                    <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
-                                                        No rows loaded yet. Use “Load assigned list” after entering a Schedule ID.
-                                                    </TableCell>
-                                                </TableRow>
-                                            ) : (
-                                                rows.map((r) => {
-                                                    const badge = statusBadgeVariant(r.status)
-                                                    const name = r.student?.name ?? "—"
-                                                    const email = r.student?.email ?? "—"
-                                                    const program = r.student?.program ?? "—"
-                                                    const section = r.student?.section ?? "—"
+                                            <div className="space-y-2 md:col-span-2">
+                                                <Label>Title</Label>
+                                                <Input
+                                                    value={draftSchema.title}
+                                                    onChange={(e) =>
+                                                        updateDraftSchema((prev) => ({ ...prev, title: e.target.value }))
+                                                    }
+                                                    disabled={!canEdit}
+                                                    placeholder="Student Feedback Form"
+                                                />
+                                            </div>
 
-                                                    return (
-                                                        <TableRow key={r.id}>
-                                                            <TableCell>
-                                                                <div className="flex flex-col">
-                                                                    <span className="font-medium">{name}</span>
-                                                                    <span className="text-xs text-muted-foreground">{email}</span>
-                                                                    <span className="mt-1 text-xs text-muted-foreground font-mono">
-                                                                        {r.student_id}
-                                                                    </span>
-                                                                </div>
-                                                            </TableCell>
+                                            <div className="space-y-2 md:col-span-2">
+                                                <Label>Description</Label>
+                                                <Textarea
+                                                    value={draftSchema.description ?? ""}
+                                                    onChange={(e) =>
+                                                        updateDraftSchema((prev) => ({
+                                                            ...prev,
+                                                            description: e.target.value,
+                                                        }))
+                                                    }
+                                                    disabled={!canEdit}
+                                                    placeholder="Short instruction shown to students..."
+                                                    className="min-h-24"
+                                                />
+                                            </div>
+                                        </CardContent>
+                                    </Card>
 
-                                                            <TableCell>
-                                                                <div className="flex flex-col">
-                                                                    <span className="text-sm">{program}</span>
-                                                                    <span className="text-xs text-muted-foreground">{section}</span>
-                                                                </div>
-                                                            </TableCell>
+                                    {/* SECTIONS */}
+                                    <Card className="border-muted/60">
+                                        <CardHeader className="pb-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <div className="space-y-1">
+                                                    <CardTitle className="text-base">Sections & questions</CardTitle>
+                                                    <CardDescription>
+                                                        Add sections, then create rating/text questions inside them.
+                                                    </CardDescription>
+                                                </div>
+                                                <Button onClick={addSection} disabled={!canEdit} className="gap-2">
+                                                    <Plus className="h-4 w-4" />
+                                                    Add section
+                                                </Button>
+                                            </div>
+                                        </CardHeader>
 
-                                                            <TableCell>
-                                                                <span
-                                                                    className={[
-                                                                        "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                                        badge.className,
-                                                                    ].join(" ")}
+                                        <CardContent className="space-y-3">
+                                            {draftSchema.sections.map((section, sIdx) => (
+                                                <Card key={section.id} className="border-muted/60">
+                                                    <CardHeader className="pb-3">
+                                                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                                            <div className="flex min-w-0 flex-1 items-center gap-2">
+                                                                <Badge variant="secondary" className="shrink-0">
+                                                                    {sIdx + 1}
+                                                                </Badge>
+                                                                <Input
+                                                                    value={section.title}
+                                                                    onChange={(e) => updateSectionTitle(section.id, e.target.value)}
+                                                                    disabled={!canEdit}
+                                                                    className="min-w-0"
+                                                                    placeholder="Section title..."
+                                                                />
+                                                            </div>
+
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <Badge variant="secondary">{section.questions.length} question(s)</Badge>
+
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="icon"
+                                                                    onClick={() => moveSection(section.id, -1)}
+                                                                    disabled={!canEdit || sIdx === 0}
+                                                                    aria-label="Move section up"
                                                                 >
-                                                                    {badge.label}
-                                                                </span>
-                                                            </TableCell>
+                                                                    <GripVertical className="h-4 w-4 rotate-90" />
+                                                                </Button>
 
-                                                            <TableCell className="text-muted-foreground">
-                                                                {formatDateTime(r.submitted_at)}
-                                                            </TableCell>
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="icon"
+                                                                    onClick={() => moveSection(section.id, 1)}
+                                                                    disabled={!canEdit || sIdx === draftSchema.sections.length - 1}
+                                                                    aria-label="Move section down"
+                                                                >
+                                                                    <GripVertical className="h-4 w-4 -rotate-90" />
+                                                                </Button>
 
-                                                            <TableCell className="text-muted-foreground">
-                                                                {formatDateTime(r.updated_at)}
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    )
-                                                })
-                                            )}
-                                        </TableBody>
-                                    </Table>
-                                </div>
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="icon"
+                                                                    onClick={() => removeSection(section.id)}
+                                                                    disabled={!canEdit}
+                                                                    aria-label="Delete section"
+                                                                >
+                                                                    <Trash2 className="h-4 w-4" />
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+                                                    </CardHeader>
 
-                                <p className="text-xs text-muted-foreground">
-                                    Note: Assignment is safe by default—submitted/locked responses are never overwritten.
-                                </p>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-                </Tabs>
+                                                    <CardContent className="space-y-3">
+                                                        {section.questions.length === 0 ? (
+                                                            <div className="rounded-lg border bg-muted/10 p-3">
+                                                                <p className="text-sm font-medium">No questions yet</p>
+                                                                <p className="text-xs text-muted-foreground">
+                                                                    Add a rating or text question to this section.
+                                                                </p>
+                                                            </div>
+                                                        ) : null}
+
+                                                        {section.questions.map((q, qIdx) => {
+                                                            const isRating = q.type === "rating"
+                                                            const scale = q.scale ?? { min: 1, max: 5, minLabel: "Low", maxLabel: "High" }
+
+                                                            return (
+                                                                <div key={q.id} className="rounded-lg border bg-card p-3">
+                                                                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                                                        <div className="flex min-w-0 flex-1 flex-col gap-3">
+                                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                                <Badge variant="secondary" className="shrink-0">
+                                                                                    {sIdx + 1}.{qIdx + 1}
+                                                                                </Badge>
+
+                                                                                <div className="grid flex-1 gap-2 md:grid-cols-2">
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Label</Label>
+                                                                                        <Input
+                                                                                            value={q.label}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, { label: e.target.value })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                            placeholder="Question label..."
+                                                                                        />
+                                                                                    </div>
+
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Type</Label>
+                                                                                        <Select
+                                                                                            value={String(q.type)}
+                                                                                            onValueChange={(v) => {
+                                                                                                const type = (v === "rating" ? "rating" : "text") as FeedbackQuestion["type"]
+                                                                                                const patch: Partial<FeedbackQuestion> = { type }
+                                                                                                if (type === "rating") {
+                                                                                                    patch.scale = q.scale ?? { min: 1, max: 5, minLabel: "Low", maxLabel: "High" }
+                                                                                                    delete patch.placeholder
+                                                                                                    delete patch.maxLength
+                                                                                                } else {
+                                                                                                    patch.placeholder = q.placeholder ?? ""
+                                                                                                    patch.maxLength = q.maxLength ?? 1000
+                                                                                                    delete patch.scale
+                                                                                                }
+                                                                                                updateQuestion(section.id, q.id, patch)
+                                                                                            }}
+                                                                                            disabled={!canEdit}
+                                                                                        >
+                                                                                            <SelectTrigger>
+                                                                                                <SelectValue placeholder="Select type" />
+                                                                                            </SelectTrigger>
+                                                                                            <SelectContent>
+                                                                                                <SelectItem value="rating">Rating</SelectItem>
+                                                                                                <SelectItem value="text">Text</SelectItem>
+                                                                                            </SelectContent>
+                                                                                        </Select>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+
+                                                                            <div className="grid gap-3 md:grid-cols-3">
+                                                                                <div className="space-y-1 md:col-span-2">
+                                                                                    <Label className="text-xs text-muted-foreground">Question ID</Label>
+                                                                                    <Input
+                                                                                        value={q.id}
+                                                                                        onChange={(e) =>
+                                                                                            updateQuestion(section.id, q.id, { id: e.target.value })
+                                                                                        }
+                                                                                        disabled={!canEdit}
+                                                                                        className="font-mono text-xs"
+                                                                                        placeholder="stable_id"
+                                                                                    />
+                                                                                </div>
+
+                                                                                <div className="flex items-end justify-between gap-3 rounded-lg border bg-muted/10 p-3">
+                                                                                    <div className="min-w-0">
+                                                                                        <p className="text-sm font-medium">Required</p>
+                                                                                        <p className="text-xs text-muted-foreground">Must be answered</p>
+                                                                                    </div>
+                                                                                    <Switch
+                                                                                        checked={!!q.required}
+                                                                                        onCheckedChange={(checked) =>
+                                                                                            updateQuestion(section.id, q.id, { required: checked })
+                                                                                        }
+                                                                                        disabled={!canEdit}
+                                                                                    />
+                                                                                </div>
+                                                                            </div>
+
+                                                                            {isRating ? (
+                                                                                <div className="grid gap-3 md:grid-cols-4">
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Min</Label>
+                                                                                        <Input
+                                                                                            type="number"
+                                                                                            value={String(scale.min)}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, {
+                                                                                                    scale: { ...scale, min: toNumber(e.target.value, 1) },
+                                                                                                })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                        />
+                                                                                    </div>
+
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Max</Label>
+                                                                                        <Input
+                                                                                            type="number"
+                                                                                            value={String(scale.max)}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, {
+                                                                                                    scale: { ...scale, max: toNumber(e.target.value, 5) },
+                                                                                                })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                        />
+                                                                                    </div>
+
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Min label</Label>
+                                                                                        <Input
+                                                                                            value={scale.minLabel ?? ""}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, {
+                                                                                                    scale: { ...scale, minLabel: e.target.value },
+                                                                                                })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                            placeholder="Low"
+                                                                                        />
+                                                                                    </div>
+
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Max label</Label>
+                                                                                        <Input
+                                                                                            value={scale.maxLabel ?? ""}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, {
+                                                                                                    scale: { ...scale, maxLabel: e.target.value },
+                                                                                                })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                            placeholder="High"
+                                                                                        />
+                                                                                    </div>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div className="grid gap-3 md:grid-cols-3">
+                                                                                    <div className="space-y-1 md:col-span-2">
+                                                                                        <Label className="text-xs text-muted-foreground">Placeholder</Label>
+                                                                                        <Input
+                                                                                            value={q.placeholder ?? ""}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, { placeholder: e.target.value })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                            placeholder="e.g., Share your thoughts..."
+                                                                                        />
+                                                                                    </div>
+
+                                                                                    <div className="space-y-1">
+                                                                                        <Label className="text-xs text-muted-foreground">Max length</Label>
+                                                                                        <Input
+                                                                                            type="number"
+                                                                                            value={String(q.maxLength ?? 1000)}
+                                                                                            onChange={(e) =>
+                                                                                                updateQuestion(section.id, q.id, {
+                                                                                                    maxLength: clampInt(toNumber(e.target.value, 1000), 10, 10000),
+                                                                                                })
+                                                                                            }
+                                                                                            disabled={!canEdit}
+                                                                                        />
+                                                                                    </div>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+
+                                                                        <div className="flex shrink-0 items-start gap-2">
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="icon"
+                                                                                onClick={() => removeQuestion(section.id, q.id)}
+                                                                                disabled={!canEdit}
+                                                                                aria-label="Delete question"
+                                                                            >
+                                                                                <Trash2 className="h-4 w-4" />
+                                                                            </Button>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )
+                                                        })}
+
+                                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                                            <p className="text-xs text-muted-foreground">
+                                                                Keep question IDs stable to avoid breaking analytics/history.
+                                                            </p>
+                                                            <Button
+                                                                variant="outline"
+                                                                onClick={() => addQuestion(section.id)}
+                                                                disabled={!canEdit}
+                                                                className="gap-2"
+                                                            >
+                                                                <Plus className="h-4 w-4" />
+                                                                Add question
+                                                            </Button>
+                                                        </div>
+                                                    </CardContent>
+                                                </Card>
+                                            ))}
+                                        </CardContent>
+                                    </Card>
+                                </TabsContent>
+
+                                <TabsContent value="preview" className="mt-4">
+                                    <SchemaPreview schema={draftSchema} />
+                                </TabsContent>
+                            </Tabs>
+                        </CardContent>
+                    </Card>
+                </div>
             </div>
+
+            {/* RENAME DIALOG */}
+            <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Rename template</DialogTitle>
+                        <DialogDescription>Update the template display name.</DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-2">
+                        <Label>Template name</Label>
+                        <Input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="Template name..." />
+                    </div>
+
+                    <DialogFooter className="gap-2 sm:gap-0">
+                        <DialogClose asChild>
+                            <Button variant="outline">Cancel</Button>
+                        </DialogClose>
+                        <Button onClick={submitRename} className="gap-2">
+                            <Pencil className="h-4 w-4" />
+                            Save
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* DELETE CONFIRM */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete this template?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This removes the template from your saved templates. This won’t delete any submitted feedback responses.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="gap-2 sm:gap-0">
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmDelete} className="gap-2">
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* DISCARD UNSAVED */}
+            <AlertDialog open={discardOpen} onOpenChange={setDiscardOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            You have unsaved edits. Switching templates will discard them.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="gap-2 sm:gap-0">
+                        <AlertDialogCancel
+                            onClick={() => {
+                                setDiscardOpen(false)
+                                setPendingSwitchId(null)
+                            }}
+                        >
+                            Keep editing
+                        </AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmDiscardAndSwitch}>
+                            Discard and switch
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </DashboardLayout>
     )
 }
