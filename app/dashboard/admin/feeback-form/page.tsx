@@ -1142,7 +1142,7 @@ export default function AdminFeedbackFormPage() {
 
                                         <DialogFooter className="gap-2 sm:gap-0">
                                             <DialogClose asChild>
-                                                <Button variant="outline">Cancel</Button>
+                                                <Button variant="outline" className="mx-2">Cancel</Button>
                                             </DialogClose>
                                             <Button onClick={submitCreate} className="gap-2">
                                                 <Plus className="h-4 w-4" />
@@ -1749,7 +1749,7 @@ export default function AdminFeedbackFormPage() {
 
                     <DialogFooter className="gap-2 sm:gap-0">
                         <DialogClose asChild>
-                            <Button variant="outline">Cancel</Button>
+                            <Button variant="outline" className="mx-2">Cancel</Button>
                         </DialogClose>
                         <Button onClick={submitRename} className="gap-2">
                             <Pencil className="h-4 w-4" />
@@ -1770,7 +1770,7 @@ export default function AdminFeedbackFormPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2 sm:gap-0">
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={confirmDelete} className="gap-2">
+                        <AlertDialogAction onClick={confirmDelete} className="gap-2 ml-2">
                             <Trash2 className="h-4 w-4" />
                             Delete
                         </AlertDialogAction>

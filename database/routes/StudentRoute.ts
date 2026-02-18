@@ -137,8 +137,8 @@ export async function dispatchStudentRequest(
         if (tail.length === 3 && tail[2] === 'schema') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
-            const schema = controller.getStudentFeedbackFormSchema();
-            const seedAnswersTemplate = controller.getStudentFeedbackSeedAnswersTemplate();
+            const schema = await controller.getStudentFeedbackFormSchema();
+            const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
 
             return json200({
                 schema,

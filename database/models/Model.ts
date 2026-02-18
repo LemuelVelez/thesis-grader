@@ -1,7 +1,7 @@
 /**
  * Central database model types for Thesis Grader
  * Based on migrations:
- * 001..010 in database/migration
+ * 001..012 in database/migration
  */
 
 export type UUID = string;
@@ -243,6 +243,18 @@ export interface NotificationRow {
     created_at: ISODateTime;
 }
 
+export interface StudentFeedbackFormRow {
+    id: UUID;
+    key: string;
+    version: number;
+    title: string;
+    description: string | null;
+    schema: JsonObject;
+    active: boolean;
+    created_at: ISODateTime;
+    updated_at: ISODateTime;
+}
+
 /* ---------------------------------- VIEWS -------------------------------- */
 
 export interface EvaluationOverallPercentageRow {
@@ -351,6 +363,11 @@ export type NotificationInsert = Optional<
     'id' | 'type' | 'data' | 'read_at' | 'created_at'
 >;
 
+export type StudentFeedbackFormInsert = Optional<
+    StudentFeedbackFormRow,
+    'id' | 'description' | 'active' | 'created_at' | 'updated_at'
+>;
+
 /* ------------------------------ UPDATE HELPERS ---------------------------- */
 
 export type UserPatch = Partial<Omit<UserRow, 'id' | 'created_at'>>;
@@ -377,6 +394,7 @@ export type EvaluationExtraPatch = Partial<Omit<EvaluationExtraRow, 'evaluation_
 export type PanelistProfilePatch = Partial<Omit<PanelistProfileRow, 'user_id' | 'created_at'>>;
 export type RubricScaleLevelPatch = Partial<Omit<RubricScaleLevelRow, 'template_id' | 'score'>>;
 export type NotificationPatch = Partial<Omit<NotificationRow, 'id' | 'user_id' | 'created_at'>>;
+export type StudentFeedbackFormPatch = Partial<Omit<StudentFeedbackFormRow, 'id' | 'created_at'>>;
 
 /* ------------------------------- REGISTRY --------------------------------- */
 
@@ -404,6 +422,7 @@ export interface DatabaseModels {
     panelist_profiles: PanelistProfileRow;
     rubric_scale_levels: RubricScaleLevelRow;
     notifications: NotificationRow;
+    student_feedback_forms: StudentFeedbackFormRow;
 
     // views
     v_evaluation_overall_percentages: EvaluationOverallPercentageRow;

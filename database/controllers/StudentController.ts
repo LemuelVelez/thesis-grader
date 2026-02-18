@@ -107,12 +107,13 @@ export class StudentController {
 
     /* -------------------------- STUDENT FEEDBACK FORM -------------------------- */
 
-    getStudentFeedbackFormSchema(): StudentFeedbackFormSchema {
-        return this.studentFeedback.getSchema();
+    async getStudentFeedbackFormSchema(): Promise<StudentFeedbackFormSchema> {
+        // Students ONLY receive the ACTIVE form schema.
+        return this.studentFeedback.getActiveSchema();
     }
 
-    getStudentFeedbackSeedAnswersTemplate(): JsonObject {
-        return this.studentFeedback.getSeedAnswersTemplate();
+    async getStudentFeedbackSeedAnswersTemplate(): Promise<JsonObject> {
+        return this.studentFeedback.getActiveSeedAnswersTemplate();
     }
 
     /* --------------------------------- CREATE -------------------------------- */
@@ -251,7 +252,8 @@ export class StudentController {
 
             if (existing) return existing;
 
-            const defaultAnswers = this.getStudentFeedbackSeedAnswersTemplate();
+            // Use ACTIVE form seed (so only the active form is used for new evaluations)
+            const defaultAnswers = await this.studentFeedback.getActiveSeedAnswersTemplate(tx);
 
             const created = await tx.student_evaluations.create({
                 schedule_id: input.schedule_id,
@@ -332,10 +334,12 @@ export class StudentController {
                 );
             }
 
-            // Validate required questions before submitting (backend safety)
+            // Validate required questions before submitting (backend safety) using ACTIVE form schema
+            const activeSchema = await this.studentFeedback.getActiveSchema(tx);
+
             const validation = this.studentFeedback.validateRequiredAnswers(
                 (existing.answers ?? {}) as JsonObject,
-                this.studentFeedback.getSchema(),
+                activeSchema,
             );
 
             if (!validation.ok) {

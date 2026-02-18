@@ -3,6 +3,9 @@ import type {
     DefenseSchedulePatch,
     DefenseScheduleRow,
     JsonObject,
+    StudentFeedbackFormInsert,
+    StudentFeedbackFormPatch,
+    StudentFeedbackFormRow,
     StudentInsert,
     StudentPatch,
     StudentRow,
@@ -118,12 +121,36 @@ export class AdminController {
 
     /* -------------------------- STUDENT FEEDBACK FORMS ------------------------- */
 
-    getStudentFeedbackFormSchema(): StudentFeedbackFormSchema {
-        return this.studentFeedback.getSchema();
+    async getStudentFeedbackFormSchema(): Promise<StudentFeedbackFormSchema> {
+        // Students should only see the ACTIVE schema; admin schema endpoint follows same for consistency.
+        return this.studentFeedback.getActiveSchema();
     }
 
-    getStudentFeedbackSeedAnswersTemplate(): JsonObject {
-        return this.studentFeedback.getSeedAnswersTemplate();
+    async getStudentFeedbackSeedAnswersTemplate(): Promise<JsonObject> {
+        return this.studentFeedback.getActiveSeedAnswersTemplate();
+    }
+
+    async listStudentFeedbackForms(): Promise<StudentFeedbackFormRow[]> {
+        return this.studentFeedback.listForms();
+    }
+
+    async getStudentFeedbackFormById(id: UUID): Promise<StudentFeedbackFormRow | null> {
+        return this.studentFeedback.getFormById(id);
+    }
+
+    async createStudentFeedbackForm(input: StudentFeedbackFormInsert): Promise<StudentFeedbackFormRow> {
+        return this.studentFeedback.createForm(input);
+    }
+
+    async updateStudentFeedbackForm(
+        id: UUID,
+        patch: StudentFeedbackFormPatch,
+    ): Promise<StudentFeedbackFormRow | null> {
+        return this.studentFeedback.updateForm(id, patch);
+    }
+
+    async activateStudentFeedbackForm(id: UUID): Promise<StudentFeedbackFormRow | null> {
+        return this.studentFeedback.activateForm(id);
     }
 
     async assignStudentFeedbackFormsForSchedule(

@@ -63,6 +63,31 @@ function parseUuidArrayFromBody(value: unknown): UUID[] {
     return out;
 }
 
+function normalizeString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const t = value.trim();
+    return t.length > 0 ? t : null;
+}
+
+function normalizeNullableString(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function parsePositiveIntFromBody(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.trunc(value);
+    if (typeof value === 'string') {
+        const t = value.trim();
+        if (!t) return null;
+        const n = Number(t);
+        if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+    }
+    return null;
+}
+
 async function dispatchAdminRankingsRequest(
     req: NextRequest,
     tail: string[],
@@ -209,17 +234,152 @@ async function dispatchAdminStudentFeedbackRequest(
             service: 'admin.student-feedback',
             routes: {
                 schema: 'GET /api/admin/student-feedback/schema',
+                forms: 'GET|POST /api/admin/student-feedback/forms',
+                form: 'GET|PATCH /api/admin/student-feedback/forms/:formId',
+                activate: 'POST|PATCH /api/admin/student-feedback/forms/:formId/activate',
                 listBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId',
                 assignForSchedule: 'POST /api/admin/student-feedback/schedule/:scheduleId/assign',
             },
         });
     }
 
+    // ACTIVE schema only (students consume this too via StudentRoute)
     if (tail.length === 1 && tail[0] === 'schema') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-        const item = controller.getStudentFeedbackFormSchema();
+        const item = await controller.getStudentFeedbackFormSchema();
+        const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
         // Return both keys for frontend resilience (item/schema).
-        return json200({ item, schema: item });
+        return json200({ item, schema: item, seedAnswersTemplate });
+    }
+
+    // /api/admin/student-feedback/forms
+    if (tail.length === 1 && (tail[0] === 'forms' || tail[0] === 'form')) {
+        if (method === 'GET') {
+            const items = await controller.listStudentFeedbackForms();
+            return json200({ items, count: items.length });
+        }
+
+        if (method === 'POST') {
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const schemaRaw = body.schema ?? body.formSchema ?? body.item;
+            const schema = toJsonObject(schemaRaw);
+
+            if (Object.keys(schema).length === 0) {
+                return json400('schema is required and must be a JSON object.');
+            }
+
+            const key = normalizeString(body.key ?? schema.key) ?? 'student-feedback';
+            const version = parsePositiveIntFromBody(body.version ?? schema.version) ?? 1;
+            const title = normalizeString(body.title ?? schema.title) ?? 'Student Feedback Form';
+            const description = normalizeNullableString(body.description ?? schema.description) ?? null;
+
+            // keep schema metadata consistent
+            (schema as any).key = key;
+            (schema as any).version = version;
+            (schema as any).title = title;
+            if (description !== null) (schema as any).description = description;
+
+            const activeRaw = body.active ?? body.isActive ?? body.activate;
+            const active = typeof activeRaw === 'boolean'
+                ? activeRaw
+                : (parseBoolean(typeof activeRaw === 'string' ? activeRaw : null) ?? false);
+
+            try {
+                const item = await controller.createStudentFeedbackForm({
+                    key,
+                    version,
+                    title,
+                    description,
+                    schema: schema as any,
+                    active,
+                } as any);
+
+                return json201({ item });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to create student feedback form.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    // /api/admin/student-feedback/forms/:formId
+    // /api/admin/student-feedback/forms/:formId/activate
+    if (tail[0] === 'forms' && tail.length >= 2) {
+        const formId = tail[1];
+        if (!formId || !isUuidLike(formId)) {
+            return json400('formId is required and must be a valid UUID.');
+        }
+
+        // /forms/:formId/activate
+        if (tail.length === 3 && tail[2] === 'activate') {
+            if (method !== 'POST' && method !== 'PATCH') {
+                return json405(['POST', 'PATCH', 'OPTIONS']);
+            }
+
+            const item = await controller.activateStudentFeedbackForm(formId as UUID);
+            if (!item) return json404Entity('StudentFeedbackForm');
+
+            return json200({
+                item,
+                message: 'Student feedback form activated successfully.',
+            });
+        }
+
+        // /forms/:formId
+        if (tail.length === 2) {
+            if (method === 'GET') {
+                const item = await controller.getStudentFeedbackFormById(formId as UUID);
+                if (!item) return json404Entity('StudentFeedbackForm');
+                return json200({ item });
+            }
+
+            if (method === 'PATCH' || method === 'PUT') {
+                const body = await readJsonRecord(req);
+                if (!body) return json400('Invalid JSON body.');
+
+                const patch: any = {};
+
+                if (body.key !== undefined) patch.key = normalizeString(body.key) ?? undefined;
+                if (body.version !== undefined) patch.version = parsePositiveIntFromBody(body.version) ?? undefined;
+                if (body.title !== undefined) patch.title = normalizeString(body.title) ?? undefined;
+                if (body.description !== undefined) patch.description = normalizeNullableString(body.description);
+
+                const schemaRaw = body.schema ?? body.formSchema ?? body.item;
+                if (schemaRaw !== undefined) {
+                    const schema = toJsonObject(schemaRaw);
+                    if (Object.keys(schema).length === 0) return json400('schema must be a non-empty JSON object.');
+                    patch.schema = schema;
+                }
+
+                const activeRaw = body.active ?? body.isActive;
+                if (activeRaw !== undefined) {
+                    patch.active = typeof activeRaw === 'boolean'
+                        ? activeRaw
+                        : (parseBoolean(typeof activeRaw === 'string' ? activeRaw : null) ?? undefined);
+                }
+
+                const item = await controller.updateStudentFeedbackForm(formId as UUID, patch);
+                if (!item) return json404Entity('StudentFeedbackForm');
+
+                return json200({
+                    item,
+                    message: 'Student feedback form updated successfully.',
+                });
+            }
+
+            return json405(['GET', 'PATCH', 'PUT', 'OPTIONS']);
+        }
+
+        return json404Api();
     }
 
     if (tail[0] === 'schedule' && tail.length >= 2) {
