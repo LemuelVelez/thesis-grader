@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import {
     Table,
@@ -32,6 +31,7 @@ import {
     CheckCircle2,
     Lock,
     Clock3,
+    Sparkles,
 } from "lucide-react"
 
 type StudentEvaluationItem = {
@@ -143,6 +143,41 @@ function toJsonObject(value: unknown): Record<string, unknown> | null {
     return null
 }
 
+function extractSingleItemPayload(payload: unknown): unknown | null {
+    if (!payload) return null
+    if (!isRecord(payload)) return payload
+
+    const direct =
+        (isRecord(payload.item) && payload.item) ||
+        (isRecord(payload.evaluation) && payload.evaluation) ||
+        (isRecord(payload.student_evaluation) && payload.student_evaluation) ||
+        null
+
+    if (direct) return direct
+
+    if (isRecord(payload.data)) {
+        const d = payload.data
+        return (
+            (isRecord(d.item) && d.item) ||
+            (isRecord(d.evaluation) && d.evaluation) ||
+            (isRecord(d.student_evaluation) && d.student_evaluation) ||
+            null
+        )
+    }
+
+    if (isRecord(payload.result)) {
+        const r = payload.result
+        return (
+            (isRecord(r.item) && r.item) ||
+            (isRecord(r.evaluation) && r.evaluation) ||
+            (isRecord(r.student_evaluation) && r.student_evaluation) ||
+            null
+        )
+    }
+
+    return payload
+}
+
 function extractArrayPayload(payload: unknown): unknown[] {
     if (Array.isArray(payload)) return payload
     if (!isRecord(payload)) return []
@@ -152,16 +187,24 @@ function extractArrayPayload(payload: unknown): unknown[] {
     if (Array.isArray(payload.evaluations)) return payload.evaluations
     if (Array.isArray(payload.student_evaluations)) return payload.student_evaluations
 
+    // If endpoint returns a single item (e.g., /me), normalize into a list.
+    const single = extractSingleItemPayload(payload)
+    if (single && isRecord(single)) return [single]
+
     if (isRecord(payload.data)) {
         if (Array.isArray(payload.data.items)) return payload.data.items
         if (Array.isArray(payload.data.evaluations)) return payload.data.evaluations
         if (Array.isArray(payload.data.student_evaluations)) return payload.data.student_evaluations
+        const dataSingle = extractSingleItemPayload(payload.data)
+        if (dataSingle && isRecord(dataSingle)) return [dataSingle]
     }
 
     if (isRecord(payload.result)) {
         if (Array.isArray(payload.result.items)) return payload.result.items
         if (Array.isArray(payload.result.evaluations)) return payload.result.evaluations
         if (Array.isArray(payload.result.student_evaluations)) return payload.result.student_evaluations
+        const resultSingle = extractSingleItemPayload(payload.result)
+        if (resultSingle && isRecord(resultSingle)) return [resultSingle]
     }
 
     return []
@@ -173,10 +216,20 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
     const source =
         (isRecord(raw.student_evaluation) && raw.student_evaluation) ||
         (isRecord(raw.evaluation) && raw.evaluation) ||
+        (isRecord(raw.item) && raw.item) ||
         raw
 
-    const schedule = isRecord(source.schedule) ? source.schedule : null
-    const group = isRecord(source.group) ? source.group : null
+    const schedule =
+        (isRecord(source.schedule) && source.schedule) ||
+        (isRecord((source as any).defense_schedule) && (source as any).defense_schedule) ||
+        (isRecord((source as any).defenseSchedule) && (source as any).defenseSchedule) ||
+        null
+
+    const group =
+        (isRecord(source.group) && source.group) ||
+        (isRecord((source as any).thesis_group) && (source as any).thesis_group) ||
+        (isRecord((source as any).thesisGroup) && (source as any).thesisGroup) ||
+        null
 
     const id = toStringSafe(source.id ?? raw.id)
     if (!id) return null
@@ -187,22 +240,42 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
         title:
             toNullableString(
                 source.title ??
-                source.topic ??
-                source.thesis_title ??
-                source.thesisTitle ??
+                (source as any).topic ??
+                (source as any).thesis_title ??
+                (source as any).thesisTitle ??
                 group?.title ??
-                schedule?.title,
+                (group as any)?.name ??
+                schedule?.title ??
+                (schedule as any)?.name,
             ) ?? null,
-        group_title: toNullableString(source.group_title ?? source.groupTitle ?? group?.title),
-        scheduled_at: toNullableString(source.scheduled_at ?? source.scheduledAt ?? schedule?.scheduled_at),
-        room: toNullableString(source.room ?? schedule?.room),
-        program: toNullableString(source.program ?? group?.program),
-        term: toNullableString(source.term ?? group?.term),
-        created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
-        updated_at: toNullableString(source.updated_at ?? source.updatedAt ?? raw.updated_at),
-        submitted_at: toNullableString(source.submitted_at ?? source.submittedAt ?? raw.submitted_at),
-        locked_at: toNullableString(source.locked_at ?? source.lockedAt ?? raw.locked_at),
-        answers: toJsonObject(source.answers ?? raw.answers),
+        group_title: toNullableString(
+            (source as any).group_title ??
+            (source as any).groupTitle ??
+            group?.title ??
+            (group as any)?.name,
+        ),
+        scheduled_at: toNullableString(
+            (source as any).scheduled_at ??
+            (source as any).scheduledAt ??
+            schedule?.scheduled_at ??
+            (schedule as any)?.scheduledAt ??
+            (schedule as any)?.date_time ??
+            (schedule as any)?.dateTime ??
+            (schedule as any)?.date,
+        ),
+        room: toNullableString(
+            (source as any).room ??
+            schedule?.room ??
+            (schedule as any)?.venue ??
+            (schedule as any)?.location,
+        ),
+        program: toNullableString((source as any).program ?? group?.program),
+        term: toNullableString((source as any).term ?? group?.term),
+        created_at: toNullableString((source as any).created_at ?? (source as any).createdAt ?? raw.created_at),
+        updated_at: toNullableString((source as any).updated_at ?? (source as any).updatedAt ?? raw.updated_at),
+        submitted_at: toNullableString((source as any).submitted_at ?? (source as any).submittedAt ?? raw.submitted_at),
+        locked_at: toNullableString((source as any).locked_at ?? (source as any).lockedAt ?? raw.locked_at),
+        answers: toJsonObject((source as any).answers ?? raw.answers),
     }
 }
 
@@ -248,6 +321,7 @@ async function fetchFirstOk<T>(
 }
 
 function formatScheduleSummary(item: StudentEvaluationItem): string {
+    if (!item.scheduled_at) return "Not scheduled yet"
     const when = formatDateTime(item.scheduled_at)
     const room = item.room ? ` • ${item.room}` : ""
     return `${when}${room}`
@@ -307,12 +381,12 @@ function collectRequiredKeys(schema: unknown): string[] {
         }
 
         const candidates: unknown[] = []
-        if (Array.isArray(node.questions)) candidates.push(...node.questions)
-        if (Array.isArray(node.fields)) candidates.push(...node.fields)
+        if (Array.isArray((node as any).questions)) candidates.push(...((node as any).questions as unknown[]))
+        if (Array.isArray((node as any).fields)) candidates.push(...((node as any).fields as unknown[]))
 
         for (const it of candidates) {
             if (!isRecord(it)) continue
-            if (it.required !== true) continue
+            if ((it as any).required !== true) continue
             const id = pickQuestionId(it)
             if (id) keys.add(id)
         }
@@ -338,7 +412,7 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
 
         if (!isRecord(node)) return
 
-        const type = toStringSafe(node.type)?.toLowerCase() ?? null
+        const type = toStringSafe((node as any).type)?.toLowerCase() ?? null
         if (type === "rating") {
             const id = pickQuestionId(node)
             if (id) {
@@ -347,11 +421,11 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
                     seen.add(key)
 
                     const label =
-                        toNullableString(node.label ?? node.title ?? node.question) ?? null
+                        toNullableString((node as any).label ?? (node as any).title ?? (node as any).question) ?? null
 
-                    const scaleObj = isRecord(node.scale) ? node.scale : null
-                    const min = toFiniteNumber(scaleObj?.min) ?? 1
-                    const max = toFiniteNumber(scaleObj?.max) ?? 5
+                    const scaleObj = isRecord((node as any).scale) ? ((node as any).scale as Record<string, unknown>) : null
+                    const min = toFiniteNumber(scaleObj?.min) ?? toFiniteNumber((node as any).min) ?? 1
+                    const max = toFiniteNumber(scaleObj?.max) ?? toFiniteNumber((node as any).max) ?? 5
                     const normalizedMin = Math.min(min, max)
                     const normalizedMax = Math.max(min, max)
 
@@ -403,7 +477,7 @@ function computeScoreSummary(
 function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
     if (!payload) return null
     if (isRecord(payload)) {
-        const candidate = (payload.schema as unknown) ?? payload.item ?? payload.data ?? payload.result ?? payload
+        const candidate = (payload as any).schema ?? (payload as any).item ?? (payload as any).data ?? (payload as any).result ?? payload
         return isRecord(candidate) ? (candidate as Record<string, unknown>) : isRecord(payload) ? (payload as Record<string, unknown>) : null
     }
     return null
@@ -412,9 +486,9 @@ function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
 function getSchemaTitle(schema: Record<string, unknown> | null): string {
     if (!schema) return "Active feedback form"
     return (
-        toStringSafe(schema.title) ||
-        toStringSafe(schema.name) ||
-        toStringSafe(schema.label) ||
+        toStringSafe((schema as any).title) ||
+        toStringSafe((schema as any).name) ||
+        toStringSafe((schema as any).label) ||
         "Active feedback form"
     )
 }
@@ -432,12 +506,12 @@ function countQuestions(schema: Record<string, unknown> | null): number {
         }
         if (!isRecord(node)) return
 
-        const maybeType = toStringSafe(node.type)?.toLowerCase() ?? null
+        const maybeType = toStringSafe((node as any).type)?.toLowerCase() ?? null
         const maybeId = pickQuestionId(node)
         if (maybeId) {
             const k = maybeId.trim().toLowerCase()
             if (!seen.has(k)) {
-                if (maybeType || node.label || node.title || node.question) {
+                if (maybeType || (node as any).label || (node as any).title || (node as any).question) {
                     seen.add(k)
                     count += 1
                 }
@@ -459,6 +533,45 @@ function iconForStatus(status: string) {
     return <ClipboardList className="h-4 w-4" />
 }
 
+function needsContextHydration(item: StudentEvaluationItem): boolean {
+    const missingTitle = !toStringSafe(item.title) && !toStringSafe(item.group_title)
+    const missingSchedule = !toStringSafe(item.scheduled_at)
+    return missingTitle || missingSchedule
+}
+
+async function hydrateMissingContext(
+    items: StudentEvaluationItem[],
+    opts?: { limit?: number },
+): Promise<{ items: StudentEvaluationItem[]; hydratedCount: number }> {
+    const limit = Math.max(0, Math.min(25, opts?.limit ?? 12))
+    const targets = items.filter(needsContextHydration).slice(0, limit)
+    if (targets.length === 0) return { items, hydratedCount: 0 }
+
+    const results = await Promise.all(
+        targets.map(async (it) => {
+            try {
+                const res = await fetch(`/api/student-evaluations/${it.id}`, { cache: "no-store" })
+                const payload = (await res.json().catch(() => null)) as unknown
+                if (!res.ok) return null
+
+                const single = extractSingleItemPayload(payload)
+                const normalized = normalizeEvaluation(single)
+                return normalized ?? null
+            } catch {
+                return null
+            }
+        }),
+    )
+
+    const map = new Map<string, StudentEvaluationItem>()
+    for (const r of results) {
+        if (r?.id) map.set(r.id, r)
+    }
+
+    const merged = items.map((it) => map.get(it.id) ?? it)
+    return { items: merged, hydratedCount: map.size }
+}
+
 export default function StudentEvaluationsPage() {
     const router = useRouter()
 
@@ -471,6 +584,9 @@ export default function StudentEvaluationsPage() {
 
     const [search, setSearch] = React.useState("")
     const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
+
+    const [hydratingContext, setHydratingContext] = React.useState(false)
+    const [hydratedCount, setHydratedCount] = React.useState(0)
 
     const requiredKeys = React.useMemo(() => collectRequiredKeys(schema), [schema])
     const ratingQuestions = React.useMemo(() => collectRatingQuestions(schema), [schema])
@@ -501,6 +617,8 @@ export default function StudentEvaluationsPage() {
         let latestError = "We couldn’t load your feedback forms."
         let loaded = false
 
+        setHydratedCount(0)
+
         for (const endpoint of EVALUATION_ENDPOINT_CANDIDATES) {
             try {
                 const res = await fetch(endpoint, { cache: "no-store" })
@@ -524,11 +642,24 @@ export default function StudentEvaluationsPage() {
                         return tb - ta
                     })
 
+                // If list payload is missing schedule/group context, hydrate missing items from detail endpoint.
                 setEvaluations(parsed)
                 loaded = true
+
+                const needsHydrationAny = parsed.some(needsContextHydration)
+                if (needsHydrationAny) {
+                    setHydratingContext(true)
+                    const hydrated = await hydrateMissingContext(parsed, { limit: 15 })
+                    setEvaluations(hydrated.items)
+                    setHydratedCount(hydrated.hydratedCount)
+                    setHydratingContext(false)
+                }
+
                 break
             } catch (err) {
                 latestError = err instanceof Error ? err.message : latestError
+            } finally {
+                setHydratingContext(false)
             }
         }
 
@@ -678,27 +809,43 @@ export default function StudentEvaluationsPage() {
 
                         <Separator />
 
-                        <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
-                            <div className="flex flex-wrap gap-2">
-                                {STATUS_FILTERS.map((status) => {
-                                    const active = statusFilter === status
-                                    const count = statusCounts[status]
-                                    return (
-                                        <Button
-                                            key={status}
-                                            size="sm"
-                                            variant={active ? "default" : "outline"}
-                                            onClick={() => setStatusFilter(status)}
-                                            className={BTN_CURSOR}
-                                        >
-                                            {status === "all" ? "All" : toTitleCase(status)}
-                                            <span className="ml-2 rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-semibold">
-                                                {count}
-                                            </span>
-                                        </Button>
-                                    )
-                                })}
+                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                            <div className="space-y-2">
+                                <p className="text-xs font-medium text-muted-foreground">Filter by status</p>
+                                <div className="flex flex-wrap gap-2">
+                                    {STATUS_FILTERS.map((status) => {
+                                        const active = statusFilter === status
+                                        const count = statusCounts[status]
+                                        return (
+                                            <Button
+                                                key={status}
+                                                size="sm"
+                                                variant={active ? "default" : "outline"}
+                                                onClick={() => setStatusFilter(status)}
+                                                className={BTN_CURSOR}
+                                            >
+                                                {status === "all" ? "All" : toTitleCase(status)}
+                                                <span className="ml-2 rounded-md border bg-background px-1.5 py-0.5 text-xs font-semibold leading-none">
+                                                    {count}
+                                                </span>
+                                            </Button>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-2 text-xs text-muted-foreground">
+                                {hydratingContext ? (
+                                    <div className="inline-flex items-center gap-2 rounded-md border bg-background px-2 py-1">
+                                        <Sparkles className="h-4 w-4 animate-pulse" />
+                                        Syncing thesis/group and schedule details…
+                                    </div>
+                                ) : hydratedCount > 0 ? (
+                                    <div className="inline-flex items-center gap-2 rounded-md border bg-background px-2 py-1">
+                                        <Sparkles className="h-4 w-4" />
+                                        Updated details for {hydratedCount} item(s).
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
                     </CardHeader>
@@ -777,9 +924,11 @@ export default function StudentEvaluationsPage() {
                                     const scorePct = Math.max(0, Math.min(100, score.percentage))
                                     const scoreLabel = score.max_score > 0 ? `${Math.round(scorePct)}%` : "—"
 
-                                    const primaryTitle = item.title ?? item.group_title ?? "Untitled feedback form"
+                                    const primaryTitle = item.title ?? item.group_title ?? "No thesis/group linked yet"
                                     const s = item.status.toLowerCase()
                                     const primaryActionLabel = s === "pending" ? "Continue" : "Open"
+
+                                    const scheduleLine = formatScheduleSummary(item)
 
                                     return (
                                         <TableRow key={item.id}>
@@ -793,8 +942,19 @@ export default function StudentEvaluationsPage() {
                                                 </div>
                                             </TableCell>
 
-                                            <TableCell className="text-muted-foreground">
-                                                {formatScheduleSummary(item)}
+                                            <TableCell>
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="text-sm">{scheduleLine}</span>
+                                                    {item.scheduled_at ? (
+                                                        <span className="text-xs text-muted-foreground">
+                                                            {item.room ? `Room: ${item.room}` : "Room: —"}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Waiting for the defense schedule to be set.
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </TableCell>
 
                                             <TableCell>
