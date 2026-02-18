@@ -64,6 +64,160 @@ function isJsonObject(value: unknown): value is JsonObject {
     return true;
 }
 
+/**
+ * Resolve the authenticated user id for "me/current" style routes.
+ * This intentionally supports multiple header/cookie keys to match different auth adapters.
+ */
+function resolveAuthedUserId(req: NextRequest): UUID | null {
+    const headerCandidates = [
+        req.headers.get('x-user-id'),
+        req.headers.get('x-auth-user-id'),
+        req.headers.get('x-thesis-user-id'),
+        req.headers.get('x-user'),
+        req.headers.get('x-auth-user'),
+    ]
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter(Boolean);
+
+    for (const raw of headerCandidates) {
+        // Allow "uuid,role" or "uuid|role" style values
+        const first = raw.split(/[,\s|;]/)[0]?.trim();
+        if (first && isUuidLike(first)) return first as UUID;
+        if (isUuidLike(raw)) return raw as UUID;
+    }
+
+    const cookieCandidates = [
+        req.cookies.get('user_id')?.value,
+        req.cookies.get('userId')?.value,
+        req.cookies.get('uid')?.value,
+        req.cookies.get('thesis_user_id')?.value,
+    ]
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter(Boolean);
+
+    for (const raw of cookieCandidates) {
+        if (isUuidLike(raw)) return raw as UUID;
+    }
+
+    const qpCandidates = [
+        req.nextUrl.searchParams.get('userId'),
+        req.nextUrl.searchParams.get('user_id'),
+        req.nextUrl.searchParams.get('uid'),
+    ]
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter(Boolean);
+
+    for (const raw of qpCandidates) {
+        if (isUuidLike(raw)) return raw as UUID;
+    }
+
+    return null;
+}
+
+function resolveStudentIdFromAlias(id: string, req: NextRequest): UUID | null {
+    const normalized = id.trim().toLowerCase();
+    if (isUuidLike(id)) return id as UUID;
+    if (normalized === 'me' || normalized === 'current' || normalized === 'self') {
+        return resolveAuthedUserId(req);
+    }
+    return null;
+}
+
+/**
+ * Student self endpoints (no explicit :id), used by the frontend:
+ * - GET /api/student-evaluations/schema
+ * - GET /api/student-evaluations/form/schema
+ * - GET /api/student-evaluations/active-form
+ * - GET /api/student-evaluations/my
+ * - GET /api/student-evaluations/me
+ */
+async function dispatchStudentSelfEvaluationsRequest(
+    req: NextRequest,
+    tail: string[],
+    controller: StudentController,
+): Promise<Response> {
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        return json200({
+            service: 'student.evaluations',
+            routes: {
+                schema: 'GET /api/student-evaluations/schema',
+                formSchema: 'GET /api/student-evaluations/form/schema',
+                activeForm: 'GET /api/student-evaluations/active-form',
+                my: 'GET /api/student-evaluations/my',
+                me: 'GET /api/student-evaluations/me',
+                // Backward/compat:
+                studentsMeSchema: 'GET /api/students/me/student-evaluations/schema',
+                studentsCurrentSchema: 'GET /api/students/current/student-evaluations/schema',
+            },
+        });
+    }
+
+    const seg0 = (tail[0] ?? '').toLowerCase();
+
+    // GET /api/student-evaluations/schema
+    // GET /api/student-evaluations/form/schema
+    // GET /api/student-evaluations/active-form
+    if (
+        (tail.length === 1 && (seg0 === 'schema' || seg0 === 'active-form')) ||
+        (tail.length === 2 && seg0 === 'form' && (tail[1] ?? '').toLowerCase() === 'schema')
+    ) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const schema = await controller.getStudentFeedbackFormSchema();
+        const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
+
+        // Return both keys for frontend resilience (item/schema).
+        return json200({
+            schema,
+            item: schema,
+            seedAnswersTemplate,
+        });
+    }
+
+    // GET /api/student-evaluations/my
+    // GET /api/student-evaluations/me
+    if (tail.length === 1 && (seg0 === 'my' || seg0 === 'me')) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const studentId = resolveAuthedUserId(req);
+        if (!studentId) {
+            return json400(
+                'Unable to resolve current student id. Ensure auth middleware forwards a user id (e.g., x-user-id) or a session cookie is present.',
+            );
+        }
+
+        const scheduleIdParam =
+            req.nextUrl.searchParams.get('scheduleId') ??
+            req.nextUrl.searchParams.get('schedule_id') ??
+            undefined;
+
+        if (scheduleIdParam && !isUuidLike(scheduleIdParam)) {
+            return json400('Invalid scheduleId. Must be a UUID.');
+        }
+
+        parseListQuery<StudentEvaluationRow>(req);
+
+        const items = await controller.listStudentEvaluations(studentId, {
+            scheduleId: scheduleIdParam as UUID | undefined,
+        });
+
+        if (!items) return json404Entity('Student');
+
+        if (seg0 === 'me') {
+            const item = items[0] ?? null;
+            if (!item) return json404Entity('StudentEvaluation');
+            return json200({ studentId, item });
+        }
+
+        return json200({ studentId, items, count: items.length });
+    }
+
+    return json404Api();
+}
+
 export async function dispatchStudentRequest(
     req: NextRequest,
     tail: string[],
@@ -72,7 +226,26 @@ export async function dispatchStudentRequest(
     const controller = new StudentController(services);
     const method = req.method.toUpperCase();
 
-    if (tail.length === 0) {
+    // Accept both "/api/student-evaluations/*" and "/api/students/*" style paths.
+    // Some callers include a leading "students" segment; normalize it away.
+    let t = tail;
+
+    if (t.length > 0) {
+        const lead = (t[0] ?? '').toLowerCase();
+        if (lead === 'students' || lead === 'student') {
+            t = t.slice(1);
+        }
+    }
+
+    // Self student-evaluations endpoints (no explicit :id)
+    if (t.length > 0) {
+        const lead = (t[0] ?? '').toLowerCase();
+        if (lead === 'student-evaluations' || lead === 'student-evaluation') {
+            return dispatchStudentSelfEvaluationsRequest(req, t.slice(1), controller);
+        }
+    }
+
+    if (t.length === 0) {
         if (method === 'GET') {
             const query = parseListQuery<UserRow>(req);
             const items = await controller.getAll(omitWhere(query));
@@ -92,10 +265,16 @@ export async function dispatchStudentRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
-    const id = tail[0];
-    if (!id || !isUuidLike(id)) return json404Api();
+    const idRaw = t[0];
+    if (!idRaw) return json404Api();
 
-    if (tail.length === 1) {
+    const resolvedStudentId = resolveStudentIdFromAlias(idRaw, req);
+    if (!resolvedStudentId) return json404Api();
+
+    // Keep original param in route shape, but use resolved UUID everywhere below.
+    const id = resolvedStudentId;
+
+    if (t.length === 1) {
         if (method === 'GET') {
             const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Student');
@@ -133,9 +312,9 @@ export async function dispatchStudentRequest(
      * /api/students/:id/student-evaluations/:evaluationId/submit
      * /api/students/:id/student-evaluations/:evaluationId/lock
      */
-    if (tail.length >= 2 && tail[1] === 'student-evaluations') {
+    if (t.length >= 2 && t[1] === 'student-evaluations') {
         // /:id/student-evaluations/schema
-        if (tail.length === 3 && tail[2] === 'schema') {
+        if (t.length === 3 && t[2] === 'schema') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
             const schema = await controller.getStudentFeedbackFormSchema();
@@ -149,8 +328,8 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/schedule/:scheduleId
-        if (tail.length === 4 && tail[2] === 'schedule') {
-            const scheduleId = tail[3];
+        if (t.length === 4 && t[2] === 'schedule') {
+            const scheduleId = t[3];
             if (!scheduleId || !isUuidLike(scheduleId)) {
                 return json400('scheduleId is required and must be a UUID.');
             }
@@ -200,7 +379,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations
-        if (tail.length === 2) {
+        if (t.length === 2) {
             if (method === 'GET') {
                 // Optional filter: ?scheduleId=<uuid>
                 const scheduleIdParam = req.nextUrl.searchParams.get('scheduleId') ?? undefined;
@@ -248,11 +427,11 @@ export async function dispatchStudentRequest(
         }
 
         // evaluationId-based routes (must be UUID)
-        const evalId = tail[2];
+        const evalId = t[2];
         if (!evalId || !isUuidLike(evalId)) return json404Api();
 
         // /:id/student-evaluations/:evaluationId
-        if (tail.length === 3) {
+        if (t.length === 3) {
             if (method === 'GET') {
                 const item = await controller.getStudentEvaluation(id as UUID, evalId as UUID);
                 if (!item) return json404Entity('StudentEvaluation');
@@ -288,7 +467,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/score
-        if (tail.length === 4 && tail[3] === 'score') {
+        if (t.length === 4 && t[3] === 'score') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
             const item = await controller.getStudentEvaluationScore(id as UUID, evalId as UUID);
@@ -297,7 +476,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/submit
-        if (tail.length === 4 && tail[3] === 'submit') {
+        if (t.length === 4 && t[3] === 'submit') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -325,7 +504,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/lock
-        if (tail.length === 4 && tail[3] === 'lock') {
+        if (t.length === 4 && t[3] === 'lock') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -345,7 +524,7 @@ export async function dispatchStudentRequest(
         return json404Api();
     }
 
-    if (tail.length === 2 && tail[1] === 'status') {
+    if (t.length === 2 && t[1] === 'status') {
         if (method !== 'PATCH' && method !== 'POST') {
             return json405(['PATCH', 'POST', 'OPTIONS']);
         }

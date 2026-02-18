@@ -88,6 +88,15 @@ function parsePositiveIntFromBody(value: unknown): number | null {
     return null;
 }
 
+function looksLikeMissingRelationError(message: string): boolean {
+    const m = (message ?? '').toLowerCase();
+    return (
+        (m.includes('relation') && m.includes('does not exist')) ||
+        (m.includes('table') && m.includes('does not exist')) ||
+        m.includes('undefined table')
+    );
+}
+
 async function dispatchAdminRankingsRequest(
     req: NextRequest,
     tail: string[],
@@ -255,8 +264,32 @@ async function dispatchAdminStudentFeedbackRequest(
     // /api/admin/student-feedback/forms
     if (tail.length === 1 && (tail[0] === 'forms' || tail[0] === 'form')) {
         if (method === 'GET') {
-            const items = await controller.listStudentFeedbackForms();
-            return json200({ items, count: items.length });
+            try {
+                const items = await controller.listStudentFeedbackForms();
+                return json200({ items, count: items.length });
+            } catch (error) {
+                const message = toErrorMessage(error);
+
+                // If the table isn't migrated yet (or was renamed), don't crash the admin UI.
+                // Return an empty list with a warning so the UI can still render.
+                if (looksLikeMissingRelationError(message)) {
+                    return json200({
+                        items: [],
+                        count: 0,
+                        warning:
+                            'Student feedback forms storage is not available (missing table). Run the latest database migrations to enable form CRUD.',
+                        message,
+                    });
+                }
+
+                return NextResponse.json(
+                    {
+                        error: 'Failed to load student feedback forms.',
+                        message,
+                    },
+                    { status: 500 },
+                );
+            }
         }
 
         if (method === 'POST') {
