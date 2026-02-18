@@ -73,6 +73,8 @@ function resolveAuthedUserId(req: NextRequest): UUID | null {
         req.headers.get('x-user-id'),
         req.headers.get('x-auth-user-id'),
         req.headers.get('x-thesis-user-id'),
+        req.headers.get('x-thesisgrader-user-id'),
+        req.headers.get('x-thesis-grader-user-id'),
         req.headers.get('x-user'),
         req.headers.get('x-auth-user'),
     ]
@@ -91,6 +93,7 @@ function resolveAuthedUserId(req: NextRequest): UUID | null {
         req.cookies.get('userId')?.value,
         req.cookies.get('uid')?.value,
         req.cookies.get('thesis_user_id')?.value,
+        req.cookies.get('thesisUserId')?.value,
     ]
         .map((v) => (typeof v === 'string' ? v.trim() : ''))
         .filter(Boolean);
@@ -112,6 +115,11 @@ function resolveAuthedUserId(req: NextRequest): UUID | null {
     }
 
     return null;
+}
+
+function isMeAlias(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'me' || normalized === 'current' || normalized === 'self';
 }
 
 function resolveStudentIdFromAlias(id: string, req: NextRequest): UUID | null {
@@ -138,31 +146,54 @@ async function dispatchStudentSelfEvaluationsRequest(
 ): Promise<Response> {
     const method = req.method.toUpperCase();
 
+    // Helpful default: if called at "/api/student-evaluations" (no tail),
+    // return the caller's items when authenticated; otherwise return the route map.
     if (tail.length === 0) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+        const studentId = resolveAuthedUserId(req);
+        if (!studentId) {
+            return json200({
+                service: 'student.evaluations',
+                routes: {
+                    schema: 'GET /api/student-evaluations/schema',
+                    formSchema: 'GET /api/student-evaluations/form/schema',
+                    activeForm: 'GET /api/student-evaluations/active-form',
+                    my: 'GET /api/student-evaluations/my',
+                    me: 'GET /api/student-evaluations/me',
+                    // Backward/compat:
+                    studentsMeSchema: 'GET /api/students/me/student-evaluations/schema',
+                    studentsCurrentSchema: 'GET /api/students/current/student-evaluations/schema',
+                },
+            });
+        }
+
+        parseListQuery<StudentEvaluationRow>(req);
+
+        const items = await controller.listStudentEvaluations(studentId, {});
         return json200({
-            service: 'student.evaluations',
+            studentId,
+            items,
+            count: items.length,
             routes: {
                 schema: 'GET /api/student-evaluations/schema',
                 formSchema: 'GET /api/student-evaluations/form/schema',
                 activeForm: 'GET /api/student-evaluations/active-form',
                 my: 'GET /api/student-evaluations/my',
                 me: 'GET /api/student-evaluations/me',
-                // Backward/compat:
-                studentsMeSchema: 'GET /api/students/me/student-evaluations/schema',
-                studentsCurrentSchema: 'GET /api/students/current/student-evaluations/schema',
             },
         });
     }
 
     const seg0 = (tail[0] ?? '').toLowerCase();
+    const seg1 = (tail[1] ?? '').toLowerCase();
 
     // GET /api/student-evaluations/schema
     // GET /api/student-evaluations/form/schema
     // GET /api/student-evaluations/active-form
     if (
         (tail.length === 1 && (seg0 === 'schema' || seg0 === 'active-form')) ||
-        (tail.length === 2 && seg0 === 'form' && (tail[1] ?? '').toLowerCase() === 'schema')
+        (tail.length === 2 && seg0 === 'form' && seg1 === 'schema')
     ) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
@@ -206,10 +237,9 @@ async function dispatchStudentSelfEvaluationsRequest(
 
         if (!items) return json404Entity('Student');
 
+        // UX-friendly: do NOT 404 when there is simply no evaluation yet.
         if (seg0 === 'me') {
-            const item = items[0] ?? null;
-            if (!item) return json404Entity('StudentEvaluation');
-            return json200({ studentId, item });
+            return json200({ studentId, item: items[0] ?? null });
         }
 
         return json200({ studentId, items, count: items.length });
@@ -226,6 +256,24 @@ export async function dispatchStudentRequest(
     const controller = new StudentController(services);
     const method = req.method.toUpperCase();
 
+    // If the incoming URL is "/api/student-evaluations/*", treat it as the self-evaluation service
+    // even if the outer router already stripped the leading segment.
+    const pathname = req.nextUrl.pathname ?? '';
+    const isStudentEvaluationsPath =
+        /^\/api\/student-evaluations(?:\/|$)/i.test(pathname) ||
+        /^\/api\/student-evaluation(?:\/|$)/i.test(pathname);
+
+    if (isStudentEvaluationsPath) {
+        let t = tail;
+        if (t.length > 0) {
+            const lead = (t[0] ?? '').toLowerCase();
+            if (lead === 'student-evaluations' || lead === 'student-evaluation') {
+                t = t.slice(1);
+            }
+        }
+        return dispatchStudentSelfEvaluationsRequest(req, t, controller);
+    }
+
     // Accept both "/api/student-evaluations/*" and "/api/students/*" style paths.
     // Some callers include a leading "students" segment; normalize it away.
     let t = tail;
@@ -237,7 +285,7 @@ export async function dispatchStudentRequest(
         }
     }
 
-    // Self student-evaluations endpoints (no explicit :id)
+    // If some router variant still passes "student-evaluations" inside this handler, normalize and dispatch.
     if (t.length > 0) {
         const lead = (t[0] ?? '').toLowerCase();
         if (lead === 'student-evaluations' || lead === 'student-evaluation') {
@@ -269,7 +317,15 @@ export async function dispatchStudentRequest(
     if (!idRaw) return json404Api();
 
     const resolvedStudentId = resolveStudentIdFromAlias(idRaw, req);
-    if (!resolvedStudentId) return json404Api();
+    if (!resolvedStudentId) {
+        // If they used "me/current/self" but we couldn't resolve auth, return a helpful 400 (not a misleading 404).
+        if (isMeAlias(idRaw)) {
+            return json400(
+                'Unable to resolve current student id. Ensure auth middleware forwards a user id (e.g., x-user-id) or a session cookie is present.',
+            );
+        }
+        return json404Api();
+    }
 
     // Keep original param in route shape, but use resolved UUID everywhere below.
     const id = resolvedStudentId;
@@ -312,9 +368,13 @@ export async function dispatchStudentRequest(
      * /api/students/:id/student-evaluations/:evaluationId/submit
      * /api/students/:id/student-evaluations/:evaluationId/lock
      */
-    if (t.length >= 2 && t[1] === 'student-evaluations') {
+    const seg1 = (t[1] ?? '').toLowerCase();
+
+    if (t.length >= 2 && (seg1 === 'student-evaluations' || seg1 === 'student-evaluation')) {
+        const seg2 = (t[2] ?? '').toLowerCase();
+
         // /:id/student-evaluations/schema
-        if (t.length === 3 && t[2] === 'schema') {
+        if (t.length === 3 && seg2 === 'schema') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
             const schema = await controller.getStudentFeedbackFormSchema();
@@ -328,7 +388,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/schedule/:scheduleId
-        if (t.length === 4 && t[2] === 'schedule') {
+        if (t.length === 4 && seg2 === 'schedule') {
             const scheduleId = t[3];
             if (!scheduleId || !isUuidLike(scheduleId)) {
                 return json400('scheduleId is required and must be a UUID.');
@@ -387,9 +447,6 @@ export async function dispatchStudentRequest(
                     return json400('Invalid scheduleId. Must be a UUID.');
                 }
 
-                // Accept list query params for consistency (limit/offset/orderBy) if your service impl supports it later.
-                // For now, controller handles filtering and returns all rows.
-                // (Parse to avoid unused query patterns in callers; safe no-op.)
                 parseListQuery<StudentEvaluationRow>(req);
 
                 const items = await controller.listStudentEvaluations(id as UUID, {
@@ -467,7 +524,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/score
-        if (t.length === 4 && t[3] === 'score') {
+        if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'score') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
             const item = await controller.getStudentEvaluationScore(id as UUID, evalId as UUID);
@@ -476,7 +533,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/submit
-        if (t.length === 4 && t[3] === 'submit') {
+        if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'submit') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -504,7 +561,7 @@ export async function dispatchStudentRequest(
         }
 
         // /:id/student-evaluations/:evaluationId/lock
-        if (t.length === 4 && t[3] === 'lock') {
+        if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'lock') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -524,7 +581,7 @@ export async function dispatchStudentRequest(
         return json404Api();
     }
 
-    if (t.length === 2 && t[1] === 'status') {
+    if (t.length === 2 && (t[1] ?? '').toLowerCase() === 'status') {
         if (method !== 'PATCH' && method !== 'POST') {
             return json405(['PATCH', 'POST', 'OPTIONS']);
         }

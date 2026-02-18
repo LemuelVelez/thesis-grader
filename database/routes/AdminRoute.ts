@@ -124,7 +124,7 @@ async function dispatchAdminRankingsRequest(
         return json200({ target: 'group', items });
     }
 
-    const segment = tail[1]?.toLowerCase();
+    const segment = (tail[1] ?? '').toLowerCase();
 
     // /api/admin/rankings/groups
     // /api/admin/rankings/groups/:groupId
@@ -237,6 +237,10 @@ async function dispatchAdminStudentFeedbackRequest(
     const controller = new AdminController(services);
     const method = req.method.toUpperCase();
 
+    const seg0 = (tail[0] ?? '').toLowerCase();
+    const seg1 = (tail[1] ?? '').toLowerCase();
+    const seg2 = (tail[2] ?? '').toLowerCase();
+
     if (tail.length === 0) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         return json200({
@@ -253,7 +257,7 @@ async function dispatchAdminStudentFeedbackRequest(
     }
 
     // ACTIVE schema only (students consume this too via StudentRoute)
-    if (tail.length === 1 && tail[0] === 'schema') {
+    if (tail.length === 1 && seg0 === 'schema') {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
         const item = await controller.getStudentFeedbackFormSchema();
         const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
@@ -262,7 +266,7 @@ async function dispatchAdminStudentFeedbackRequest(
     }
 
     // /api/admin/student-feedback/forms
-    if (tail.length === 1 && (tail[0] === 'forms' || tail[0] === 'form')) {
+    if (tail.length === 1 && (seg0 === 'forms' || seg0 === 'form')) {
         if (method === 'GET') {
             try {
                 const items = await controller.listStudentFeedbackForms();
@@ -303,10 +307,10 @@ async function dispatchAdminStudentFeedbackRequest(
                 return json400('schema is required and must be a JSON object.');
             }
 
-            const key = normalizeString(body.key ?? schema.key) ?? 'student-feedback';
-            const version = parsePositiveIntFromBody(body.version ?? schema.version) ?? 1;
-            const title = normalizeString(body.title ?? schema.title) ?? 'Student Feedback Form';
-            const description = normalizeNullableString(body.description ?? schema.description) ?? null;
+            const key = normalizeString(body.key ?? (schema as any).key) ?? 'student-feedback';
+            const version = parsePositiveIntFromBody(body.version ?? (schema as any).version) ?? 1;
+            const title = normalizeString(body.title ?? (schema as any).title) ?? 'Student Feedback Form';
+            const description = normalizeNullableString(body.description ?? (schema as any).description) ?? null;
 
             // keep schema metadata consistent
             (schema as any).key = key;
@@ -346,14 +350,14 @@ async function dispatchAdminStudentFeedbackRequest(
 
     // /api/admin/student-feedback/forms/:formId
     // /api/admin/student-feedback/forms/:formId/activate
-    if (tail[0] === 'forms' && tail.length >= 2) {
+    if (seg0 === 'forms' && tail.length >= 2) {
         const formId = tail[1];
         if (!formId || !isUuidLike(formId)) {
             return json400('formId is required and must be a valid UUID.');
         }
 
         // /forms/:formId/activate
-        if (tail.length === 3 && tail[2] === 'activate') {
+        if (tail.length === 3 && seg2 === 'activate') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -415,7 +419,7 @@ async function dispatchAdminStudentFeedbackRequest(
         return json404Api();
     }
 
-    if (tail[0] === 'schedule' && tail.length >= 2) {
+    if (seg0 === 'schedule' && tail.length >= 2) {
         const scheduleId = tail[1];
         if (!scheduleId || !isUuidLike(scheduleId)) {
             return json400('scheduleId is required and must be a valid UUID.');
@@ -431,7 +435,7 @@ async function dispatchAdminStudentFeedbackRequest(
         }
 
         // POST /api/admin/student-feedback/schedule/:scheduleId/assign
-        if (tail.length === 3 && tail[2] === 'assign') {
+        if (tail.length === 3 && seg2 === 'assign') {
             if (method !== 'POST' && method !== 'PATCH') {
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
@@ -499,7 +503,16 @@ export async function dispatchAdminRequest(
     const controller = new AdminController(services);
     const method = req.method.toUpperCase();
 
-    if (tail.length === 0) {
+    // Normalize if some router variant accidentally includes "admin" as the first segment.
+    let t = tail;
+    if (t.length > 0) {
+        const lead = (t[0] ?? '').toLowerCase();
+        if (lead === 'admin' || lead === 'admins') {
+            t = t.slice(1);
+        }
+    }
+
+    if (t.length === 0) {
         if (method === 'GET') {
             const query = parseListQuery<UserRow>(req);
             const items = await controller.getAll(omitWhere(query));
@@ -517,66 +530,71 @@ export async function dispatchAdminRequest(
         return json405(['GET', 'POST', 'OPTIONS']);
     }
 
+    const seg0 = (t[0] ?? '').toLowerCase();
+
     if (
-        tail[0] === 'student-feedback' ||
-        tail[0] === 'student-feedback-forms' ||
-        tail[0] === 'feedback' ||
-        tail[0] === 'feedback-forms'
+        seg0 === 'student-feedback' ||
+        seg0 === 'student-feedback-forms' ||
+        seg0 === 'student_feedback' ||
+        seg0 === 'student_feedback_forms' ||
+        seg0 === 'feedback' ||
+        seg0 === 'feedback-forms' ||
+        seg0 === 'feedback_forms'
     ) {
-        return dispatchAdminStudentFeedbackRequest(req, tail.slice(1), services);
+        return dispatchAdminStudentFeedbackRequest(req, t.slice(1), services);
     }
 
     if (
-        (tail[0] === 'student' || tail[0] === 'students') &&
-        tail.length === 3 &&
-        tail[2] === 'profile'
+        (seg0 === 'student' || seg0 === 'students') &&
+        t.length === 3 &&
+        (t[2] ?? '').toLowerCase() === 'profile'
     ) {
-        const userId = tail[1];
+        const userId = t[1];
         if (!userId || !isUuidLike(userId)) return json400('student user id must be a valid UUID.');
         return dispatchAdminStudentProfileRequest(req, services, userId as UUID);
     }
 
-    if (tail[0] === 'defense-schedules' || tail[0] === 'defense-schedule') {
-        return dispatchDefenseSchedulesRequest(req, tail.slice(1), services);
+    if (seg0 === 'defense-schedules' || seg0 === 'defense-schedule') {
+        return dispatchDefenseSchedulesRequest(req, t.slice(1), services);
     }
 
     if (
-        tail[0] === 'defense-schedule-panelists' ||
-        tail[0] === 'defense-schedule-panelist' ||
-        tail[0] === 'schedule-panelists' ||
-        tail[0] === 'schedule-panelist'
+        seg0 === 'defense-schedule-panelists' ||
+        seg0 === 'defense-schedule-panelist' ||
+        seg0 === 'schedule-panelists' ||
+        seg0 === 'schedule-panelist'
     ) {
-        return dispatchSchedulePanelistsRequest(req, tail.slice(1), services);
+        return dispatchSchedulePanelistsRequest(req, t.slice(1), services);
     }
 
-    if (tail[0] === 'rubric-templates' || tail[0] === 'rubric-template') {
-        return dispatchRubricTemplatesRequest(req, tail.slice(1), services);
+    if (seg0 === 'rubric-templates' || seg0 === 'rubric-template') {
+        return dispatchRubricTemplatesRequest(req, t.slice(1), services);
     }
 
-    if (tail[0] === 'audit-logs' || tail[0] === 'audit-log') {
-        return dispatchAuditLogsRequest(req, tail.slice(1), services);
+    if (seg0 === 'audit-logs' || seg0 === 'audit-log') {
+        return dispatchAuditLogsRequest(req, t.slice(1), services);
     }
 
-    if (tail[0] === 'thesis' && tail[1] === 'groups') {
-        return dispatchThesisGroupsRequest(req, tail.slice(2), services, {
+    if (seg0 === 'thesis' && (t[1] ?? '').toLowerCase() === 'groups') {
+        return dispatchThesisGroupsRequest(req, t.slice(2), services, {
             autoCreateMissingStudentProfile: true,
         });
     }
 
-    if (tail[0] === 'thesis-groups' || tail[0] === 'thesis-group' || tail[0] === 'groups') {
-        return dispatchThesisGroupsRequest(req, tail.slice(1), services, {
+    if (seg0 === 'thesis-groups' || seg0 === 'thesis-group' || seg0 === 'groups') {
+        return dispatchThesisGroupsRequest(req, t.slice(1), services, {
             autoCreateMissingStudentProfile: true,
         });
     }
 
-    if (tail[0] === 'rankings' || tail[0] === 'ranking') {
-        return dispatchAdminRankingsRequest(req, tail, controller);
+    if (seg0 === 'rankings' || seg0 === 'ranking') {
+        return dispatchAdminRankingsRequest(req, t, controller);
     }
 
-    const id = tail[0];
+    const id = t[0];
     if (!id || !isUuidLike(id)) return json404Api();
 
-    if (tail.length === 1) {
+    if (t.length === 1) {
         if (method === 'GET') {
             const item = await controller.getById(id as UUID);
             if (!item) return json404Entity('Admin');
@@ -601,7 +619,7 @@ export async function dispatchAdminRequest(
         return json405(['GET', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']);
     }
 
-    if (tail.length === 2 && tail[1] === 'status') {
+    if (t.length === 2 && (t[1] ?? '').toLowerCase() === 'status') {
         if (method !== 'PATCH' && method !== 'POST') return json405(['PATCH', 'POST', 'OPTIONS']);
 
         const body = await readJsonRecord(req);
