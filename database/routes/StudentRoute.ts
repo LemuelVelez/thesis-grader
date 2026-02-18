@@ -171,6 +171,8 @@ async function dispatchStudentSelfEvaluationsRequest(
         parseListQuery<StudentEvaluationRow>(req);
 
         const items = await controller.listStudentEvaluations(studentId, {});
+        if (!items) return json404Entity('Student');
+
         return json200({
             studentId,
             items,
