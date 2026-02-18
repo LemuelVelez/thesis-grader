@@ -1,7 +1,7 @@
 /**
  * Central database model types for Thesis Grader
  * Based on migrations:
- * 001..012 in database/migration
+ * 001..013 in database/migration
  */
 
 export type UUID = string;
@@ -204,10 +204,39 @@ export interface StudentEvaluationRow {
     id: UUID;
     schedule_id: UUID;
     student_id: UUID;
+
+    /**
+     * Tracks which feedback form definition/version was used for this evaluation.
+     * Added in migration 013 to ensure scoring remains consistent over time.
+     */
+    form_id: UUID | null;
+
     status: StudentEvalStatus;
     answers: JsonObject;
     submitted_at: ISODateTime | null;
     locked_at: ISODateTime | null;
+    created_at: ISODateTime;
+    updated_at: ISODateTime;
+}
+
+/**
+ * Persisted score summary for a student evaluation (feedback form).
+ * Added in migration 013.
+ */
+export interface StudentEvaluationScoreRow {
+    id: UUID;
+    student_evaluation_id: UUID;
+    schedule_id: UUID;
+    student_id: UUID;
+    form_id: UUID | null;
+
+    total_score: DbNumeric;
+    max_score: DbNumeric;
+    percentage: DbNumeric;
+
+    breakdown: JsonObject;
+
+    computed_at: ISODateTime;
     created_at: ISODateTime;
     updated_at: ISODateTime;
 }
@@ -346,7 +375,27 @@ export type StaffProfileInsert = Optional<StaffProfileRow, 'department' | 'creat
 
 export type StudentEvaluationInsert = Optional<
     StudentEvaluationRow,
-    'id' | 'status' | 'answers' | 'submitted_at' | 'locked_at' | 'created_at' | 'updated_at'
+    'id'
+    | 'form_id'
+    | 'status'
+    | 'answers'
+    | 'submitted_at'
+    | 'locked_at'
+    | 'created_at'
+    | 'updated_at'
+>;
+
+export type StudentEvaluationScoreInsert = Optional<
+    StudentEvaluationScoreRow,
+    'id'
+    | 'form_id'
+    | 'total_score'
+    | 'max_score'
+    | 'percentage'
+    | 'breakdown'
+    | 'computed_at'
+    | 'created_at'
+    | 'updated_at'
 >;
 
 export type EvaluationExtraInsert = Optional<
@@ -390,6 +439,12 @@ export type StaffProfilePatch = Partial<Omit<StaffProfileRow, 'user_id' | 'creat
 export type StudentEvaluationPatch = Partial<
     Omit<StudentEvaluationRow, 'id' | 'schedule_id' | 'student_id' | 'created_at'>
 >;
+export type StudentEvaluationScorePatch = Partial<
+    Omit<
+        StudentEvaluationScoreRow,
+        'id' | 'student_evaluation_id' | 'schedule_id' | 'student_id' | 'created_at'
+    >
+>;
 export type EvaluationExtraPatch = Partial<Omit<EvaluationExtraRow, 'evaluation_id' | 'created_at'>>;
 export type PanelistProfilePatch = Partial<Omit<PanelistProfileRow, 'user_id' | 'created_at'>>;
 export type RubricScaleLevelPatch = Partial<Omit<RubricScaleLevelRow, 'template_id' | 'score'>>;
@@ -418,6 +473,7 @@ export interface DatabaseModels {
     students: StudentRow;
     staff_profiles: StaffProfileRow;
     student_evaluations: StudentEvaluationRow;
+    student_evaluation_scores: StudentEvaluationScoreRow;
     evaluation_extras: EvaluationExtraRow;
     panelist_profiles: PanelistProfileRow;
     rubric_scale_levels: RubricScaleLevelRow;

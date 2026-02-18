@@ -3,6 +3,9 @@ import type {
     StudentEvalStatus,
     StudentEvaluationPatch,
     StudentEvaluationRow,
+    StudentEvaluationScoreInsert,
+    StudentEvaluationScoreRow,
+    StudentFeedbackFormRow,
     StudentPatch,
     StudentRow,
     UserInsert,
@@ -103,6 +106,73 @@ export class StudentController {
         const user = await tx.users.findById(userId);
         if (!user || user.role !== 'student') return null;
         return user;
+    }
+
+    private async resolveFormAndSchemaForEvaluation(
+        tx: Services,
+        evaluation: StudentEvaluationRow,
+    ): Promise<{ form: StudentFeedbackFormRow | null; schema: StudentFeedbackFormSchema }> {
+        let form: StudentFeedbackFormRow | null = null;
+
+        if (evaluation.form_id) {
+            form = await tx.student_feedback_forms.findById(evaluation.form_id);
+        }
+
+        if (!form) {
+            form = await this.studentFeedback.getActiveForm(tx);
+        }
+
+        const schemaCandidate = (form?.schema ?? {}) as JsonObject;
+        const schema =
+            Object.keys(schemaCandidate).length > 0
+                ? (schemaCandidate as StudentFeedbackFormSchema)
+                : await this.studentFeedback.getActiveSchema(tx);
+
+        return { form, schema };
+    }
+
+    private async upsertStudentEvaluationScore(
+        tx: Services,
+        evaluation: StudentEvaluationRow,
+        schema: StudentFeedbackFormSchema,
+        formId: UUID | null,
+        computedAt: string,
+        answersOverride?: JsonObject,
+    ): Promise<StudentEvaluationScoreRow> {
+        const summary = this.studentFeedback.computeScoreSummary(
+            (answersOverride ?? (evaluation.answers ?? {})) as JsonObject,
+            schema,
+        );
+
+        const createPayload: StudentEvaluationScoreInsert = {
+            student_evaluation_id: evaluation.id,
+            schedule_id: evaluation.schedule_id,
+            student_id: evaluation.student_id,
+            form_id: formId ?? evaluation.form_id ?? null,
+            total_score: summary.total_score,
+            max_score: summary.max_score,
+            percentage: summary.percentage,
+            breakdown: summary.breakdown,
+            computed_at: computedAt,
+            created_at: computedAt,
+            updated_at: computedAt,
+        };
+
+        const patchPayload = {
+            form_id: createPayload.form_id,
+            total_score: createPayload.total_score,
+            max_score: createPayload.max_score,
+            percentage: createPayload.percentage,
+            breakdown: createPayload.breakdown,
+            computed_at: createPayload.computed_at,
+            updated_at: computedAt,
+        } as any;
+
+        return tx.student_evaluation_scores.upsert(
+            { student_evaluation_id: evaluation.id },
+            createPayload,
+            patchPayload,
+        );
     }
 
     /* -------------------------- STUDENT FEEDBACK FORM -------------------------- */
@@ -234,6 +304,42 @@ export class StudentController {
     }
 
     /**
+     * Get the persisted score summary for a student evaluation (ensures ownership).
+     * If missing, it will be computed and upserted based on the evaluation's form schema.
+     */
+    async getStudentEvaluationScore(
+        studentId: UUID,
+        evaluationId: UUID,
+    ): Promise<StudentEvaluationScoreRow | null> {
+        return this.services.transaction<StudentEvaluationScoreRow | null>(async (tx) => {
+            const studentUser = await this.requireStudentUser(tx, studentId);
+            if (!studentUser) return null;
+
+            const evaluation = await tx.student_evaluations.findById(evaluationId);
+            if (!evaluation || evaluation.student_id !== studentId) return null;
+
+            const existingScore = await tx.student_evaluation_scores.findOne({
+                student_evaluation_id: evaluationId,
+            });
+
+            if (existingScore) return existingScore;
+
+            const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, evaluation);
+            const computedAt = nowIso();
+
+            const created = await this.upsertStudentEvaluationScore(
+                tx,
+                evaluation,
+                schema,
+                form?.id ?? evaluation.form_id ?? null,
+                computedAt,
+            );
+
+            return created ?? (await tx.student_evaluation_scores.findOne({ student_evaluation_id: evaluationId }));
+        });
+    }
+
+    /**
      * Create (if missing) the student's survey/feedback/reflection for a defense schedule.
      * If already exists, returns the existing row (idempotent).
      */
@@ -252,19 +358,38 @@ export class StudentController {
 
             if (existing) return existing;
 
-            // Use ACTIVE form seed (so only the active form is used for new evaluations)
-            const defaultAnswers = await this.studentFeedback.getActiveSeedAnswersTemplate(tx);
+            const activeForm = await this.studentFeedback.getActiveForm(tx);
+            const schema = (activeForm?.schema ?? {}) as JsonObject;
+            const defaultAnswers = input.answers ?? this.studentFeedback.getSeedAnswersTemplateForSchema(schema);
+
+            const createdAt = nowIso();
 
             const created = await tx.student_evaluations.create({
                 schedule_id: input.schedule_id,
                 student_id: studentId,
+                form_id: activeForm?.id ?? null,
                 status: 'pending',
-                answers: input.answers ?? defaultAnswers,
+                answers: defaultAnswers,
                 submitted_at: null,
                 locked_at: null,
-                created_at: nowIso(),
-                updated_at: nowIso(),
+                created_at: createdAt,
+                updated_at: createdAt,
             });
+
+            // Seed a score record immediately (so analytics/admin views have it from the start).
+            // This stays updated whenever answers are patched.
+            try {
+                await this.upsertStudentEvaluationScore(
+                    tx,
+                    created,
+                    (schema as StudentFeedbackFormSchema),
+                    activeForm?.id ?? null,
+                    createdAt,
+                    defaultAnswers,
+                );
+            } catch {
+                // Score is best-effort; evaluation creation should still succeed.
+            }
 
             return created;
         });
@@ -305,13 +430,29 @@ export class StudentController {
                 ...(input.answers ?? {}),
             };
 
+            const patchedAt = nowIso();
+
             const patch: StudentEvaluationPatch = {
                 answers: mergedAnswers,
-                updated_at: nowIso(),
+                updated_at: patchedAt,
             };
 
             const updated = await tx.student_evaluations.updateOne({ id: evaluationId }, patch);
-            return updated ?? (await tx.student_evaluations.findById(evaluationId));
+            const finalRow = updated ?? (await tx.student_evaluations.findById(evaluationId));
+            if (!finalRow) return null;
+
+            // Keep persisted score summary in sync while pending/editable.
+            const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, finalRow);
+            await this.upsertStudentEvaluationScore(
+                tx,
+                finalRow,
+                schema,
+                form?.id ?? finalRow.form_id ?? null,
+                patchedAt,
+                mergedAnswers,
+            );
+
+            return finalRow;
         });
     }
 
@@ -334,12 +475,12 @@ export class StudentController {
                 );
             }
 
-            // Validate required questions before submitting (backend safety) using ACTIVE form schema
-            const activeSchema = await this.studentFeedback.getActiveSchema(tx);
+            // Validate required questions before submitting (backend safety) using the evaluation's form schema.
+            const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, existing);
 
             const validation = this.studentFeedback.validateRequiredAnswers(
                 (existing.answers ?? {}) as JsonObject,
-                activeSchema,
+                schema,
             );
 
             if (!validation.ok) {
@@ -353,14 +494,26 @@ export class StudentController {
 
             // Prefer service convenience if implemented
             const submitted = await tx.student_evaluations.submit(evaluationId, submittedAt);
-            if (submitted) return submitted;
+            const finalRow =
+                submitted ??
+                (await tx.student_evaluations.updateOne(
+                    { id: evaluationId },
+                    { status: 'submitted', submitted_at: submittedAt, updated_at: submittedAt },
+                )) ??
+                (await tx.student_evaluations.findById(evaluationId));
 
-            // Fallback
-            const patched = await tx.student_evaluations.updateOne(
-                { id: evaluationId },
-                { status: 'submitted', submitted_at: submittedAt, updated_at: submittedAt },
+            if (!finalRow) return null;
+
+            // Persist (and refresh) score on submit.
+            await this.upsertStudentEvaluationScore(
+                tx,
+                finalRow,
+                schema,
+                form?.id ?? finalRow.form_id ?? null,
+                submittedAt,
             );
-            return patched ?? (await tx.student_evaluations.findById(evaluationId));
+
+            return finalRow;
         });
     }
 

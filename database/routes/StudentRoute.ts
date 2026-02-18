@@ -129,6 +129,7 @@ export async function dispatchStudentRequest(
      * /api/students/:id/student-evaluations/schema
      * /api/students/:id/student-evaluations/schedule/:scheduleId
      * /api/students/:id/student-evaluations/:evaluationId
+     * /api/students/:id/student-evaluations/:evaluationId/score
      * /api/students/:id/student-evaluations/:evaluationId/submit
      * /api/students/:id/student-evaluations/:evaluationId/lock
      */
@@ -284,6 +285,15 @@ export async function dispatchStudentRequest(
             }
 
             return json405(['GET', 'PATCH', 'PUT', 'OPTIONS']);
+        }
+
+        // /:id/student-evaluations/:evaluationId/score
+        if (tail.length === 4 && tail[3] === 'score') {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+            const item = await controller.getStudentEvaluationScore(id as UUID, evalId as UUID);
+            if (!item) return json404Entity('StudentEvaluationScore');
+            return json200({ item });
         }
 
         // /:id/student-evaluations/:evaluationId/submit

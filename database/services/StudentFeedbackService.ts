@@ -1,4 +1,5 @@
 import type {
+    DbNumeric,
     DefenseScheduleRow,
     GroupMemberRow,
     ISODateTime,
@@ -87,12 +88,18 @@ export interface AssignStudentFeedbackFormsResult {
 
 /**
  * Admin detailed row: student evaluation entry + student identity/profile.
+ * Includes persisted score summary when available.
  */
 export interface AdminStudentFeedbackRow extends StudentEvaluationRow {
     student_name: string | null;
     student_email: string | null;
     program: string | null;
     section: string | null;
+
+    score_total: DbNumeric | null;
+    score_max: DbNumeric | null;
+    score_percentage: DbNumeric | null;
+    score_computed_at: ISODateTime | null;
 }
 
 function nowIso(): ISODateTime {
@@ -169,6 +176,89 @@ function requiredKeysFromSchema(schema: StudentFeedbackFormSchema): string[] {
     const keys = new Set<string>();
     collectRequiredKeys(schema as unknown as JsonValue, keys);
     return Array.from(keys);
+}
+
+type RatingQuestion = {
+    id: string;
+    label: string | null;
+    min: number;
+    max: number;
+};
+
+function toFiniteNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const t = value.trim();
+        if (!t) return null;
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+    }
+    return null;
+}
+
+function clamp(n: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, n));
+}
+
+function collectRatingQuestions(node: JsonValue, out: RatingQuestion[]): void {
+    if (node === null) return;
+
+    if (Array.isArray(node)) {
+        for (const item of node) collectRatingQuestions(item, out);
+        return;
+    }
+
+    if (typeof node !== 'object') return;
+
+    const obj = node as Record<string, unknown>;
+
+    const type = typeof obj.type === 'string' ? obj.type.trim().toLowerCase() : null;
+    if (type === 'rating') {
+        const id =
+            (isNonEmptyString(obj.id) && obj.id) ||
+            (isNonEmptyString(obj.key) && obj.key) ||
+            (isNonEmptyString(obj.name) && obj.name) ||
+            null;
+
+        if (id) {
+            const label = isNonEmptyString(obj.label) ? obj.label : null;
+
+            const scale = (obj.scale && typeof obj.scale === 'object' && !Array.isArray(obj.scale))
+                ? (obj.scale as Record<string, unknown>)
+                : null;
+
+            const min = clamp(toFiniteNumber(scale?.min) ?? 1, -1_000_000, 1_000_000);
+            const max = clamp(toFiniteNumber(scale?.max) ?? 5, -1_000_000, 1_000_000);
+
+            const normalizedMin = Math.min(min, max);
+            const normalizedMax = Math.max(min, max);
+
+            out.push({
+                id,
+                label,
+                min: normalizedMin,
+                max: normalizedMax,
+            });
+        }
+    }
+
+    for (const v of Object.values(obj)) {
+        collectRatingQuestions(v as JsonValue, out);
+    }
+}
+
+export type StudentFeedbackScoreSummary = {
+    total_score: number;
+    max_score: number;
+    percentage: number;
+    breakdown: JsonObject;
+};
+
+function seedAnswersForSchema(schema: StudentFeedbackFormSchema): JsonObject {
+    const requiredKeys = requiredKeysFromSchema(schema);
+    const out: JsonObject = {};
+    for (const k of requiredKeys) out[k] = null;
+    return out;
 }
 
 export class StudentFeedbackService {
@@ -268,23 +358,37 @@ export class StudentFeedbackService {
         return latest[0] ?? null;
     }
 
+    /**
+     * Public accessor for the currently active form row (or latest as fallback).
+     */
+    async getActiveForm(override?: Services): Promise<StudentFeedbackFormRow | null> {
+        return this.getActiveFormRow(override);
+    }
+
     async getActiveSchema(override?: Services): Promise<StudentFeedbackFormSchema> {
         const form = await this.getActiveFormRow(override);
         const schema = (form?.schema ?? {}) as JsonObject;
         return schema as StudentFeedbackFormSchema;
     }
 
+    async getSchemaByFormId(formId: UUID, override?: Services): Promise<StudentFeedbackFormSchema | null> {
+        const s = this.svc(override);
+        const form = await s.student_feedback_forms.findById(formId);
+        if (!form) return null;
+        const schema = (form.schema ?? {}) as JsonObject;
+        return schema as StudentFeedbackFormSchema;
+    }
+
     async getActiveSeedAnswersTemplate(override?: Services): Promise<JsonObject> {
         const schema = await this.getActiveSchema(override);
-        const requiredKeys = requiredKeysFromSchema(schema);
+        return seedAnswersForSchema(schema);
+    }
 
-        // Seed only required keys by default (safe + minimal).
-        // Frontend can extend/structure as needed.
-        const out: JsonObject = {};
-        for (const k of requiredKeys) {
-            out[k] = null;
-        }
-        return out;
+    /**
+     * Seed answers template for any schema (used when assigning specific form versions).
+     */
+    getSeedAnswersTemplateForSchema(schema: StudentFeedbackFormSchema): JsonObject {
+        return seedAnswersForSchema(schema);
     }
 
     /* ------------------------------ VALIDATION ------------------------------- */
@@ -302,6 +406,73 @@ export class StudentFeedbackService {
         }
 
         return { ok: missing.length === 0, missing };
+    }
+
+    /* ------------------------------- SCORING -------------------------------- */
+
+    /**
+     * Computes a persisted-friendly score summary:
+     * - totals across all "rating" questions found in schema
+     * - missing/non-numeric answers contribute 0 (still counted in max_score)
+     */
+    computeScoreSummary(
+        answers: JsonObject,
+        schema: StudentFeedbackFormSchema,
+    ): StudentFeedbackScoreSummary {
+        const questions: RatingQuestion[] = [];
+        collectRatingQuestions(schema as unknown as JsonValue, questions);
+
+        // De-dup by question id (schema can be nested; defensive).
+        const seen = new Set<string>();
+        const uniq = questions.filter((q) => {
+            const key = q.id.trim().toLowerCase();
+            if (!key) return false;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+
+        let total = 0;
+        let maxTotal = 0;
+
+        const breakdownQuestions: Record<string, JsonValue> = {};
+
+        for (const q of uniq) {
+            maxTotal += q.max;
+
+            const raw = (answers as Record<string, unknown>)[q.id];
+            const n = toFiniteNumber(raw);
+            const scored = n === null ? 0 : clamp(n, q.min, q.max);
+
+            total += scored;
+
+            breakdownQuestions[q.id] = {
+                label: q.label,
+                value: n,
+                min: q.min,
+                max: q.max,
+                score: scored,
+            } as unknown as JsonValue;
+        }
+
+        const percentage = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+
+        const breakdown: JsonObject = {
+            totals: {
+                total_score: total,
+                max_score: maxTotal,
+                percentage,
+                rating_questions: uniq.length,
+            } as unknown as JsonValue,
+            questions: breakdownQuestions as unknown as JsonValue,
+        };
+
+        return {
+            total_score: total,
+            max_score: maxTotal,
+            percentage,
+            breakdown,
+        };
     }
 
     /* ------------------------------ ASSIGNMENT ------------------------------- */
@@ -344,12 +515,7 @@ export class StudentFeedbackService {
 
             const seed =
                 seedOverride ??
-                (() => {
-                    const requiredKeys = requiredKeysFromSchema(formSchema);
-                    const obj: JsonObject = {};
-                    for (const k of requiredKeys) obj[k] = null;
-                    return obj;
-                })();
+                this.getSeedAnswersTemplateForSchema(formSchema as StudentFeedbackFormSchema);
 
             const initialStatus: StudentEvalStatus = input.initialStatus ?? 'pending';
 
@@ -369,6 +535,7 @@ export class StudentFeedbackService {
                     await tx.student_evaluations.create({
                         schedule_id: scheduleId,
                         student_id: studentId,
+                        form_id: form?.id ?? null,
                         status: initialStatus,
                         answers: seed,
                         submitted_at: null,
@@ -385,6 +552,7 @@ export class StudentFeedbackService {
                 if (force) {
                     const patch: StudentEvaluationPatch = {
                         answers: seed,
+                        form_id: form?.id ?? already.form_id ?? null,
                         updated_at: now,
                     };
 
@@ -427,9 +595,10 @@ export class StudentFeedbackService {
 
         const rows = await Promise.all(
             evaluations.map(async (ev): Promise<AdminStudentFeedbackRow> => {
-                const [user, profile] = await Promise.all([
+                const [user, profile, scoreRow] = await Promise.all([
                     this.services.users.findById(ev.student_id),
                     this.services.students.findByUserId(ev.student_id),
+                    this.services.student_evaluation_scores.findOne({ student_evaluation_id: ev.id }),
                 ]);
 
                 const u = user as UserRow | null;
@@ -441,6 +610,11 @@ export class StudentFeedbackService {
                     student_email: u?.email ?? null,
                     program: p?.program ?? null,
                     section: p?.section ?? null,
+
+                    score_total: scoreRow?.total_score ?? null,
+                    score_max: scoreRow?.max_score ?? null,
+                    score_percentage: scoreRow?.percentage ?? null,
+                    score_computed_at: scoreRow?.computed_at ?? null,
                 };
             }),
         );

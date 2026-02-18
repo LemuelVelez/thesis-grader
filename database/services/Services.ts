@@ -62,6 +62,9 @@ import type {
     StudentEvaluationInsert,
     StudentEvaluationPatch,
     StudentEvaluationRow,
+    StudentEvaluationScoreInsert,
+    StudentEvaluationScorePatch,
+    StudentEvaluationScoreRow,
     StudentFeedbackFormInsert,
     StudentFeedbackFormPatch,
     StudentFeedbackFormRow,
@@ -187,6 +190,7 @@ export interface TableInsertMap {
     students: StudentInsert;
     staff_profiles: StaffProfileInsert;
     student_evaluations: StudentEvaluationInsert;
+    student_evaluation_scores: StudentEvaluationScoreInsert;
     evaluation_extras: EvaluationExtraInsert;
     panelist_profiles: PanelistProfileInsert;
     rubric_scale_levels: RubricScaleLevelInsert;
@@ -211,6 +215,7 @@ export interface TablePatchMap {
     students: StudentPatch;
     staff_profiles: StaffProfilePatch;
     student_evaluations: StudentEvaluationPatch;
+    student_evaluation_scores: StudentEvaluationScorePatch;
     evaluation_extras: EvaluationExtraPatch;
     panelist_profiles: PanelistProfilePatch;
     rubric_scale_levels: RubricScaleLevelPatch;
@@ -342,6 +347,17 @@ export interface StudentEvaluationsService
     ) => Promise<StudentEvaluationRow | null>;
 }
 
+/**
+ * Persisted score summaries for student evaluations (feedback form).
+ */
+export interface StudentEvaluationScoresService
+    extends TableService<StudentEvaluationScoreRow, StudentEvaluationScoreInsert, StudentEvaluationScorePatch> {
+    findById(id: UUID): Promise<StudentEvaluationScoreRow | null>;
+    findByStudentEvaluationId(studentEvaluationId: UUID): Promise<StudentEvaluationScoreRow | null>;
+    listBySchedule(scheduleId: UUID): Promise<StudentEvaluationScoreRow[]>;
+    listByStudent(studentId: UUID): Promise<StudentEvaluationScoreRow[]>;
+}
+
 export interface EvaluationExtrasService
     extends TableService<EvaluationExtraRow, EvaluationExtraInsert, EvaluationExtraPatch> {
     findByEvaluationId(evaluationId: UUID): Promise<EvaluationExtraRow | null>;
@@ -432,6 +448,7 @@ export interface TableServiceMap {
     students: StudentsService;
     staff_profiles: StaffProfilesService;
     student_evaluations: StudentEvaluationsService;
+    student_evaluation_scores: StudentEvaluationScoresService;
     evaluation_extras: EvaluationExtrasService;
     panelist_profiles: PanelistProfilesService;
     rubric_scale_levels: RubricScaleLevelsService;
