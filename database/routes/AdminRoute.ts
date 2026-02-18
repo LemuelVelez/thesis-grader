@@ -97,6 +97,13 @@ function looksLikeMissingRelationError(message: string): boolean {
     );
 }
 
+function looksLikeUniqueActiveViolation(message: string): boolean {
+    const m = (message ?? '').toLowerCase();
+    if (!m.includes('unique') && !m.includes('duplicate key')) return false;
+    // Common substrings for partial unique index / constraint naming
+    return m.includes('active') && (m.includes('student') || m.includes('feedback') || m.includes('forms') || m.includes('form'));
+}
+
 async function dispatchAdminRankingsRequest(
     req: NextRequest,
     tail: string[],
@@ -307,9 +314,9 @@ async function dispatchAdminStudentFeedbackRequest(
                 return json400('schema is required and must be a JSON object.');
             }
 
-            const key = normalizeString(body.key ?? (schema as any).key) ?? 'student-feedback';
+            const key = (normalizeString(body.key ?? (schema as any).key) ?? 'student-feedback').slice(0, 120);
             const version = parsePositiveIntFromBody(body.version ?? (schema as any).version) ?? 1;
-            const title = normalizeString(body.title ?? (schema as any).title) ?? 'Student Feedback Form';
+            const title = (normalizeString(body.title ?? (schema as any).title) ?? 'Student Feedback Form').slice(0, 200);
             const description = normalizeNullableString(body.description ?? (schema as any).description) ?? null;
 
             // keep schema metadata consistent
@@ -335,10 +342,35 @@ async function dispatchAdminStudentFeedbackRequest(
 
                 return json201({ item });
             } catch (error) {
+                const message = toErrorMessage(error);
+
+                if (looksLikeMissingRelationError(message)) {
+                    return NextResponse.json(
+                        {
+                            error:
+                                'Student feedback forms storage is not available (missing table). Run the latest database migrations to enable form CRUD.',
+                            message,
+                        },
+                        { status: 503 },
+                    );
+                }
+
+                // Defensive: if DB enforces a single active form via a unique/partial-unique constraint.
+                if (looksLikeUniqueActiveViolation(message)) {
+                    return NextResponse.json(
+                        {
+                            error:
+                                'Failed to create the form because another feedback form is already active. Create it as inactive, or activate it after creation.',
+                            message,
+                        },
+                        { status: 409 },
+                    );
+                }
+
                 return NextResponse.json(
                     {
                         error: 'Failed to create student feedback form.',
-                        message: toErrorMessage(error),
+                        message,
                     },
                     { status: 500 },
                 );
@@ -362,13 +394,36 @@ async function dispatchAdminStudentFeedbackRequest(
                 return json405(['POST', 'PATCH', 'OPTIONS']);
             }
 
-            const item = await controller.activateStudentFeedbackForm(formId as UUID);
-            if (!item) return json404Entity('StudentFeedbackForm');
+            try {
+                const item = await controller.activateStudentFeedbackForm(formId as UUID);
+                if (!item) return json404Entity('StudentFeedbackForm');
 
-            return json200({
-                item,
-                message: 'Student feedback form activated successfully.',
-            });
+                return json200({
+                    item,
+                    message: 'Student feedback form activated successfully.',
+                });
+            } catch (error) {
+                const message = toErrorMessage(error);
+
+                if (looksLikeMissingRelationError(message)) {
+                    return NextResponse.json(
+                        {
+                            error:
+                                'Student feedback forms storage is not available (missing table). Run the latest database migrations to enable form CRUD.',
+                            message,
+                        },
+                        { status: 503 },
+                    );
+                }
+
+                return NextResponse.json(
+                    {
+                        error: 'Failed to activate student feedback form.',
+                        message,
+                    },
+                    { status: 500 },
+                );
+            }
         }
 
         // /forms/:formId
@@ -404,13 +459,47 @@ async function dispatchAdminStudentFeedbackRequest(
                         : (parseBoolean(typeof activeRaw === 'string' ? activeRaw : null) ?? undefined);
                 }
 
-                const item = await controller.updateStudentFeedbackForm(formId as UUID, patch);
-                if (!item) return json404Entity('StudentFeedbackForm');
+                try {
+                    const item = await controller.updateStudentFeedbackForm(formId as UUID, patch);
+                    if (!item) return json404Entity('StudentFeedbackForm');
 
-                return json200({
-                    item,
-                    message: 'Student feedback form updated successfully.',
-                });
+                    return json200({
+                        item,
+                        message: 'Student feedback form updated successfully.',
+                    });
+                } catch (error) {
+                    const message = toErrorMessage(error);
+
+                    if (looksLikeMissingRelationError(message)) {
+                        return NextResponse.json(
+                            {
+                                error:
+                                    'Student feedback forms storage is not available (missing table). Run the latest database migrations to enable form CRUD.',
+                                message,
+                            },
+                            { status: 503 },
+                        );
+                    }
+
+                    if (looksLikeUniqueActiveViolation(message)) {
+                        return NextResponse.json(
+                            {
+                                error:
+                                    'Failed to update the form because another feedback form is already active. Activate this form via the activate endpoint.',
+                                message,
+                            },
+                            { status: 409 },
+                        );
+                    }
+
+                    return NextResponse.json(
+                        {
+                            error: 'Failed to update student feedback form.',
+                            message,
+                        },
+                        { status: 500 },
+                    );
+                }
             }
 
             return json405(['GET', 'PATCH', 'PUT', 'OPTIONS']);

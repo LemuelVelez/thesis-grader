@@ -286,13 +286,36 @@ export class StudentFeedbackService {
 
     async createForm(input: StudentFeedbackFormInsert, override?: Services): Promise<StudentFeedbackFormRow> {
         const s = this.svc(override);
-        const createdAt = nowIso();
-        return s.student_feedback_forms.create({
+        const ts = nowIso();
+
+        const row: StudentFeedbackFormInsert = {
             ...input,
             active: input.active ?? false,
-            created_at: input.created_at ?? createdAt,
-            updated_at: input.updated_at ?? createdAt,
-        });
+            created_at: input.created_at ?? ts,
+            updated_at: input.updated_at ?? ts,
+        };
+
+        // If creating an ACTIVE form, keep "single active" consistent.
+        // This prevents 500s caused by unique/partial-unique constraints on active=true.
+        if (row.active) {
+            if (override) {
+                await s.student_feedback_forms.update(
+                    { active: true },
+                    { active: false, updated_at: row.updated_at ?? ts },
+                );
+                return s.student_feedback_forms.create(row);
+            }
+
+            return s.transaction(async (tx) => {
+                await tx.student_feedback_forms.update(
+                    { active: true },
+                    { active: false, updated_at: row.updated_at ?? ts },
+                );
+                return tx.student_feedback_forms.create(row);
+            });
+        }
+
+        return s.student_feedback_forms.create(row);
     }
 
     async updateForm(
@@ -301,10 +324,31 @@ export class StudentFeedbackService {
         override?: Services,
     ): Promise<StudentFeedbackFormRow | null> {
         const s = this.svc(override);
-        return s.student_feedback_forms.updateOne(
-            { id },
-            { ...patch, updated_at: patch.updated_at ?? nowIso() },
-        );
+        const updatedAt = patch.updated_at ?? nowIso();
+        const nextPatch: StudentFeedbackFormPatch = { ...patch, updated_at: updatedAt };
+
+        // If turning ACTIVE via patch, ensure single-active consistency without nuking active state on invalid ids.
+        if (nextPatch.active === true) {
+            if (override) {
+                const exists = await s.student_feedback_forms.findById(id);
+                if (!exists) return null;
+
+                await s.student_feedback_forms.update({ active: true }, { active: false, updated_at: updatedAt });
+                const updated = await s.student_feedback_forms.updateOne({ id }, nextPatch);
+                return updated ?? (await s.student_feedback_forms.findById(id));
+            }
+
+            return s.transaction(async (tx) => {
+                const exists = await tx.student_feedback_forms.findById(id);
+                if (!exists) return null;
+
+                await tx.student_feedback_forms.update({ active: true }, { active: false, updated_at: updatedAt });
+                const updated = await tx.student_feedback_forms.updateOne({ id }, nextPatch);
+                return updated ?? (await tx.student_feedback_forms.findById(id));
+            });
+        }
+
+        return s.student_feedback_forms.updateOne({ id }, nextPatch);
     }
 
     /**
@@ -313,28 +357,30 @@ export class StudentFeedbackService {
     async activateForm(id: UUID, override?: Services): Promise<StudentFeedbackFormRow | null> {
         const s = this.svc(override);
 
-        // If caller passed an override (already inside a transaction), do best-effort without nesting.
-        // Otherwise, wrap in a transaction to keep "single active" consistent.
-        const runner = override
-            ? async (tx: Services) => this.activateFormInTx(id, tx)
-            : async (tx: Services) => this.activateFormInTx(id, tx);
-
         if (override) {
-            return runner(s);
+            // already inside a transaction context (best-effort, no nesting)
+            return this.activateFormInTx(id, s);
         }
 
-        return s.transaction(async (tx) => runner(tx));
+        return s.transaction(async (tx) => this.activateFormInTx(id, tx));
     }
 
     private async activateFormInTx(id: UUID, tx: Services): Promise<StudentFeedbackFormRow | null> {
+        const existing = await tx.student_feedback_forms.findById(id);
+        if (!existing) return null;
+
+        const ts = nowIso();
+
         // Deactivate existing active ones
-        await tx.student_feedback_forms.update({ active: true }, { active: false, updated_at: nowIso() });
+        await tx.student_feedback_forms.update({ active: true }, { active: false, updated_at: ts });
+
         // Activate target
         const updated = await tx.student_feedback_forms.updateOne(
             { id },
-            { active: true, updated_at: nowIso() },
+            { active: true, updated_at: ts },
         );
-        return updated ?? (await tx.student_feedback_forms.findById(id));
+
+        return updated ?? existing;
     }
 
     /* ------------------------------- ACTIVE FORM ----------------------------- */
