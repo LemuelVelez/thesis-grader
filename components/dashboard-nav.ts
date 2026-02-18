@@ -19,6 +19,7 @@ import {
     UserCheck,
     GraduationCap,
     BarChart3,
+    MessageSquareText,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -149,6 +150,7 @@ export function getDashboardNav(role: string | null | undefined): NavGroup[] {
                 items: [
                     { label: "Users", href: `${base}/users`, icon: Users },
                     { label: "Rubric Templates", href: `${base}/rubric-templates`, icon: ListChecks },
+                    { label: "Feedback Form", href: `${base}/feeback-form`, icon: MessageSquareText },
                     { label: "Audit Logs", href: `${base}/audit-logs`, icon: ShieldCheck },
                     { label: "Notifications", href: `${base}/notifications`, icon: Bell },
                     settings,
