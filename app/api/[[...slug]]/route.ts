@@ -48,40 +48,20 @@ function isRouteNotFoundError(message: string): boolean {
 }
 
 /**
- * Normalize ctx.params.slug across Next.js variants and edge-cases.
- * This prevents false "API route not found" errors when ctx.params.slug is missing/mis-shaped.
+ * Build slug context from the request pathname.
+ * This avoids accessing ctx.params directly (Next.js may provide params as a Promise).
  */
-function normalizeAuthRouteContext(req: NextRequest, ctx: AuthRouteContext): AuthRouteContext {
-    const rawSlug = (ctx as any)?.params?.slug as unknown;
-
-    const slugFromCtx: string[] | undefined = Array.isArray(rawSlug)
-        ? rawSlug.filter((s) => typeof s === 'string' && s.trim().length > 0)
-        : typeof rawSlug === 'string' && rawSlug.trim().length > 0
-            ? [rawSlug.trim()]
-            : undefined;
-
-    if (slugFromCtx && slugFromCtx.length > 0) {
-        return {
-            ...ctx,
-            params: {
-                ...(ctx as any).params,
-                slug: slugFromCtx,
-            },
-        } as AuthRouteContext;
-    }
-
-    // Fallback: derive slug from pathname (e.g., /api/admin/student-feedback/forms)
+function buildAuthRouteContextFromRequest(req: NextRequest): AuthRouteContext {
     const pathname = req.nextUrl.pathname ?? '';
-    const parts = pathname.split('/').filter(Boolean); // ["api", "..."]
-    const normalizedParts = parts[0]?.toLowerCase() === 'api' ? parts.slice(1) : parts;
+    const parts = pathname.split('/').filter(Boolean); // e.g. ["api","student-evaluations","active-form"]
+    const slug =
+        parts[0]?.toLowerCase() === 'api'
+            ? parts.slice(1)
+            : parts;
 
     return {
-        ...ctx,
-        params: {
-            ...(ctx as any).params,
-            slug: normalizedParts,
-        },
-    } as AuthRouteContext;
+        params: { slug },
+    } as unknown as AuthRouteContext;
 }
 
 const handlers = createApiRouteHandlers({
@@ -90,8 +70,7 @@ const handlers = createApiRouteHandlers({
         const message = extractErrorMessage(error);
         const path = req.nextUrl.pathname ?? '';
 
-        // Ensure route-not-found errors return 404 (not 500),
-        // so the frontend can handle it cleanly and logs are accurate.
+        // Ensure route-not-found errors return 404 (not 500)
         if (isRouteNotFoundError(message)) {
             return NextResponse.json(
                 {
@@ -105,7 +84,6 @@ const handlers = createApiRouteHandlers({
 
         const isEvaluationsEndpoint = /^\/api\/evaluations(?:\/|$)/i.test(path);
 
-        // Prevent raw 500s for role-guard violations in panelist evaluations.
         // Student and panelist evaluations are separate flows.
         if (isEvaluationsEndpoint && isRoleGuardPanelistError(message)) {
             return NextResponse.json(
@@ -128,20 +106,20 @@ const handlers = createApiRouteHandlers({
     },
 });
 
-export const GET = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.GET(req, normalizeAuthRouteContext(req, ctx));
+export const GET = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.GET(req, buildAuthRouteContextFromRequest(req));
 
-export const POST = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.POST(req, normalizeAuthRouteContext(req, ctx));
+export const POST = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.POST(req, buildAuthRouteContextFromRequest(req));
 
-export const PUT = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.PUT(req, normalizeAuthRouteContext(req, ctx));
+export const PUT = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.PUT(req, buildAuthRouteContextFromRequest(req));
 
-export const PATCH = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.PATCH(req, normalizeAuthRouteContext(req, ctx));
+export const PATCH = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.PATCH(req, buildAuthRouteContextFromRequest(req));
 
-export const DELETE = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.DELETE(req, normalizeAuthRouteContext(req, ctx));
+export const DELETE = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.DELETE(req, buildAuthRouteContextFromRequest(req));
 
-export const OPTIONS = (req: NextRequest, ctx: AuthRouteContext) =>
-    handlers.OPTIONS(req, normalizeAuthRouteContext(req, ctx));
+export const OPTIONS = (req: NextRequest, _ctx: AuthRouteContext) =>
+    handlers.OPTIONS(req, buildAuthRouteContextFromRequest(req));

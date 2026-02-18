@@ -5,6 +5,7 @@ import {
     StudentEvalStateError,
     StudentEvalValidationError,
 } from '../controllers/StudentController';
+import { createMiddlewareController } from '../controllers/Middleware';
 import {
     USER_STATUSES,
     type JsonObject,
@@ -67,8 +68,9 @@ function isJsonObject(value: unknown): value is JsonObject {
 /**
  * Resolve the authenticated user id for "me/current" style routes.
  * This intentionally supports multiple header/cookie keys to match different auth adapters.
+ * Note: this is best-effort and does NOT validate role.
  */
-function resolveAuthedUserId(req: NextRequest): UUID | null {
+function resolveAuthedUserIdFromRequest(req: NextRequest): UUID | null {
     const headerCandidates = [
         req.headers.get('x-user-id'),
         req.headers.get('x-auth-user-id'),
@@ -117,16 +119,45 @@ function resolveAuthedUserId(req: NextRequest): UUID | null {
     return null;
 }
 
+/**
+ * Resolve the current authenticated STUDENT id.
+ * Supports:
+ * - forwarded headers (x-user-id, etc.)
+ * - explicit user_id cookies
+ * - session cookie (tg_session) via MiddlewareController resolver
+ */
+async function resolveAuthedStudentId(
+    req: NextRequest,
+    services: DatabaseServices,
+): Promise<UUID | null> {
+    const direct = resolveAuthedUserIdFromRequest(req);
+    if (direct) return direct as UUID;
+
+    try {
+        const mw = createMiddlewareController(services);
+        const auth = await mw.resolve(req);
+        if (!auth) return null;
+        if (auth.user.role !== 'student') return null;
+        return auth.user.id as UUID;
+    } catch {
+        return null;
+    }
+}
+
 function isMeAlias(value: string): boolean {
     const normalized = value.trim().toLowerCase();
     return normalized === 'me' || normalized === 'current' || normalized === 'self';
 }
 
-function resolveStudentIdFromAlias(id: string, req: NextRequest): UUID | null {
+async function resolveStudentIdFromAlias(
+    id: string,
+    req: NextRequest,
+    services: DatabaseServices,
+): Promise<UUID | null> {
     const normalized = id.trim().toLowerCase();
     if (isUuidLike(id)) return id as UUID;
     if (normalized === 'me' || normalized === 'current' || normalized === 'self') {
-        return resolveAuthedUserId(req);
+        return resolveAuthedStudentId(req, services);
     }
     return null;
 }
@@ -143,6 +174,7 @@ async function dispatchStudentSelfEvaluationsRequest(
     req: NextRequest,
     tail: string[],
     controller: StudentController,
+    services: DatabaseServices,
 ): Promise<Response> {
     const method = req.method.toUpperCase();
 
@@ -151,7 +183,7 @@ async function dispatchStudentSelfEvaluationsRequest(
     if (tail.length === 0) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
-        const studentId = resolveAuthedUserId(req);
+        const studentId = await resolveAuthedStudentId(req, services);
         if (!studentId) {
             return json200({
                 service: 'student.evaluations',
@@ -215,10 +247,10 @@ async function dispatchStudentSelfEvaluationsRequest(
     if (tail.length === 1 && (seg0 === 'my' || seg0 === 'me')) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
-        const studentId = resolveAuthedUserId(req);
+        const studentId = await resolveAuthedStudentId(req, services);
         if (!studentId) {
             return json400(
-                'Unable to resolve current student id. Ensure auth middleware forwards a user id (e.g., x-user-id) or a session cookie is present.',
+                'Unable to resolve current student id. Ensure you are signed in and the session cookie is present.',
             );
         }
 
@@ -273,7 +305,7 @@ export async function dispatchStudentRequest(
                 t = t.slice(1);
             }
         }
-        return dispatchStudentSelfEvaluationsRequest(req, t, controller);
+        return dispatchStudentSelfEvaluationsRequest(req, t, controller, services);
     }
 
     // Accept both "/api/student-evaluations/*" and "/api/students/*" style paths.
@@ -291,7 +323,7 @@ export async function dispatchStudentRequest(
     if (t.length > 0) {
         const lead = (t[0] ?? '').toLowerCase();
         if (lead === 'student-evaluations' || lead === 'student-evaluation') {
-            return dispatchStudentSelfEvaluationsRequest(req, t.slice(1), controller);
+            return dispatchStudentSelfEvaluationsRequest(req, t.slice(1), controller, services);
         }
     }
 
@@ -318,12 +350,28 @@ export async function dispatchStudentRequest(
     const idRaw = t[0];
     if (!idRaw) return json404Api();
 
-    const resolvedStudentId = resolveStudentIdFromAlias(idRaw, req);
+    // Special-case: schema should be retrievable even if "me/current" can't be resolved,
+    // because schema itself is not student-specific.
+    const seg1Peek = (t[1] ?? '').toLowerCase();
+    const seg2Peek = (t[2] ?? '').toLowerCase();
+    if (
+        method === 'GET' &&
+        isMeAlias(idRaw) &&
+        t.length === 3 &&
+        (seg1Peek === 'student-evaluations' || seg1Peek === 'student-evaluation') &&
+        seg2Peek === 'schema'
+    ) {
+        const schema = await controller.getStudentFeedbackFormSchema();
+        const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
+        return json200({ schema, item: schema, seedAnswersTemplate });
+    }
+
+    const resolvedStudentId = await resolveStudentIdFromAlias(idRaw, req, services);
     if (!resolvedStudentId) {
         // If they used "me/current/self" but we couldn't resolve auth, return a helpful 400 (not a misleading 404).
         if (isMeAlias(idRaw)) {
             return json400(
-                'Unable to resolve current student id. Ensure auth middleware forwards a user id (e.g., x-user-id) or a session cookie is present.',
+                'Unable to resolve current student id. Ensure you are signed in and the session cookie is present.',
             );
         }
         return json404Api();
@@ -425,7 +473,7 @@ export async function dispatchStudentRequest(
 
                 const item = await controller.ensureStudentEvaluation(id as UUID, {
                     schedule_id: scheduleId as UUID,
-                    answers: (answersRaw as JsonObject | undefined),
+                    answers: answersRaw as JsonObject | undefined,
                 });
 
                 if (!item) return json404Entity('Student');
@@ -475,7 +523,7 @@ export async function dispatchStudentRequest(
 
                 const item = await controller.ensureStudentEvaluation(id as UUID, {
                     schedule_id: scheduleId as UUID,
-                    answers: (answersRaw as JsonObject | undefined),
+                    answers: answersRaw as JsonObject | undefined,
                 });
 
                 if (!item) return json404Entity('Student');
@@ -510,7 +558,7 @@ export async function dispatchStudentRequest(
                     const item = await controller.patchStudentEvaluationAnswers(
                         id as UUID,
                         evalId as UUID,
-                        { answers: answersRaw },
+                        { answers: answersRaw as JsonObject },
                     );
                     if (!item) return json404Entity('StudentEvaluation');
                     return json200({ item });
