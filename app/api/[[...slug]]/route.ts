@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
     createApiRouteHandlers,
     type AuthRouteContext,
-} from '../../../database/routes/Route';
-import { resolveDatabaseServices } from '../../../database/services/resolver';
+} from '../../../../database/routes/Route';
+import { resolveDatabaseServices } from '../../../../database/services/resolver';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,16 +48,34 @@ function isRouteNotFoundError(message: string): boolean {
 }
 
 /**
- * Build slug context from the request pathname.
- * This avoids accessing ctx.params directly (Next.js may provide params as a Promise).
+ * This route intentionally rewrites the slug so that:
+ * /api/student-evaluations/* is handled by the STUDENT route dispatcher,
+ * which supports:
+ * - /schema
+ * - /form/schema
+ * - /active-form
+ * - /my
+ * - /me
+ *
+ * Without this, the generic catch-all may dispatch it to the generic
+ * student-evaluations resource handler which does not implement these subroutes.
  */
 function buildAuthRouteContextFromRequest(req: NextRequest): AuthRouteContext {
     const pathname = req.nextUrl.pathname ?? '';
-    const parts = pathname.split('/').filter(Boolean); // e.g. ["api","student-evaluations","active-form"]
-    const slug =
-        parts[0]?.toLowerCase() === 'api'
-            ? parts.slice(1)
-            : parts;
+    const parts = pathname.split('/').filter(Boolean); // ["api","student-evaluations",...]
+    const apiIndex = parts.findIndex((p) => p.toLowerCase() === 'api');
+    const baseIndex = parts.findIndex((p) => p.toLowerCase() === 'student-evaluations');
+
+    const tail =
+        baseIndex >= 0
+            ? parts.slice(baseIndex + 1)
+            : apiIndex >= 0
+                ? parts.slice(apiIndex + 1)
+                : parts;
+
+    // IMPORTANT: force root = "student" and keep tail as the self-evals segments.
+    // This avoids the "student scoped evaluations alias" interception in the central router.
+    const slug = ['student', ...tail];
 
     return {
         params: { slug },
@@ -70,7 +88,6 @@ const handlers = createApiRouteHandlers({
         const message = extractErrorMessage(error);
         const path = req.nextUrl.pathname ?? '';
 
-        // Ensure route-not-found errors return 404 (not 500)
         if (isRouteNotFoundError(message)) {
             return NextResponse.json(
                 {

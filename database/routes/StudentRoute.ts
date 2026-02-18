@@ -65,6 +65,100 @@ function isJsonObject(value: unknown): value is JsonObject {
     return true;
 }
 
+function extractErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message.trim().length > 0) {
+        return error.message.trim();
+    }
+
+    if (error && typeof error === 'object') {
+        const maybe = error as Record<string, unknown>;
+        const message =
+            typeof maybe.message === 'string' ? maybe.message.trim() : '';
+        if (message.length > 0) return message;
+
+        const detail =
+            typeof maybe.detail === 'string' ? maybe.detail.trim() : '';
+        if (detail.length > 0) return detail;
+    }
+
+    return 'Unknown error.';
+}
+
+/**
+ * Fallback schema so schema endpoints never throw 500s when the backing storage
+ * (or service wiring) is temporarily unavailable.
+ *
+ * Frontend should treat this as a minimal/default form.
+ */
+const FALLBACK_STUDENT_FEEDBACK_SCHEMA: JsonObject = {
+    id: 'student-feedback-form',
+    title: 'Student Evaluation',
+    version: 1,
+    description: 'Student feedback form schema (fallback).',
+    sections: [
+        {
+            id: 'overall',
+            title: 'Overall Feedback',
+            questions: [
+                {
+                    id: 'overall_rating',
+                    label: 'Overall experience',
+                    type: 'rating',
+                    min: 1,
+                    max: 5,
+                    required: true,
+                },
+                {
+                    id: 'comments',
+                    label: 'Comments / suggestions',
+                    type: 'textarea',
+                    required: false,
+                },
+            ],
+        },
+    ],
+};
+
+const FALLBACK_SEED_ANSWERS_TEMPLATE: JsonObject = {
+    overall_rating: null,
+    comments: '',
+};
+
+async function getStudentFeedbackSchemaSafe(
+    controller: StudentController,
+): Promise<{
+    schema: JsonObject;
+    seedAnswersTemplate: JsonObject;
+    warning?: string;
+}> {
+    try {
+        const [schema, seedAnswersTemplate] = await Promise.all([
+            controller.getStudentFeedbackFormSchema() as unknown as Promise<JsonObject>,
+            controller.getStudentFeedbackSeedAnswersTemplate() as unknown as Promise<JsonObject>,
+        ]);
+
+        // Defensive: ensure returned values are JSON objects
+        const safeSchema = isJsonObject(schema) ? schema : FALLBACK_STUDENT_FEEDBACK_SCHEMA;
+        const safeSeed = isJsonObject(seedAnswersTemplate)
+            ? seedAnswersTemplate
+            : FALLBACK_SEED_ANSWERS_TEMPLATE;
+
+        const warning =
+            safeSchema === FALLBACK_STUDENT_FEEDBACK_SCHEMA ||
+                safeSeed === FALLBACK_SEED_ANSWERS_TEMPLATE
+                ? 'Schema service returned an unexpected shape; using fallback.'
+                : undefined;
+
+        return { schema: safeSchema, seedAnswersTemplate: safeSeed, warning };
+    } catch (error) {
+        return {
+            schema: FALLBACK_STUDENT_FEEDBACK_SCHEMA,
+            seedAnswersTemplate: FALLBACK_SEED_ANSWERS_TEMPLATE,
+            warning: `Schema service unavailable; using fallback. (${extractErrorMessage(error)})`,
+        };
+    }
+}
+
 /**
  * Resolve the authenticated user id for "me/current" style routes.
  * This intentionally supports multiple header/cookie keys to match different auth adapters.
@@ -231,14 +325,15 @@ async function dispatchStudentSelfEvaluationsRequest(
     ) {
         if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
-        const schema = await controller.getStudentFeedbackFormSchema();
-        const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
+        const { schema, seedAnswersTemplate, warning } =
+            await getStudentFeedbackSchemaSafe(controller);
 
         // Return both keys for frontend resilience (item/schema).
         return json200({
             schema,
             item: schema,
             seedAnswersTemplate,
+            ...(warning ? { warning } : {}),
         });
     }
 
@@ -361,9 +456,15 @@ export async function dispatchStudentRequest(
         (seg1Peek === 'student-evaluations' || seg1Peek === 'student-evaluation') &&
         seg2Peek === 'schema'
     ) {
-        const schema = await controller.getStudentFeedbackFormSchema();
-        const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
-        return json200({ schema, item: schema, seedAnswersTemplate });
+        const { schema, seedAnswersTemplate, warning } =
+            await getStudentFeedbackSchemaSafe(controller);
+
+        return json200({
+            schema,
+            item: schema,
+            seedAnswersTemplate,
+            ...(warning ? { warning } : {}),
+        });
     }
 
     const resolvedStudentId = await resolveStudentIdFromAlias(idRaw, req, services);
@@ -427,13 +528,14 @@ export async function dispatchStudentRequest(
         if (t.length === 3 && seg2 === 'schema') {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
 
-            const schema = await controller.getStudentFeedbackFormSchema();
-            const seedAnswersTemplate = await controller.getStudentFeedbackSeedAnswersTemplate();
+            const { schema, seedAnswersTemplate, warning } =
+                await getStudentFeedbackSchemaSafe(controller);
 
             return json200({
                 schema,
                 item: schema,
                 seedAnswersTemplate,
+                ...(warning ? { warning } : {}),
             });
         }
 
