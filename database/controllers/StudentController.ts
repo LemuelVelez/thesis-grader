@@ -17,6 +17,8 @@ import type {
 } from '../models/Model';
 import type { ListQuery, Services } from '../services/Services';
 import StudentFeedbackService, {
+    type AssignStudentFeedbackFormsInput,
+    type AssignStudentFeedbackFormsResult,
     type StudentFeedbackFormSchema,
 } from '../services/StudentFeedbackService';
 
@@ -259,6 +261,18 @@ export class StudentController {
         return this.studentFeedback.getActiveSeedAnswersTemplate();
     }
 
+    /**
+     * Admin/Staff helper: assigns/ensures student feedback evaluations for a defense schedule.
+     * Used by POST /api/student-evaluations (admin alias) so the admin evaluations page
+     * can assign student feedback without hitting a 405.
+     */
+    async assignStudentFeedbackFormsForSchedule(
+        scheduleId: UUID,
+        input: AssignStudentFeedbackFormsInput = {},
+    ): Promise<AssignStudentFeedbackFormsResult | null> {
+        return this.studentFeedback.assignForSchedule(scheduleId, input);
+    }
+
     /* --------------------------------- CREATE -------------------------------- */
 
     async create(input: CreateStudentInput): Promise<StudentAccount> {
@@ -344,12 +358,6 @@ export class StudentController {
 
     /* -------------------------- STUDENT EVALUATIONS -------------------------- */
 
-    /**
-     * List all feedback/survey/reflection entries of a student.
-     * Optional filter by schedule_id.
-     *
-     * IMPORTANT: Hydrates schedule + group context for frontend UX.
-     */
     async listStudentEvaluations(
         studentId: UUID,
         opts: { scheduleId?: UUID } = {},
@@ -367,15 +375,10 @@ export class StudentController {
             rows = await this.services.student_evaluations.listByStudent(studentId);
         }
 
-        // Hydrate schedule/group so frontend doesn't show empty thesis/group and defense schedule.
         const hydrated = await this.hydrateEvaluations(this.services, rows);
         return hydrated;
     }
 
-    /**
-     * Get a single student evaluation ensuring ownership.
-     * IMPORTANT: Hydrates schedule + group context for frontend UX.
-     */
     async getStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         const user = await this.services.users.findById(studentId);
         if (!user || user.role !== 'student') return null;
@@ -387,10 +390,6 @@ export class StudentController {
         return hydrated;
     }
 
-    /**
-     * Get the persisted score summary for a student evaluation (ensures ownership).
-     * If missing, it will be computed and upserted based on the evaluation's form schema.
-     */
     async getStudentEvaluationScore(
         studentId: UUID,
         evaluationId: UUID,
@@ -423,12 +422,6 @@ export class StudentController {
         });
     }
 
-    /**
-     * Create (if missing) the student's survey/feedback/reflection for a defense schedule.
-     * If already exists, returns the existing row (idempotent).
-     *
-     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
-     */
     async ensureStudentEvaluation(
         studentId: UUID,
         input: CreateOrEnsureStudentEvaluationInput,
@@ -465,8 +458,6 @@ export class StudentController {
                 updated_at: createdAt,
             });
 
-            // Seed a score record immediately (so analytics/admin views have it from the start).
-            // This stays updated whenever answers are patched.
             try {
                 await this.upsertStudentEvaluationScore(
                     tx,
@@ -477,7 +468,7 @@ export class StudentController {
                     defaultAnswers,
                 );
             } catch {
-                // Score is best-effort; evaluation creation should still succeed.
+                // best-effort
             }
 
             const hydrated = await this.hydrateEvaluation(tx, created);
@@ -485,13 +476,6 @@ export class StudentController {
         });
     }
 
-    /**
-     * Patch answers while still editable.
-     * - pending: allowed
-     * - submitted/locked: not allowed
-     *
-     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
-     */
     async patchStudentEvaluationAnswers(
         studentId: UUID,
         evaluationId: UUID,
@@ -533,7 +517,6 @@ export class StudentController {
             const finalRow = updated ?? (await tx.student_evaluations.findById(evaluationId));
             if (!finalRow) return null;
 
-            // Keep persisted score summary in sync while pending/editable.
             const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, finalRow);
             await this.upsertStudentEvaluationScore(
                 tx,
@@ -549,12 +532,6 @@ export class StudentController {
         });
     }
 
-    /**
-     * Submit the student's feedback/survey/reflection.
-     * Once submitted, it becomes read-only (unless your admin flow unlocks it elsewhere).
-     *
-     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
-     */
     async submitStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         return this.services.transaction<StudentEvaluationRow | null>(async (tx) => {
             const studentUser = await this.requireStudentUser(tx, studentId);
@@ -570,7 +547,6 @@ export class StudentController {
                 );
             }
 
-            // Validate required questions before submitting (backend safety) using the evaluation's form schema.
             const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, existing);
 
             const validation = this.studentFeedback.validateRequiredAnswers(
@@ -587,7 +563,6 @@ export class StudentController {
 
             const submittedAt = nowIso();
 
-            // Prefer service convenience if implemented
             const submitted = await tx.student_evaluations.submit(evaluationId, submittedAt);
             const finalRow =
                 submitted ??
@@ -599,7 +574,6 @@ export class StudentController {
 
             if (!finalRow) return null;
 
-            // Persist (and refresh) score on submit.
             await this.upsertStudentEvaluationScore(
                 tx,
                 finalRow,
@@ -613,11 +587,6 @@ export class StudentController {
         });
     }
 
-    /**
-     * Lock the student's feedback entry (typically used by staff/admin workflows).
-     *
-     * IMPORTANT: Returns hydrated schedule + group context for frontend UX.
-     */
     async lockStudentEvaluation(studentId: UUID, evaluationId: UUID): Promise<StudentEvaluationRow | null> {
         return this.services.transaction<StudentEvaluationRow | null>(async (tx) => {
             const studentUser = await this.requireStudentUser(tx, studentId);
