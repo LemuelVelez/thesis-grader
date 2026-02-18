@@ -28,24 +28,61 @@ export interface RequiredAnswersValidation {
 }
 
 /**
- * Optional input for assigning/ensuring student feedback forms for a schedule.
- * - form_id: assign using a specific form (otherwise ACTIVE is used)
- * - force: if true, overwrite existing answers with seed template
- * - seed_answers: if provided, overrides generated seed template
+ * Backward/forward-compatible input for assigning/ensuring student feedback entries for a schedule.
+ * Supports both snake_case (service-style) and camelCase (route-style).
  */
 export interface AssignStudentFeedbackFormsInput {
+    /** Prefer assigning using a specific form; otherwise ACTIVE is used */
     form_id?: UUID;
+    formId?: UUID;
+
+    /**
+     * If true, overwrite existing answers (route calls this overwritePending).
+     * NOTE: We do not hard-restrict to "pending" here; controllers/routes decide.
+     */
     force?: boolean;
+    overwritePending?: boolean;
+
+    /** Optional answer template override */
     seed_answers?: JsonObject;
+    seedAnswers?: JsonObject;
+
+    /** Optional subset targeting */
+    student_ids?: UUID[];
+    studentIds?: UUID[];
+
+    /** Initial status for created entries */
+    initialStatus?: StudentEvalStatus;
 }
 
+export interface AssignStudentFeedbackFormsCounts {
+    created: number;
+    existing: number;
+    updated: number;
+    total: number;
+}
+
+/**
+ * Backward/forward-compatible result shape:
+ * - snake_case for internal/service usage
+ * - camelCase + counts + targetedStudentIds for AdminRoute expectations
+ */
 export interface AssignStudentFeedbackFormsResult {
+    // canonical snake_case
     schedule_id: UUID;
+    group_id: UUID;
     form_id: UUID | null;
     total_students: number;
     created: number;
     existing: number;
     updated: number;
+
+    // route-friendly aliases
+    scheduleId: UUID;
+    groupId: UUID;
+    formId: UUID | null;
+    targetedStudentIds: UUID[];
+    counts: AssignStudentFeedbackFormsCounts;
 }
 
 /**
@@ -278,7 +315,7 @@ export class StudentFeedbackService {
             if (!schedule) return null;
 
             const groupMembers: GroupMemberRow[] = await tx.group_members.listByGroup(schedule.group_id);
-            const studentIds = Array.from(
+            const groupStudentIds = Array.from(
                 new Set(
                     groupMembers
                         .map((m) => (m as unknown as { student_id?: UUID }).student_id)
@@ -286,14 +323,27 @@ export class StudentFeedbackService {
                 ),
             );
 
+            const requestedIds = (input.studentIds ?? input.student_ids) ?? [];
+            const targetedStudentIds =
+                requestedIds.length > 0
+                    ? groupStudentIds.filter((id) => requestedIds.includes(id))
+                    : groupStudentIds;
+
+            const formId = input.form_id ?? input.formId;
+
             const form =
-                input.form_id
-                    ? await tx.student_feedback_forms.findById(input.form_id)
+                formId
+                    ? await tx.student_feedback_forms.findById(formId)
                     : await this.getActiveFormRow(tx);
 
             const formSchema = (form?.schema ?? {}) as JsonObject;
+
+            const force = input.force ?? input.overwritePending ?? false;
+
+            const seedOverride = input.seed_answers ?? input.seedAnswers;
+
             const seed =
-                input.seed_answers ??
+                seedOverride ??
                 (() => {
                     const requiredKeys = requiredKeysFromSchema(formSchema);
                     const obj: JsonObject = {};
@@ -301,13 +351,15 @@ export class StudentFeedbackService {
                     return obj;
                 })();
 
+            const initialStatus: StudentEvalStatus = input.initialStatus ?? 'pending';
+
             let created = 0;
             let existing = 0;
             let updated = 0;
 
             const now = nowIso();
 
-            for (const studentId of studentIds) {
+            for (const studentId of targetedStudentIds) {
                 const already = await tx.student_evaluations.findOne({
                     schedule_id: scheduleId,
                     student_id: studentId,
@@ -317,7 +369,7 @@ export class StudentFeedbackService {
                     await tx.student_evaluations.create({
                         schedule_id: scheduleId,
                         student_id: studentId,
-                        status: 'pending',
+                        status: initialStatus,
                         answers: seed,
                         submitted_at: null,
                         locked_at: null,
@@ -330,7 +382,7 @@ export class StudentFeedbackService {
 
                 existing += 1;
 
-                if (input.force) {
+                if (force) {
                     const patch: StudentEvaluationPatch = {
                         answers: seed,
                         updated_at: now,
@@ -341,13 +393,29 @@ export class StudentFeedbackService {
                 }
             }
 
-            return {
-                schedule_id: scheduleId,
-                form_id: form?.id ?? null,
-                total_students: studentIds.length,
+            const counts: AssignStudentFeedbackFormsCounts = {
                 created,
                 existing,
                 updated,
+                total: targetedStudentIds.length,
+            };
+
+            return {
+                // snake_case
+                schedule_id: scheduleId,
+                group_id: schedule.group_id,
+                form_id: form?.id ?? null,
+                total_students: targetedStudentIds.length,
+                created,
+                existing,
+                updated,
+
+                // camelCase + extras for AdminRoute.ts compatibility
+                scheduleId,
+                groupId: schedule.group_id,
+                formId: form?.id ?? null,
+                targetedStudentIds,
+                counts,
             };
         });
     }
