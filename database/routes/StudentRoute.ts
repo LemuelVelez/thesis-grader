@@ -1,6 +1,10 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
-import { StudentController, StudentEvalStateError } from '../controllers/StudentController';
+import {
+    StudentController,
+    StudentEvalStateError,
+    StudentEvalValidationError,
+} from '../controllers/StudentController';
 import {
     USER_STATUSES,
     type JsonObject,
@@ -122,11 +126,78 @@ export async function dispatchStudentRequest(
     /**
      * Student feedback/survey/reflection endpoints
      * /api/students/:id/student-evaluations
+     * /api/students/:id/student-evaluations/schema
+     * /api/students/:id/student-evaluations/schedule/:scheduleId
      * /api/students/:id/student-evaluations/:evaluationId
      * /api/students/:id/student-evaluations/:evaluationId/submit
      * /api/students/:id/student-evaluations/:evaluationId/lock
      */
     if (tail.length >= 2 && tail[1] === 'student-evaluations') {
+        // /:id/student-evaluations/schema
+        if (tail.length === 3 && tail[2] === 'schema') {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+            const schema = controller.getStudentFeedbackFormSchema();
+            const seedAnswersTemplate = controller.getStudentFeedbackSeedAnswersTemplate();
+
+            return json200({
+                schema,
+                item: schema,
+                seedAnswersTemplate,
+            });
+        }
+
+        // /:id/student-evaluations/schedule/:scheduleId
+        if (tail.length === 4 && tail[2] === 'schedule') {
+            const scheduleId = tail[3];
+            if (!scheduleId || !isUuidLike(scheduleId)) {
+                return json400('scheduleId is required and must be a UUID.');
+            }
+
+            if (method === 'GET') {
+                const items = await controller.listStudentEvaluations(id as UUID, {
+                    scheduleId: scheduleId as UUID,
+                });
+
+                if (!items) return json404Entity('Student');
+
+                const item = items[0] ?? null;
+                if (!item) return json404Entity('StudentEvaluation');
+
+                return json200({ item });
+            }
+
+            if (method === 'POST' || method === 'PUT') {
+                const before = await controller.listStudentEvaluations(id as UUID, {
+                    scheduleId: scheduleId as UUID,
+                });
+
+                if (!before) return json404Entity('Student');
+
+                const body = await readJsonRecord(req);
+                const answersRaw = body?.answers as unknown;
+
+                if (answersRaw !== undefined && !isJsonObject(answersRaw)) {
+                    return json400('answers must be a JSON object with JSON-serializable values.');
+                }
+
+                const item = await controller.ensureStudentEvaluation(id as UUID, {
+                    schedule_id: scheduleId as UUID,
+                    answers: (answersRaw as JsonObject | undefined),
+                });
+
+                if (!item) return json404Entity('Student');
+
+                const created = before.length === 0;
+                return NextResponse.json(
+                    { item, created },
+                    { status: created ? 201 : 200 },
+                );
+            }
+
+            return json405(['GET', 'POST', 'PUT', 'OPTIONS']);
+        }
+
         // /:id/student-evaluations
         if (tail.length === 2) {
             if (method === 'GET') {
@@ -165,7 +236,7 @@ export async function dispatchStudentRequest(
 
                 const item = await controller.ensureStudentEvaluation(id as UUID, {
                     schedule_id: scheduleId as UUID,
-                    answers: (answersRaw as JsonObject | undefined) ?? {},
+                    answers: (answersRaw as JsonObject | undefined),
                 });
 
                 if (!item) return json404Entity('Student');
@@ -175,6 +246,7 @@ export async function dispatchStudentRequest(
             return json405(['GET', 'POST', 'OPTIONS']);
         }
 
+        // evaluationId-based routes (must be UUID)
         const evalId = tail[2];
         if (!evalId || !isUuidLike(evalId)) return json404Api();
 
@@ -225,6 +297,16 @@ export async function dispatchStudentRequest(
                 if (!item) return json404Entity('StudentEvaluation');
                 return json200({ item });
             } catch (err) {
+                if (err instanceof StudentEvalValidationError) {
+                    return NextResponse.json(
+                        {
+                            error: 'Validation failed.',
+                            message: err.message,
+                            missing: err.missing,
+                        },
+                        { status: 400 },
+                    );
+                }
                 if (err instanceof StudentEvalStateError) {
                     return json400(err.message);
                 }

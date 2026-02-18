@@ -12,6 +12,9 @@ import type {
     UUID,
 } from '../models/Model';
 import type { ListQuery, Services } from '../services/Services';
+import StudentFeedbackService, {
+    type StudentFeedbackFormSchema,
+} from '../services/StudentFeedbackService';
 
 function stripUndefined<T extends object>(input: T): Partial<T> {
     const out: Partial<T> = {};
@@ -61,6 +64,17 @@ export class StudentEvalStateError extends Error {
     }
 }
 
+export class StudentEvalValidationError extends Error {
+    public readonly code: 'INVALID';
+    public readonly missing: string[];
+    constructor(message: string, missing: string[] = []) {
+        super(message);
+        this.name = 'StudentEvalValidationError';
+        this.code = 'INVALID';
+        this.missing = missing;
+    }
+}
+
 function nowIso(): string {
     return new Date().toISOString();
 }
@@ -74,7 +88,11 @@ function isSubmittedEval(row: StudentEvaluationRow): boolean {
 }
 
 export class StudentController {
-    constructor(private readonly services: Services) { }
+    private readonly studentFeedback: StudentFeedbackService;
+
+    constructor(private readonly services: Services) {
+        this.studentFeedback = new StudentFeedbackService(services);
+    }
 
     private async toAccount(user: UserRow): Promise<StudentAccount> {
         const profile = await this.services.students.findByUserId(user.id);
@@ -85,6 +103,16 @@ export class StudentController {
         const user = await tx.users.findById(userId);
         if (!user || user.role !== 'student') return null;
         return user;
+    }
+
+    /* -------------------------- STUDENT FEEDBACK FORM -------------------------- */
+
+    getStudentFeedbackFormSchema(): StudentFeedbackFormSchema {
+        return this.studentFeedback.getSchema();
+    }
+
+    getStudentFeedbackSeedAnswersTemplate(): JsonObject {
+        return this.studentFeedback.getSeedAnswersTemplate();
     }
 
     /* --------------------------------- CREATE -------------------------------- */
@@ -223,11 +251,13 @@ export class StudentController {
 
             if (existing) return existing;
 
+            const defaultAnswers = this.getStudentFeedbackSeedAnswersTemplate();
+
             const created = await tx.student_evaluations.create({
                 schedule_id: input.schedule_id,
                 student_id: studentId,
                 status: 'pending',
-                answers: input.answers ?? {},
+                answers: input.answers ?? defaultAnswers,
                 submitted_at: null,
                 locked_at: null,
                 created_at: nowIso(),
@@ -299,6 +329,19 @@ export class StudentController {
                 throw new StudentEvalStateError(
                     'LOCKED',
                     'This feedback is locked and can no longer be submitted.',
+                );
+            }
+
+            // Validate required questions before submitting (backend safety)
+            const validation = this.studentFeedback.validateRequiredAnswers(
+                (existing.answers ?? {}) as JsonObject,
+                this.studentFeedback.getSchema(),
+            );
+
+            if (!validation.ok) {
+                throw new StudentEvalValidationError(
+                    'Please answer all required questions before submitting.',
+                    validation.missing,
                 );
             }
 

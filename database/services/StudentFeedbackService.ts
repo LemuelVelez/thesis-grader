@@ -313,6 +313,64 @@ function buildSeedAnswersFromSchema(schema: StudentFeedbackFormSchema): JsonObje
     return out;
 }
 
+type QuestionMeta = {
+    id: string;
+    type: string;
+    required: boolean;
+    min?: number;
+    max?: number;
+};
+
+function extractQuestionMetas(schema: StudentFeedbackFormSchema): QuestionMeta[] {
+    const out: QuestionMeta[] = [];
+    if (!isRecord(schema)) return out;
+
+    const sections = Array.isArray(schema.sections) ? schema.sections : [];
+    for (const s of sections) {
+        if (!isRecord(s)) continue;
+
+        const questions = Array.isArray(s.questions) ? s.questions : [];
+        for (const q of questions) {
+            if (!isRecord(q)) continue;
+
+            const id = typeof q.id === 'string' ? q.id.trim() : '';
+            if (!id) continue;
+
+            const type = typeof q.type === 'string' ? q.type.trim().toLowerCase() : 'text';
+            const required = q.required === true;
+
+            let min: number | undefined;
+            let max: number | undefined;
+
+            if (isRecord(q.scale)) {
+                const rawMin = q.scale.min;
+                const rawMax = q.scale.max;
+                if (typeof rawMin === 'number' && Number.isFinite(rawMin)) min = rawMin;
+                if (typeof rawMax === 'number' && Number.isFinite(rawMax)) max = rawMax;
+            }
+
+            out.push({ id, type, required, min, max });
+        }
+    }
+
+    return out;
+}
+
+function normalizeRating(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const num = Number(trimmed);
+        return Number.isFinite(num) ? num : null;
+    }
+    return null;
+}
+
+function hasNonEmptyText(value: unknown): boolean {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
 export class StudentFeedbackService {
     constructor(private readonly services: Services) { }
 
@@ -323,6 +381,45 @@ export class StudentFeedbackService {
 
     getSeedAnswersTemplate(): JsonObject {
         return buildSeedAnswersFromSchema(this.getSchema());
+    }
+
+    /**
+     * Backend validation helper (for submit).
+     * Ensures all required questions have a usable value.
+     */
+    validateRequiredAnswers(
+        answers: JsonObject,
+        schema: StudentFeedbackFormSchema = DEFAULT_STUDENT_FEEDBACK_FORM_SCHEMA,
+    ): { ok: boolean; missing: string[] } {
+        const metas = extractQuestionMetas(schema).filter((m) => m.required);
+        const missing: string[] = [];
+
+        for (const q of metas) {
+            const value = (answers as any)?.[q.id];
+
+            if (q.type === 'text') {
+                if (!hasNonEmptyText(value)) missing.push(q.id);
+                continue;
+            }
+
+            // rating / others -> require non-null number-ish
+            const rating = normalizeRating(value);
+            if (rating === null) {
+                missing.push(q.id);
+                continue;
+            }
+
+            if (typeof q.min === 'number' && rating < q.min) {
+                missing.push(q.id);
+                continue;
+            }
+            if (typeof q.max === 'number' && rating > q.max) {
+                missing.push(q.id);
+                continue;
+            }
+        }
+
+        return { ok: missing.length === 0, missing };
     }
 
     async assignForSchedule(
@@ -438,7 +535,13 @@ export class StudentFeedbackService {
     }
 
     async listForScheduleDetailed(scheduleId: UUID): Promise<AdminStudentFeedbackRow[]> {
-        const rows = await this.services.student_evaluations.listBySchedule(scheduleId);
+        const repo = this.services.student_evaluations as any;
+
+        const rows: StudentEvaluationRow[] =
+            typeof repo?.listBySchedule === 'function'
+                ? await repo.listBySchedule(scheduleId)
+                : await repo.findMany?.({ where: { schedule_id: scheduleId } }) ??
+                [];
 
         const studentIds = uniqueUuids(
             rows
