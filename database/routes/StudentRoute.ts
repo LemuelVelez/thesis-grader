@@ -3,6 +3,9 @@ import { NextRequest } from 'next/server';
 import { StudentController, StudentEvalStateError } from '../controllers/StudentController';
 import {
     USER_STATUSES,
+    type JsonObject,
+    type JsonPrimitive,
+    type JsonValue,
     type StudentEvaluationRow,
     type UserRow,
     type UUID,
@@ -22,8 +25,39 @@ import {
     toUserStatus,
 } from './Route';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+function isJsonPrimitive(value: unknown): value is JsonPrimitive {
+    return (
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+    );
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+    if (isJsonPrimitive(value)) return true;
+
+    if (Array.isArray(value)) {
+        return value.every((v) => isJsonValue(v));
+    }
+
+    if (typeof value === 'object' && value !== null) {
+        for (const v of Object.values(value as Record<string, unknown>)) {
+            if (!isJsonValue(v)) return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+
+    for (const v of Object.values(value as Record<string, unknown>)) {
+        if (!isJsonValue(v)) return false;
+    }
+    return true;
 }
 
 export async function dispatchStudentRequest(
@@ -124,14 +158,14 @@ export async function dispatchStudentRequest(
                     return json400('schedule_id is required and must be a UUID.');
                 }
 
-                const answersRaw = body.answers;
-                if (answersRaw !== undefined && !isRecord(answersRaw)) {
-                    return json400('answers must be a JSON object.');
+                const answersRaw = body.answers as unknown;
+                if (answersRaw !== undefined && !isJsonObject(answersRaw)) {
+                    return json400('answers must be a JSON object with JSON-serializable values.');
                 }
 
                 const item = await controller.ensureStudentEvaluation(id as UUID, {
                     schedule_id: scheduleId as UUID,
-                    answers: (answersRaw as Record<string, unknown>) ?? {},
+                    answers: (answersRaw as JsonObject | undefined) ?? {},
                 });
 
                 if (!item) return json404Entity('Student');
@@ -156,9 +190,9 @@ export async function dispatchStudentRequest(
                 const body = await readJsonRecord(req);
                 if (!body) return json400('Invalid JSON body.');
 
-                const answersRaw = body.answers;
-                if (!isRecord(answersRaw)) {
-                    return json400('answers is required and must be a JSON object.');
+                const answersRaw = body.answers as unknown;
+                if (!isJsonObject(answersRaw)) {
+                    return json400('answers is required and must be a JSON object with JSON-serializable values.');
                 }
 
                 try {
