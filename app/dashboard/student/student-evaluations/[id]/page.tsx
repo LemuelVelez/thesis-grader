@@ -13,22 +13,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { toast } from "sonner"
-import {
-    ArrowLeft,
-    RefreshCw,
-    CheckCircle2,
-    Lock,
-    Clock3,
-    ClipboardList,
-} from "lucide-react"
+import { ArrowLeft, RefreshCw, CheckCircle2, Lock, Clock3, ClipboardList } from "lucide-react"
 
 type StudentEvaluationItem = {
     id: string
@@ -243,7 +230,11 @@ function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
     if (!payload) return null
     if (isRecord(payload)) {
         const candidate = (payload.schema as unknown) ?? payload.item ?? payload.data ?? payload.result ?? payload
-        return isRecord(candidate) ? (candidate as Record<string, unknown>) : isRecord(payload) ? (payload as Record<string, unknown>) : null
+        return isRecord(candidate)
+            ? (candidate as Record<string, unknown>)
+            : isRecord(payload)
+                ? (payload as Record<string, unknown>)
+                : null
     }
     return null
 }
@@ -341,8 +332,7 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
                 if (!seen.has(key)) {
                     seen.add(key)
 
-                    const label =
-                        toNullableString(node.label ?? node.title ?? node.question) ?? null
+                    const label = toNullableString(node.label ?? node.title ?? node.question) ?? null
 
                     const scaleObj = isRecord(node.scale) ? node.scale : null
                     const min = toFiniteNumber(scaleObj?.min) ?? 1
@@ -367,10 +357,7 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
     return out
 }
 
-function computeScoreSummary(
-    answers: Record<string, unknown> | null,
-    ratingQuestions: RatingQuestion[],
-): ScoreSummary {
+function computeScoreSummary(answers: Record<string, unknown> | null, ratingQuestions: RatingQuestion[]): ScoreSummary {
     if (!answers || ratingQuestions.length === 0) {
         return { total_score: 0, max_score: 0, percentage: 0, rating_questions: 0 }
     }
@@ -439,12 +426,7 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
             scale = { min: nMin, max: nMax, minLabel, maxLabel }
         }
 
-        const out: NormalizedQuestion = {
-            id,
-            type,
-            label,
-            required,
-        }
+        const out: NormalizedQuestion = { id, type, label, required }
         if (placeholder) out.placeholder = placeholder
         if (typeof maxLength === "number" && Number.isFinite(maxLength)) out.maxLength = maxLength
         if (scale) out.scale = scale
@@ -456,12 +438,17 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
         if (!isRecord(s)) return null
         const id = safeString(s.id) || `section_${idx + 1}`
         const sTitle = safeString(s.title).trim() || `Section ${idx + 1}`
+
         const questionsRaw = Array.isArray((s as any).questions)
             ? (s as any).questions
             : Array.isArray((s as any).fields)
                 ? (s as any).fields
                 : []
-        const questions = questionsRaw.map(normalizeQuestion).filter((x): x is NormalizedQuestion => x !== null)
+
+        const questions = (questionsRaw as unknown[])
+            .map(normalizeQuestion)
+            .filter((x: NormalizedQuestion | null): x is NormalizedQuestion => x !== null)
+
         if (questions.length === 0) return null
         return { id, title: sTitle, questions }
     }
@@ -470,7 +457,7 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
     if (sectionsRaw && sectionsRaw.length > 0) {
         const sections = sectionsRaw
             .map((s, i) => normalizeSection(s, i))
-            .filter((x): x is NormalizedSection => x !== null)
+            .filter((x: NormalizedSection | null): x is NormalizedSection => x !== null)
 
         if (sections.length > 0) {
             const out: NormalizedSchema = { title, sections }
@@ -481,7 +468,10 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
 
     const topQuestionsRaw = Array.isArray(raw.questions) ? raw.questions : Array.isArray(raw.fields) ? raw.fields : null
     if (topQuestionsRaw && topQuestionsRaw.length > 0) {
-        const questions = topQuestionsRaw.map(normalizeQuestion).filter((x): x is NormalizedQuestion => x !== null)
+        const questions = (topQuestionsRaw as unknown[])
+            .map(normalizeQuestion)
+            .filter((x: NormalizedQuestion | null): x is NormalizedQuestion => x !== null)
+
         if (questions.length > 0) {
             const out: NormalizedSchema = {
                 title,
@@ -514,11 +504,7 @@ function AnswerPill({ required, answered }: { required: boolean; answered: boole
     if (!required) {
         return <Badge variant="secondary">Optional</Badge>
     }
-    return answered ? (
-        <Badge className="bg-emerald-600 text-white">Answered</Badge>
-    ) : (
-        <Badge className="bg-destructive text-white">Required</Badge>
-    )
+    return answered ? <Badge className="bg-emerald-600 text-white">Answered</Badge> : <Badge className="bg-destructive text-white">Required</Badge>
 }
 
 export default function StudentEvaluationDetailPage() {
@@ -620,8 +606,7 @@ export default function StudentEvaluationDetailPage() {
             throw new Error(res.error)
         }
 
-        const normalized =
-            normalizeEvaluation((res.payload as any)?.item ?? (res.payload as any)?.data ?? (res.payload as any)?.result ?? res.payload)
+        const normalized = normalizeEvaluation((res.payload as any)?.item ?? (res.payload as any)?.data ?? (res.payload as any)?.result ?? res.payload)
 
         if (!normalized) {
             setItem(null)
@@ -851,10 +836,7 @@ export default function StudentEvaluationDetailPage() {
                                 const isRating = q.type === "rating"
                                 const scale = q.scale ?? { min: 1, max: 5, minLabel: "Low", maxLabel: "High" }
                                 const options = isRating
-                                    ? Array.from(
-                                        { length: Math.max(0, scale.max - scale.min + 1) },
-                                        (_, i) => scale.min + i,
-                                    )
+                                    ? Array.from({ length: Math.max(0, scale.max - scale.min + 1) }, (_, i) => scale.min + i)
                                     : []
 
                                 return (
@@ -966,7 +948,10 @@ export default function StudentEvaluationDetailPage() {
                             <Badge variant="secondary">{Math.round(previewCompletionPct)}%</Badge>
                         </div>
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                            <div className="h-2 rounded-full bg-primary" style={{ width: `${Math.round(previewCompletionPct)}%` }} />
+                            <div
+                                className="h-2 rounded-full bg-primary"
+                                style={{ width: `${Math.round(previewCompletionPct)}%` }}
+                            />
                         </div>
                     </div>
 
@@ -1060,9 +1045,7 @@ export default function StudentEvaluationDetailPage() {
                     <TabsContent value="raw" className="mt-4">
                         <div className="rounded-lg border bg-card p-4">
                             <p className="text-sm font-semibold">Answers JSON</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                Useful for troubleshooting or exporting.
-                            </p>
+                            <p className="mt-1 text-xs text-muted-foreground">Useful for troubleshooting or exporting.</p>
                             <div className="mt-3 max-h-105 overflow-auto whitespace-pre rounded-md border bg-background p-3 text-xs">
                                 {JSON.stringify(previewAnswers ?? {}, null, 2)}
                             </div>
@@ -1074,10 +1057,7 @@ export default function StudentEvaluationDetailPage() {
     }
 
     return (
-        <DashboardLayout
-            title="Student Feedback"
-            description="Open a feedback form, save your draft, and submit when ready."
-        >
+        <DashboardLayout title="Student Feedback" description="Open a feedback form, save your draft, and submit when ready.">
             <div className="space-y-4">
                 <Card>
                     <CardHeader className="space-y-2">
@@ -1106,9 +1086,7 @@ export default function StudentEvaluationDetailPage() {
                                         </span>
                                     ) : null}
 
-                                    {mode === "answer" && dirty ? (
-                                        <Badge className="bg-destructive text-white">Unsaved</Badge>
-                                    ) : null}
+                                    {mode === "answer" && dirty ? <Badge className="bg-destructive text-white">Unsaved</Badge> : null}
                                 </div>
 
                                 <div className="space-y-1">
@@ -1129,11 +1107,7 @@ export default function StudentEvaluationDetailPage() {
 
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                                 <div className="relative w-full sm:w-72">
-                                    <Input
-                                        value={evaluationId}
-                                        readOnly
-                                        className="pr-20 font-mono text-xs"
-                                    />
+                                    <Input value={evaluationId} readOnly className="pr-20 font-mono text-xs" />
                                     <div className="absolute right-2 top-1.5 flex gap-2">
                                         <Button
                                             size="sm"
@@ -1181,9 +1155,7 @@ export default function StudentEvaluationDetailPage() {
                                     <Card>
                                         <CardHeader className="space-y-1">
                                             <CardTitle className="text-base">Progress</CardTitle>
-                                            <CardDescription>
-                                                Track required completion and rating score.
-                                            </CardDescription>
+                                            <CardDescription>Track required completion and rating score.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-4">
                                             <div className="space-y-2">
@@ -1194,10 +1166,7 @@ export default function StudentEvaluationDetailPage() {
                                                     </span>
                                                 </div>
                                                 <div className="h-2 w-full rounded-full bg-muted">
-                                                    <div
-                                                        className="h-2 rounded-full bg-primary"
-                                                        style={{ width: `${Math.round(completionPct)}%` }}
-                                                    />
+                                                    <div className="h-2 rounded-full bg-primary" style={{ width: `${Math.round(completionPct)}%` }} />
                                                 </div>
 
                                                 {completion.required > 0 && completion.missing.length > 0 && mode === "answer" ? (
@@ -1222,15 +1191,10 @@ export default function StudentEvaluationDetailPage() {
                                             <div className="space-y-2">
                                                 <div className="flex items-center justify-between text-xs">
                                                     <span className="text-muted-foreground">Rating score</span>
-                                                    <span className="font-semibold">
-                                                        {score.max_score > 0 ? `${Math.round(scorePct)}%` : "—"}
-                                                    </span>
+                                                    <span className="font-semibold">{score.max_score > 0 ? `${Math.round(scorePct)}%` : "—"}</span>
                                                 </div>
                                                 <div className="h-2 w-full rounded-full bg-muted">
-                                                    <div
-                                                        className="h-2 rounded-full bg-primary"
-                                                        style={{ width: `${Math.round(scorePct)}%` }}
-                                                    />
+                                                    <div className="h-2 rounded-full bg-primary" style={{ width: `${Math.round(scorePct)}%` }} />
                                                 </div>
                                                 <p className="text-xs text-muted-foreground">
                                                     {score.max_score > 0
@@ -1254,12 +1218,10 @@ export default function StudentEvaluationDetailPage() {
                                     <Card>
                                         <CardHeader className="space-y-1">
                                             <CardTitle className="text-base">Actions</CardTitle>
-                                            <CardDescription>
-                                                Save a draft anytime, then submit when ready.
-                                            </CardDescription>
+                                            <CardDescription>Save a draft anytime, then submit when ready.</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-3">
-                                            <Tabs value={mode} onValueChange={(v) => setMode(v as any)}>
+                                            <Tabs value={mode} onValueChange={(v) => setMode(v as "answer" | "preview")}>
                                                 <TabsList className="grid w-full grid-cols-2">
                                                     <TabsTrigger value="answer">Answer</TabsTrigger>
                                                     <TabsTrigger value="preview">Preview</TabsTrigger>
@@ -1295,9 +1257,7 @@ export default function StudentEvaluationDetailPage() {
                                 <div className="lg:col-span-8">
                                     <Card>
                                         <CardHeader className="space-y-1">
-                                            <CardTitle className="text-base">
-                                                {mode === "answer" ? "Feedback form" : "Preview"}
-                                            </CardTitle>
+                                            <CardTitle className="text-base">{mode === "answer" ? "Feedback form" : "Preview"}</CardTitle>
                                             <CardDescription>
                                                 {mode === "answer"
                                                     ? "Fill out your responses. You can save draft anytime."
@@ -1306,9 +1266,7 @@ export default function StudentEvaluationDetailPage() {
                                         </CardHeader>
                                         <CardContent>
                                             <ScrollArea className="h-[70vh] rounded-lg border bg-card">
-                                                <div className="p-4">
-                                                    {mode === "answer" ? renderFormBody() : renderPreviewBody()}
-                                                </div>
+                                                <div className="p-4">{mode === "answer" ? renderFormBody() : renderPreviewBody()}</div>
                                             </ScrollArea>
                                         </CardContent>
                                     </Card>
