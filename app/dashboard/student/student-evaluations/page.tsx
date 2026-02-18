@@ -14,15 +14,17 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import { toast } from "sonner"
 
 type StudentEvaluationItem = {
     id: string
-    schedule_id: string | null
-    student_id: string | null
     status: string
     title: string | null
     group_title: string | null
     scheduled_at: string | null
+    room: string | null
+    program: string | null
+    term: string | null
     created_at: string | null
     submitted_at: string | null
     locked_at: string | null
@@ -125,8 +127,6 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
 
     return {
         id,
-        schedule_id: toNullableString(source.schedule_id ?? source.scheduleId ?? schedule?.id ?? raw.schedule_id),
-        student_id: toNullableString(source.student_id ?? source.studentId ?? raw.student_id),
         status: toStringSafe(source.status ?? raw.status) ?? "pending",
         title:
             toNullableString(
@@ -139,6 +139,9 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
             ) ?? null,
         group_title: toNullableString(source.group_title ?? source.groupTitle ?? group?.title),
         scheduled_at: toNullableString(source.scheduled_at ?? source.scheduledAt ?? schedule?.scheduled_at),
+        room: toNullableString(source.room ?? schedule?.room),
+        program: toNullableString(source.program ?? group?.program),
+        term: toNullableString(source.term ?? group?.term),
         created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
         submitted_at: toNullableString(source.submitted_at ?? source.submittedAt ?? raw.submitted_at),
         locked_at: toNullableString(source.locked_at ?? source.lockedAt ?? raw.locked_at),
@@ -161,20 +164,29 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     return `Request failed (${res.status})`
 }
 
+function formatScheduleSummary(item: StudentEvaluationItem): string {
+    const when = formatDateTime(item.scheduled_at)
+    const room = item.room ? ` • ${item.room}` : ""
+    return `${when}${room}`
+}
+
 export default function StudentEvaluationsPage() {
     const [evaluations, setEvaluations] = React.useState<StudentEvaluationItem[]>([])
     const [loading, setLoading] = React.useState(true)
+    const [refreshing, setRefreshing] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
-    const [source, setSource] = React.useState<string | null>(null)
 
     const [search, setSearch] = React.useState("")
     const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
 
-    const loadEvaluations = React.useCallback(async () => {
-        setLoading(true)
+    const loadEvaluations = React.useCallback(async (opts?: { toastOnDone?: boolean }) => {
+        const showToast = !!opts?.toastOnDone
+
+        setRefreshing(showToast)
+        setLoading((prev) => (showToast ? prev : true))
         setError(null)
 
-        let latestError = "Unable to load evaluations."
+        let latestError = "We couldn’t load your feedback forms."
         let loaded = false
 
         for (const endpoint of EVALUATION_ENDPOINT_CANDIDATES) {
@@ -197,21 +209,23 @@ export default function StudentEvaluationsPage() {
                     })
 
                 setEvaluations(parsed)
-                setSource(endpoint)
                 loaded = true
                 break
             } catch (err) {
-                latestError = err instanceof Error ? err.message : "Unable to load evaluations."
+                latestError = err instanceof Error ? err.message : latestError
             }
         }
 
         if (!loaded) {
             setEvaluations([])
-            setSource(null)
-            setError(`${latestError} No evaluation endpoint responded successfully.`)
+            setError(latestError)
+            if (showToast) toast.error(latestError)
+        } else if (showToast) {
+            toast.success("Feedback forms refreshed.")
         }
 
         setLoading(false)
+        setRefreshing(false)
     }, [])
 
     React.useEffect(() => {
@@ -223,18 +237,15 @@ export default function StudentEvaluationsPage() {
 
         return evaluations.filter((item) => {
             const s = item.status.toLowerCase()
-            if (statusFilter !== "all" && s !== statusFilter) {
-                return false
-            }
-
+            if (statusFilter !== "all" && s !== statusFilter) return false
             if (!q) return true
 
             return (
-                item.id.toLowerCase().includes(q) ||
-                (item.schedule_id ?? "").toLowerCase().includes(q) ||
-                (item.student_id ?? "").toLowerCase().includes(q) ||
                 (item.title ?? "").toLowerCase().includes(q) ||
                 (item.group_title ?? "").toLowerCase().includes(q) ||
+                (item.room ?? "").toLowerCase().includes(q) ||
+                (item.program ?? "").toLowerCase().includes(q) ||
+                (item.term ?? "").toLowerCase().includes(q) ||
                 s.includes(q)
             )
         })
@@ -252,25 +263,20 @@ export default function StudentEvaluationsPage() {
             else if (status === "locked") locked += 1
         }
 
-        return {
-            total: evaluations.length,
-            pending,
-            submitted,
-            locked,
-        }
+        return { total: evaluations.length, pending, submitted, locked }
     }, [evaluations])
 
     return (
         <DashboardLayout
-            title="Student Evaluations"
-            description="Track your submitted and pending evaluation records."
+            title="Student Feedback"
+            description="Share your post-defense feedback, reflections, and satisfaction to help improve the defense experience and process quality."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center">
                             <Input
-                                placeholder="Search by evaluation ID, schedule, title, group, or status"
+                                placeholder="Search by thesis/group, room, program, term, or status"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 className="w-full md:max-w-xl"
@@ -278,8 +284,8 @@ export default function StudentEvaluationsPage() {
 
                             <Button
                                 variant="outline"
-                                onClick={() => void loadEvaluations()}
-                                disabled={loading}
+                                onClick={() => void loadEvaluations({ toastOnDone: true })}
+                                disabled={loading || refreshing}
                             >
                                 Refresh
                             </Button>
@@ -325,10 +331,10 @@ export default function StudentEvaluationsPage() {
 
                         <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                             <p>
-                                Showing <span className="font-semibold text-foreground">{filtered.length}</span> of{" "}
-                                <span className="font-semibold text-foreground">{evaluations.length}</span> evaluation(s).
+                                Showing{" "}
+                                <span className="font-semibold text-foreground">{filtered.length}</span> of{" "}
+                                <span className="font-semibold text-foreground">{evaluations.length}</span> feedback form(s).
                             </p>
-                            {source ? <p>Data source: {source}</p> : null}
                         </div>
                     </div>
                 </div>
@@ -343,10 +349,9 @@ export default function StudentEvaluationsPage() {
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead className="min-w-44">Evaluation ID</TableHead>
-                                <TableHead className="min-w-64">Thesis / Group</TableHead>
+                                <TableHead className="min-w-72">Thesis / Group</TableHead>
+                                <TableHead className="min-w-64">Defense Schedule</TableHead>
                                 <TableHead className="min-w-32">Status</TableHead>
-                                <TableHead className="min-w-44">Scheduled</TableHead>
                                 <TableHead className="min-w-44">Submitted</TableHead>
                                 <TableHead className="min-w-44">Locked</TableHead>
                                 <TableHead className="min-w-28">Action</TableHead>
@@ -356,30 +361,37 @@ export default function StudentEvaluationsPage() {
                         <TableBody>
                             {loading ? (
                                 Array.from({ length: 8 }).map((_, i) => (
-                                    <TableRow key={`student-eval-skeleton-${i}`}>
-                                        <TableCell colSpan={7}>
+                                    <TableRow key={`student-feedback-skeleton-${i}`}>
+                                        <TableCell colSpan={6}>
                                             <div className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
                                         </TableCell>
                                     </TableRow>
                                 ))
                             ) : filtered.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                                        No evaluations found.
+                                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                                        No feedback forms found.
                                     </TableCell>
                                 </TableRow>
                             ) : (
                                 filtered.map((item) => (
                                     <TableRow key={item.id}>
-                                        <TableCell className="font-medium">{item.id}</TableCell>
                                         <TableCell>
                                             <div className="flex flex-col gap-1">
-                                                <span className="font-medium">{item.title ?? item.group_title ?? "Untitled evaluation"}</span>
-                                                <span className="text-xs text-muted-foreground">
-                                                    Schedule: {item.schedule_id ?? "—"}
+                                                <span className="font-medium">
+                                                    {item.title ?? item.group_title ?? "Untitled feedback form"}
                                                 </span>
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                    {item.program ? <span>{item.program}</span> : null}
+                                                    {item.term ? <span>• {item.term}</span> : null}
+                                                </div>
                                             </div>
                                         </TableCell>
+
+                                        <TableCell className="text-muted-foreground">
+                                            {formatScheduleSummary(item)}
+                                        </TableCell>
+
                                         <TableCell>
                                             <span
                                                 className={[
@@ -390,12 +402,13 @@ export default function StudentEvaluationsPage() {
                                                 {toTitleCase(item.status)}
                                             </span>
                                         </TableCell>
-                                        <TableCell className="text-muted-foreground">{formatDateTime(item.scheduled_at)}</TableCell>
+
                                         <TableCell className="text-muted-foreground">{formatDateTime(item.submitted_at)}</TableCell>
                                         <TableCell className="text-muted-foreground">{formatDateTime(item.locked_at)}</TableCell>
+
                                         <TableCell>
                                             <Button asChild size="sm" variant="outline">
-                                                <Link href={`/dashboard/student/student-evaluations/${item.id}`}>View</Link>
+                                                <Link href={`/dashboard/student/student-evaluations/${item.id}`}>Open</Link>
                                             </Button>
                                         </TableCell>
                                     </TableRow>

@@ -6,14 +6,8 @@ import { useParams } from "next/navigation"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 
 type StudentEvaluationDetail = {
     id: string
@@ -23,6 +17,9 @@ type StudentEvaluationDetail = {
     title: string | null
     group_title: string | null
     scheduled_at: string | null
+    room: string | null
+    program: string | null
+    term: string | null
     created_at: string | null
     submitted_at: string | null
     locked_at: string | null
@@ -121,6 +118,9 @@ function normalizeDetail(raw: unknown): StudentEvaluationDetail | null {
             ) ?? null,
         group_title: toNullableString(source.group_title ?? source.groupTitle ?? group?.title),
         scheduled_at: toNullableString(source.scheduled_at ?? source.scheduledAt ?? schedule?.scheduled_at),
+        room: toNullableString(source.room ?? schedule?.room),
+        program: toNullableString(source.program ?? group?.program),
+        term: toNullableString(source.term ?? group?.term),
         created_at: toNullableString(source.created_at ?? source.createdAt),
         submitted_at: toNullableString(source.submitted_at ?? source.submittedAt),
         locked_at: toNullableString(source.locked_at ?? source.lockedAt),
@@ -173,6 +173,31 @@ function extractDetailFromPayload(payload: unknown): StudentEvaluationDetail | n
     return null
 }
 
+function humanizeKey(key: string): string {
+    const withSpaces = key
+        .replace(/[_-]+/g, " ")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .trim()
+
+    if (!withSpaces) return key
+
+    return withSpaces
+        .split(/\s+/g)
+        .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+        .join(" ")
+}
+
+function formatAnswerValue(value: unknown): string {
+    if (value === null || value === undefined) return "—"
+    if (typeof value === "string") return value.trim().length ? value : "—"
+    if (typeof value === "number" || typeof value === "boolean") return String(value)
+    try {
+        return JSON.stringify(value, null, 2)
+    } catch {
+        return String(value)
+    }
+}
+
 export default function StudentEvaluationDetailPage() {
     const params = useParams()
 
@@ -184,59 +209,66 @@ export default function StudentEvaluationDetailPage() {
 
     const [item, setItem] = React.useState<StudentEvaluationDetail | null>(null)
     const [loading, setLoading] = React.useState(true)
+    const [refreshing, setRefreshing] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
-    const [source, setSource] = React.useState<string | null>(null)
 
-    const loadDetail = React.useCallback(async () => {
-        if (!evaluationId) {
-            setItem(null)
-            setError("Evaluation ID is missing.")
-            setLoading(false)
-            return
-        }
+    const loadDetail = React.useCallback(
+        async (opts?: { toastOnDone?: boolean }) => {
+            const showToast = !!opts?.toastOnDone
 
-        setLoading(true)
-        setError(null)
-
-        const endpointCandidates = [
-            `/api/student-evaluations/${evaluationId}`,
-            `/api/evaluations/${evaluationId}`,
-        ]
-
-        let latestError = "Unable to load evaluation details."
-        let loaded = false
-
-        for (const endpoint of endpointCandidates) {
-            try {
-                const res = await fetch(endpoint, { cache: "no-store" })
-                const payload = (await res.json().catch(() => null)) as unknown
-
-                if (!res.ok) {
-                    latestError = await readErrorMessage(res, payload)
-                    continue
-                }
-
-                const parsed = extractDetailFromPayload(payload)
-                if (!parsed) continue
-
-                setItem(parsed)
-                setSource(endpoint)
-                loaded = true
-                break
-            } catch (err) {
-                latestError =
-                    err instanceof Error ? err.message : "Unable to load evaluation details."
+            if (!evaluationId) {
+                setItem(null)
+                setError("Missing feedback form reference.")
+                setLoading(false)
+                return
             }
-        }
 
-        if (!loaded) {
-            setItem(null)
-            setSource(null)
-            setError(`${latestError} No detail endpoint responded successfully.`)
-        }
+            setError(null)
+            setRefreshing(showToast)
+            setLoading((prev) => (showToast ? prev : true))
 
-        setLoading(false)
-    }, [evaluationId])
+            const endpointCandidates = [
+                `/api/student-evaluations/${evaluationId}`,
+                `/api/evaluations/${evaluationId}`,
+            ]
+
+            let latestError = "We couldn’t load this feedback form."
+            let loaded = false
+
+            for (const endpoint of endpointCandidates) {
+                try {
+                    const res = await fetch(endpoint, { cache: "no-store" })
+                    const payload = (await res.json().catch(() => null)) as unknown
+
+                    if (!res.ok) {
+                        latestError = await readErrorMessage(res, payload)
+                        continue
+                    }
+
+                    const parsed = extractDetailFromPayload(payload)
+                    if (!parsed) continue
+
+                    setItem(parsed)
+                    loaded = true
+                    break
+                } catch (err) {
+                    latestError = err instanceof Error ? err.message : latestError
+                }
+            }
+
+            if (!loaded) {
+                setItem(null)
+                setError(latestError)
+                if (showToast) toast.error(latestError)
+            } else if (showToast) {
+                toast.success("Feedback form refreshed.")
+            }
+
+            setLoading(false)
+            setRefreshing(false)
+        },
+        [evaluationId],
+    )
 
     React.useEffect(() => {
         void loadDetail()
@@ -247,29 +279,66 @@ export default function StudentEvaluationDetailPage() {
         return Object.entries(item.answers).sort(([a], [b]) => a.localeCompare(b))
     }, [item?.answers])
 
+    const headerTitle = item?.title ?? item?.group_title ?? "Student Feedback"
+
+    const scheduleLine = React.useMemo(() => {
+        if (!item) return "—"
+        const when = formatDateTime(item.scheduled_at)
+        const room = item.room ? ` • ${item.room}` : ""
+        return `${when}${room}`
+    }, [item])
+
+    const onCopy = React.useCallback(async (value: unknown) => {
+        const text = formatAnswerValue(value)
+        try {
+            await navigator.clipboard.writeText(text)
+            toast.success("Copied to clipboard.")
+        } catch {
+            toast.error("Copy failed. Please try again.")
+        }
+    }, [])
+
     return (
         <DashboardLayout
-            title="Evaluation Details"
-            description="Inspect your evaluation record and submitted answers."
+            title="Student Feedback Details"
+            description="Review your post-defense feedback, reflections, and satisfaction responses for continuous improvement."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <div className="space-y-1">
-                            <p className="text-sm font-medium">Evaluation ID: {evaluationId || "—"}</p>
-                            <p className="text-xs text-muted-foreground">
-                                {source ? `Data source: ${source}` : "No data source detected yet."}
+                            <p className="text-base font-semibold">{headerTitle}</p>
+                            <p className="text-sm text-muted-foreground">
+                                {scheduleLine}
                             </p>
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                {item?.program ? <span>{item.program}</span> : null}
+                                {item?.term ? <span>• {item.term}</span> : null}
+                            </div>
                         </div>
 
                         <div className="flex items-center gap-2">
                             <Button asChild variant="outline">
                                 <Link href="/dashboard/student/student-evaluations">Back</Link>
                             </Button>
-                            <Button variant="outline" onClick={() => void loadDetail()} disabled={loading}>
+                            <Button
+                                variant="outline"
+                                onClick={() => void loadDetail({ toastOnDone: true })}
+                                disabled={loading || refreshing}
+                            >
                                 Refresh
                             </Button>
                         </div>
+                    </div>
+                </div>
+
+                <div className="rounded-lg border bg-card p-4">
+                    <div className="space-y-2">
+                        <p className="text-sm font-medium">Purpose</p>
+                        <p className="text-sm text-muted-foreground">
+                            This feedback/survey/reflection helps evaluate the defense experience and process quality,
+                            including peer/self/adviser/panel feedback and post-defense reflection/satisfaction insights.
+                        </p>
                     </div>
                 </div>
 
@@ -282,13 +351,16 @@ export default function StudentEvaluationDetailPage() {
                 <div className="rounded-lg border bg-card p-4">
                     {loading ? (
                         <div className="space-y-2">
-                            {Array.from({ length: 5 }).map((_, i) => (
-                                <div key={`detail-skeleton-${i}`} className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                            {Array.from({ length: 6 }).map((_, i) => (
+                                <div
+                                    key={`detail-skeleton-${i}`}
+                                    className="h-8 w-full animate-pulse rounded-md bg-muted/50"
+                                />
                             ))}
                         </div>
                     ) : !item ? (
                         <div className="rounded-md border bg-background p-4 text-sm text-muted-foreground">
-                            No evaluation data found.
+                            No feedback data found.
                         </div>
                     ) : (
                         <div className="space-y-4">
@@ -306,89 +378,96 @@ export default function StudentEvaluationDetailPage() {
                                         </span>
                                     </div>
                                 </div>
+
                                 <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Schedule ID</p>
-                                    <p className="text-sm font-semibold">{item.schedule_id ?? "—"}</p>
+                                    <p className="text-xs text-muted-foreground">Scheduled</p>
+                                    <p className="text-sm">{formatDateTime(item.scheduled_at)}</p>
                                 </div>
+
                                 <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Student ID</p>
-                                    <p className="text-sm font-semibold">{item.student_id ?? "—"}</p>
+                                    <p className="text-xs text-muted-foreground">Submitted</p>
+                                    <p className="text-sm">{formatDateTime(item.submitted_at)}</p>
                                 </div>
+
                                 <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Thesis / Group</p>
-                                    <p className="text-sm font-semibold">
-                                        {item.title ?? item.group_title ?? "—"}
-                                    </p>
+                                    <p className="text-xs text-muted-foreground">Locked</p>
+                                    <p className="text-sm">{formatDateTime(item.locked_at)}</p>
                                 </div>
                             </div>
 
-                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                            <div className="grid gap-2 sm:grid-cols-2">
                                 <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Scheduled At</p>
-                                    <p className="text-sm">{formatDateTime(item.scheduled_at)}</p>
-                                </div>
-                                <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Created At</p>
+                                    <p className="text-xs text-muted-foreground">Created</p>
                                     <p className="text-sm">{formatDateTime(item.created_at)}</p>
                                 </div>
                                 <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Submitted At</p>
-                                    <p className="text-sm">{formatDateTime(item.submitted_at)}</p>
-                                </div>
-                                <div className="rounded-md border bg-background p-3">
-                                    <p className="text-xs text-muted-foreground">Locked At</p>
-                                    <p className="text-sm">{formatDateTime(item.locked_at)}</p>
+                                    <p className="text-xs text-muted-foreground">Room</p>
+                                    <p className="text-sm">{item.room ?? "—"}</p>
                                 </div>
                             </div>
 
                             <div className="rounded-md border bg-background p-3">
                                 <p className="text-xs text-muted-foreground">Notes</p>
-                                <p className="text-sm">{item.notes ?? "—"}</p>
+                                <p className="text-sm whitespace-pre-wrap wrap-break-word">{item.notes ?? "—"}</p>
                             </div>
                         </div>
                     )}
                 </div>
 
                 <div className="rounded-lg border bg-card p-4">
-                    <div className="mb-3">
-                        <p className="text-sm font-medium">Submitted Answers</p>
+                    <div className="mb-3 space-y-1">
+                        <p className="text-sm font-medium">Your Responses</p>
                         <p className="text-xs text-muted-foreground">
-                            Parsed from <code className="rounded bg-muted px-1 py-0.5">answers</code> payload
+                            A summary of your submitted feedback and reflection answers.
                         </p>
                     </div>
 
                     {loading ? (
                         <div className="space-y-2">
                             {Array.from({ length: 6 }).map((_, i) => (
-                                <div key={`answer-skeleton-${i}`} className="h-8 w-full animate-pulse rounded-md bg-muted/50" />
+                                <div
+                                    key={`answer-skeleton-${i}`}
+                                    className="h-8 w-full animate-pulse rounded-md bg-muted/50"
+                                />
                             ))}
                         </div>
                     ) : answerEntries.length === 0 ? (
                         <div className="rounded-md border bg-background p-4 text-sm text-muted-foreground">
-                            No answer payload found for this evaluation.
+                            No responses found for this feedback form.
                         </div>
                     ) : (
-                        <div className="overflow-x-auto rounded-lg border">
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead className="min-w-52">Field</TableHead>
-                                        <TableHead className="min-w-105">Value</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {answerEntries.map(([key, value]) => (
-                                        <TableRow key={key}>
-                                            <TableCell className="font-medium">{key}</TableCell>
-                                            <TableCell className="whitespace-pre-wrap wrap-break-word text-sm">
-                                                {typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-                                                    ? String(value)
-                                                    : JSON.stringify(value, null, 2)}
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
+                        <div className="grid gap-2 lg:grid-cols-2">
+                            {answerEntries.map(([key, value]) => {
+                                const label = humanizeKey(key)
+                                const rendered = formatAnswerValue(value)
+
+                                return (
+                                    <div key={key} className="rounded-lg border bg-background p-3">
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="space-y-1">
+                                                <p className="text-xs text-muted-foreground">Question / Field</p>
+                                                <p className="text-sm font-semibold">{label}</p>
+                                            </div>
+
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => void onCopy(value)}
+                                            >
+                                                Copy
+                                            </Button>
+                                        </div>
+
+                                        <div className="mt-3 rounded-md border bg-card">
+                                            <ScrollArea className="max-h-52">
+                                                <pre className="whitespace-pre-wrap wrap-break-word p-3 text-sm">
+                                                    {rendered}
+                                                </pre>
+                                            </ScrollArea>
+                                        </div>
+                                    </div>
+                                )
+                            })}
                         </div>
                     )}
                 </div>
