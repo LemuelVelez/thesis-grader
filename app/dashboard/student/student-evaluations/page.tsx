@@ -68,6 +68,8 @@ type ScoreSummary = {
 
 const STATUS_FILTERS = ["all", "pending", "submitted", "locked"] as const
 
+const BTN_CURSOR = "cursor-pointer"
+
 // Keep student evaluation flows separate — do NOT fall back to /api/evaluations here.
 const EVALUATION_ENDPOINT_CANDIDATES = [
     "/api/student-evaluations/my",
@@ -666,7 +668,7 @@ export default function StudentEvaluationsPage() {
                                     variant="outline"
                                     onClick={() => void loadAll({ toastOnDone: true })}
                                     disabled={loading || refreshing}
-                                    className="gap-2"
+                                    className={["gap-2", BTN_CURSOR].join(" ")}
                                 >
                                     <RefreshCw className={["h-4 w-4", refreshing ? "animate-spin" : ""].join(" ")} />
                                     Refresh
@@ -688,6 +690,7 @@ export default function StudentEvaluationsPage() {
                                             size="sm"
                                             variant={active ? "default" : "outline"}
                                             onClick={() => setStatusFilter(status)}
+                                            className={BTN_CURSOR}
                                         >
                                             {status === "all" ? "All" : toTitleCase(status)}
                                             <span className="ml-2 rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-semibold">
@@ -854,7 +857,7 @@ export default function StudentEvaluationsPage() {
                                                     <Button
                                                         size="sm"
                                                         onClick={() => openEvaluation(item.id)}
-                                                        className="gap-2"
+                                                        className={["gap-2", BTN_CURSOR].join(" ")}
                                                     >
                                                         {primaryActionLabel}
                                                         <ArrowRight className="h-4 w-4" />
@@ -863,6 +866,7 @@ export default function StudentEvaluationsPage() {
                                                     <Button
                                                         size="sm"
                                                         variant="outline"
+                                                        className={BTN_CURSOR}
                                                         onClick={() => {
                                                             navigator.clipboard
                                                                 .writeText(item.id)

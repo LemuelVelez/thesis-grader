@@ -5,7 +5,6 @@ import { useParams, useRouter } from "next/navigation"
 
 import DashboardLayout from "@/components/dashboard-layout"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
@@ -75,6 +74,8 @@ type NormalizedSchema = {
     description?: string
     sections: NormalizedSection[]
 }
+
+const BTN_CURSOR = "cursor-pointer"
 
 // Keep student evaluation flows separate — do NOT fall back to /api/evaluations here.
 const SCHEMA_ENDPOINT_CANDIDATES = [
@@ -975,8 +976,8 @@ export default function StudentEvaluationDetailPage() {
 
                 <Tabs defaultValue="answers">
                     <TabsList className="flex w-full flex-wrap justify-start gap-2">
-                        <TabsTrigger value="answers">Answers</TabsTrigger>
-                        <TabsTrigger value="raw">Raw JSON</TabsTrigger>
+                        <TabsTrigger value="answers" className={BTN_CURSOR}>Answers</TabsTrigger>
+                        <TabsTrigger value="raw" className={BTN_CURSOR}>Raw JSON</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="answers" className="mt-4 space-y-3">
@@ -1068,7 +1069,7 @@ export default function StudentEvaluationDetailPage() {
                                         variant="outline"
                                         size="sm"
                                         onClick={() => router.push("/dashboard/student/student-evaluations")}
-                                        className="gap-2"
+                                        className={["gap-2", BTN_CURSOR].join(" ")}
                                     >
                                         <ArrowLeft className="h-4 w-4" />
                                         Back
@@ -1106,12 +1107,11 @@ export default function StudentEvaluationDetailPage() {
                             </div>
 
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-
                                 <Button
                                     variant="outline"
                                     onClick={() => void loadAll({ toastOnDone: true })}
                                     disabled={loading || refreshing}
-                                    className="gap-2"
+                                    className={["gap-2", BTN_CURSOR].join(" ")}
                                 >
                                     <RefreshCw className={["h-4 w-4", refreshing ? "animate-spin" : ""].join(" ")} />
                                     Refresh
@@ -1206,14 +1206,15 @@ export default function StudentEvaluationDetailPage() {
                                         <CardContent className="space-y-3">
                                             <Tabs value={mode} onValueChange={(v) => setMode(v as "answer" | "preview")}>
                                                 <TabsList className="grid w-full grid-cols-2">
-                                                    <TabsTrigger value="answer">Answer</TabsTrigger>
-                                                    <TabsTrigger value="preview">Preview</TabsTrigger>
+                                                    <TabsTrigger value="answer" className={BTN_CURSOR}>Answer</TabsTrigger>
+                                                    <TabsTrigger value="preview" className={BTN_CURSOR}>Preview</TabsTrigger>
                                                 </TabsList>
                                             </Tabs>
 
                                             <div className="flex flex-wrap gap-2">
                                                 <Button
                                                     variant="outline"
+                                                    className={BTN_CURSOR}
                                                     onClick={() => void onSaveDraft()}
                                                     disabled={!item || saving || submitting || isLockedLike || isSubmittedLike}
                                                 >
@@ -1221,6 +1222,7 @@ export default function StudentEvaluationDetailPage() {
                                                 </Button>
 
                                                 <Button
+                                                    className={BTN_CURSOR}
                                                     onClick={() => void onSubmit()}
                                                     disabled={!item || submitting || saving || isLockedLike || isSubmittedLike}
                                                 >
