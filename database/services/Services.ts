@@ -314,6 +314,10 @@ export interface StaffProfilesService
     findByUserId(userId: UUID): Promise<StaffProfileRow | null>;
 }
 
+/**
+ * Student Evaluations are feedback/survey/reflection entries (NOT grading scores).
+ * answers: JsonObject allows flexible form sections (peer/self/adviser/panel/process quality/satisfaction/etc.)
+ */
 export interface StudentEvaluationsService
     extends TableService<StudentEvaluationRow, StudentEvaluationInsert, StudentEvaluationPatch> {
     findById(id: UUID): Promise<StudentEvaluationRow | null>;
@@ -322,6 +326,15 @@ export interface StudentEvaluationsService
     submit(id: UUID, submittedAt?: ISODateTime): Promise<StudentEvaluationRow | null>;
     lock(id: UUID, lockedAt?: ISODateTime): Promise<StudentEvaluationRow | null>;
     setStatus(id: UUID, status: StudentEvalStatus): Promise<StudentEvaluationRow | null>;
+
+    /**
+     * Optional convenience helpers (safe to omit in implementations).
+     * Controllers can always fall back to findOne/findMany/upsert.
+     */
+    findByScheduleAndStudent?: (
+        scheduleId: UUID,
+        studentId: UUID,
+    ) => Promise<StudentEvaluationRow | null>;
 }
 
 export interface EvaluationExtrasService
