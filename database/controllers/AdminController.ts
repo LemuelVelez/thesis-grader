@@ -2,6 +2,7 @@ import type {
     DefenseScheduleInsert,
     DefenseSchedulePatch,
     DefenseScheduleRow,
+    JsonObject,
     StudentInsert,
     StudentPatch,
     StudentRow,
@@ -13,6 +14,12 @@ import type {
     UUID,
 } from '../models/Model';
 import type { ListQuery, Services } from '../services/Services';
+import StudentFeedbackService, {
+    type AdminStudentFeedbackRow,
+    type AssignStudentFeedbackFormsInput,
+    type AssignStudentFeedbackFormsResult,
+    type StudentFeedbackFormSchema,
+} from '../services/StudentFeedbackService';
 import {
     type RankingTarget,
     type ThesisStudentRankingRow,
@@ -82,7 +89,11 @@ export interface AdminDefenseScheduleView extends DefenseScheduleRow {
 }
 
 export class AdminController {
-    constructor(private readonly services: Services) { }
+    private readonly studentFeedback: StudentFeedbackService;
+
+    constructor(private readonly services: Services) {
+        this.studentFeedback = new StudentFeedbackService(services);
+    }
 
     /* --------------------------------- CREATE -------------------------------- */
 
@@ -103,6 +114,25 @@ export class AdminController {
     ): Promise<AdminDefenseScheduleView> {
         const created = await this.createDefenseSchedule(input);
         return this.enrichDefenseSchedule(created);
+    }
+
+    /* -------------------------- STUDENT FEEDBACK FORMS ------------------------- */
+
+    getStudentFeedbackFormSchema(): StudentFeedbackFormSchema {
+        return this.studentFeedback.getSchema();
+    }
+
+    async assignStudentFeedbackFormsForSchedule(
+        scheduleId: UUID,
+        input: AssignStudentFeedbackFormsInput = {},
+    ): Promise<AssignStudentFeedbackFormsResult | null> {
+        return this.studentFeedback.assignForSchedule(scheduleId, input);
+    }
+
+    async getStudentFeedbackFormsByScheduleDetailed(
+        scheduleId: UUID,
+    ): Promise<AdminStudentFeedbackRow[]> {
+        return this.studentFeedback.listForScheduleDetailed(scheduleId);
     }
 
     /* ---------------------------------- READ --------------------------------- */

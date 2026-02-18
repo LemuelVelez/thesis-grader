@@ -13,6 +13,7 @@ import {
     json404Entity,
     json405,
     omitWhere,
+    parseBoolean,
     parseListQuery,
     parsePositiveInt,
     parseStudentProfileInput,
@@ -33,6 +34,33 @@ import {
 function toRankingTarget(raw: string | null | undefined): RankingTarget {
     const normalized = (raw ?? '').trim().toLowerCase();
     return normalized === 'student' || normalized === 'students' ? 'student' : 'group';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toJsonObject(value: unknown): Record<string, unknown> {
+    if (!isRecord(value)) return {};
+    return value;
+}
+
+function parseUuidArrayFromBody(value: unknown): UUID[] {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    const out: UUID[] = [];
+
+    for (const item of value) {
+        if (typeof item !== 'string') continue;
+        const trimmed = item.trim();
+        if (!trimmed || !isUuidLike(trimmed)) continue;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(trimmed as UUID);
+    }
+
+    return out;
 }
 
 async function dispatchAdminRankingsRequest(
@@ -167,6 +195,108 @@ async function dispatchAdminStudentProfileRequest(
     return json405(['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS']);
 }
 
+async function dispatchAdminStudentFeedbackRequest(
+    req: NextRequest,
+    tail: string[],
+    services: DatabaseServices,
+): Promise<Response> {
+    const controller = new AdminController(services);
+    const method = req.method.toUpperCase();
+
+    if (tail.length === 0) {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        return json200({
+            service: 'admin.student-feedback',
+            routes: {
+                schema: 'GET /api/admin/student-feedback/schema',
+                listBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId',
+                assignForSchedule: 'POST /api/admin/student-feedback/schedule/:scheduleId/assign',
+            },
+        });
+    }
+
+    if (tail.length === 1 && tail[0] === 'schema') {
+        if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+        const item = controller.getStudentFeedbackFormSchema();
+        return json200({ item });
+    }
+
+    if (tail[0] === 'schedule' && tail.length >= 2) {
+        const scheduleId = tail[1];
+        if (!scheduleId || !isUuidLike(scheduleId)) {
+            return json400('scheduleId is required and must be a valid UUID.');
+        }
+
+        // GET /api/admin/student-feedback/schedule/:scheduleId
+        if (tail.length === 2) {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+            const items = await controller.getStudentFeedbackFormsByScheduleDetailed(
+                scheduleId as UUID,
+            );
+            return json200({ scheduleId, items, count: items.length });
+        }
+
+        // POST /api/admin/student-feedback/schedule/:scheduleId/assign
+        if (tail.length === 3 && tail[2] === 'assign') {
+            if (method !== 'POST' && method !== 'PATCH') {
+                return json405(['POST', 'PATCH', 'OPTIONS']);
+            }
+
+            const body = await readJsonRecord(req);
+            if (!body) return json400('Invalid JSON body.');
+
+            const studentIds = parseUuidArrayFromBody(body.studentIds ?? body.student_ids);
+            const overwritePendingRaw = body.overwritePending ?? body.overwrite_pending ?? body.overwrite ?? body.reset;
+            const overwritePending = typeof overwritePendingRaw === 'boolean'
+                ? overwritePendingRaw
+                : (parseBoolean(typeof overwritePendingRaw === 'string' ? overwritePendingRaw : null) ?? false);
+
+            const seedAnswersRaw =
+                body.seedAnswers ??
+                body.seed_answers ??
+                body.answersTemplate ??
+                body.answers_template ??
+                body.template;
+
+            const seedAnswers = toJsonObject(seedAnswersRaw);
+
+            const result = await controller.assignStudentFeedbackFormsForSchedule(
+                scheduleId as UUID,
+                {
+                    studentIds: studentIds.length > 0 ? studentIds : undefined,
+                    overwritePending,
+                    seedAnswers: seedAnswers as any,
+                    initialStatus: 'pending',
+                },
+            );
+
+            if (!result) return json404Entity('Defense schedule');
+
+            const status = result.counts.created > 0 ? 201 : 200;
+            return NextResponse.json(
+                {
+                    scheduleId: result.scheduleId,
+                    groupId: result.groupId,
+                    counts: result.counts,
+                    created: result.created,
+                    updated: result.updated,
+                    existing: result.existing,
+                    targetedStudentIds: result.targetedStudentIds,
+                    message:
+                        result.counts.created > 0
+                            ? 'Student feedback forms assigned successfully.'
+                            : 'No new student feedback forms were created.',
+                },
+                { status },
+            );
+        }
+
+        return json404Api();
+    }
+
+    return json404Api();
+}
+
 export async function dispatchAdminRequest(
     req: NextRequest,
     tail: string[],
@@ -191,6 +321,15 @@ export async function dispatchAdminRequest(
         }
 
         return json405(['GET', 'POST', 'OPTIONS']);
+    }
+
+    if (
+        tail[0] === 'student-feedback' ||
+        tail[0] === 'student-feedback-forms' ||
+        tail[0] === 'feedback' ||
+        tail[0] === 'feedback-forms'
+    ) {
+        return dispatchAdminStudentFeedbackRequest(req, tail.slice(1), services);
     }
 
     if (
