@@ -26,20 +26,43 @@ type StudentEvaluationItem = {
     program: string | null
     term: string | null
     created_at: string | null
+    updated_at: string | null
     submitted_at: string | null
     locked_at: string | null
+    answers: Record<string, unknown> | null
 }
 
 type StatusFilter = "all" | "pending" | "submitted" | "locked"
 
+type RatingQuestion = {
+    id: string
+    label: string | null
+    min: number
+    max: number
+}
+
+type ScoreSummary = {
+    total_score: number
+    max_score: number
+    percentage: number
+    rating_questions: number
+}
+
 const STATUS_FILTERS = ["all", "pending", "submitted", "locked"] as const
 
+// Keep student evaluation flows separate — do NOT fall back to /api/evaluations here.
 const EVALUATION_ENDPOINT_CANDIDATES = [
     "/api/student-evaluations/my",
     "/api/student-evaluations/me",
     "/api/student-evaluations",
-    "/api/evaluations?limit=500&orderBy=created_at&orderDirection=desc",
-    "/api/evaluations?limit=500",
+]
+
+const SCHEMA_ENDPOINT_CANDIDATES = [
+    "/api/student-evaluations/schema",
+    "/api/student-evaluations/form/schema",
+    "/api/student-evaluations/active-form",
+    "/api/students/me/student-evaluations/schema",
+    "/api/students/current/student-evaluations/schema",
 ]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -85,6 +108,19 @@ function statusTone(status: string): string {
     }
 
     return "border-muted-foreground/30 bg-muted text-muted-foreground"
+}
+
+function toJsonObject(value: unknown): Record<string, unknown> | null {
+    if (isRecord(value)) return value
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value) as unknown
+            if (isRecord(parsed)) return parsed
+        } catch {
+            // ignore
+        }
+    }
+    return null
 }
 
 function extractArrayPayload(payload: unknown): unknown[] {
@@ -143,8 +179,10 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
         program: toNullableString(source.program ?? group?.program),
         term: toNullableString(source.term ?? group?.term),
         created_at: toNullableString(source.created_at ?? source.createdAt ?? raw.created_at),
+        updated_at: toNullableString(source.updated_at ?? source.updatedAt ?? raw.updated_at),
         submitted_at: toNullableString(source.submitted_at ?? source.submittedAt ?? raw.submitted_at),
         locked_at: toNullableString(source.locked_at ?? source.lockedAt ?? raw.locked_at),
+        answers: toJsonObject(source.answers ?? raw.answers),
     }
 }
 
@@ -164,14 +202,240 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
     return `Request failed (${res.status})`
 }
 
+async function fetchFirstOk<T>(
+    endpoints: string[],
+    init?: RequestInit,
+): Promise<{ ok: true; payload: T } | { ok: false; error: string }> {
+    let latestError = "Request failed."
+
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, init)
+            const payload = (await res.json().catch(() => null)) as unknown
+
+            if (!res.ok) {
+                latestError = await readErrorMessage(res, payload)
+                continue
+            }
+
+            return { ok: true, payload: payload as T }
+        } catch (err) {
+            latestError = err instanceof Error ? err.message : latestError
+        }
+    }
+
+    return { ok: false, error: latestError }
+}
+
 function formatScheduleSummary(item: StudentEvaluationItem): string {
     const when = formatDateTime(item.scheduled_at)
     const room = item.room ? ` • ${item.room}` : ""
     return `${when}${room}`
 }
 
+function isMissingAnswer(value: unknown): boolean {
+    if (value === undefined || value === null) return true
+    if (typeof value === "string") return value.trim().length === 0
+    if (Array.isArray(value)) return value.length === 0
+    if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length === 0
+    return false
+}
+
+function toFiniteNumber(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string") {
+        const t = value.trim()
+        if (!t) return null
+        const n = Number(t)
+        return Number.isFinite(n) ? n : null
+    }
+    return null
+}
+
+function clamp(n: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, n))
+}
+
+function pickQuestionId(raw: Record<string, unknown>): string | null {
+    return (
+        toStringSafe(raw.id) ||
+        toStringSafe(raw.key) ||
+        toStringSafe(raw.name) ||
+        toStringSafe(raw.field) ||
+        toStringSafe(raw.questionId) ||
+        null
+    )
+}
+
+function collectRequiredKeys(schema: unknown): string[] {
+    const keys = new Set<string>()
+
+    const walk = (node: unknown) => {
+        if (node === null || node === undefined) return
+
+        if (Array.isArray(node)) {
+            for (const it of node) walk(it)
+            return
+        }
+
+        if (!isRecord(node)) return
+
+        if (Array.isArray(node.required)) {
+            for (const k of node.required) {
+                if (typeof k === "string" && k.trim()) keys.add(k.trim())
+            }
+        }
+
+        const candidates: unknown[] = []
+        if (Array.isArray(node.questions)) candidates.push(...node.questions)
+        if (Array.isArray(node.fields)) candidates.push(...node.fields)
+
+        for (const it of candidates) {
+            if (!isRecord(it)) continue
+            if (it.required !== true) continue
+            const id = pickQuestionId(it)
+            if (id) keys.add(id)
+        }
+
+        for (const v of Object.values(node)) walk(v)
+    }
+
+    walk(schema)
+    return Array.from(keys)
+}
+
+function collectRatingQuestions(schema: unknown): RatingQuestion[] {
+    const out: RatingQuestion[] = []
+    const seen = new Set<string>()
+
+    const walk = (node: unknown) => {
+        if (node === null || node === undefined) return
+
+        if (Array.isArray(node)) {
+            for (const it of node) walk(it)
+            return
+        }
+
+        if (!isRecord(node)) return
+
+        const type = toStringSafe(node.type)?.toLowerCase() ?? null
+        if (type === "rating") {
+            const id = pickQuestionId(node)
+            if (id) {
+                const key = id.trim().toLowerCase()
+                if (!seen.has(key)) {
+                    seen.add(key)
+
+                    const label =
+                        toNullableString(node.label ?? node.title ?? node.question) ?? null
+
+                    const scaleObj = isRecord(node.scale) ? node.scale : null
+                    const min = toFiniteNumber(scaleObj?.min) ?? 1
+                    const max = toFiniteNumber(scaleObj?.max) ?? 5
+                    const normalizedMin = Math.min(min, max)
+                    const normalizedMax = Math.max(min, max)
+
+                    out.push({
+                        id,
+                        label,
+                        min: normalizedMin,
+                        max: normalizedMax,
+                    })
+                }
+            }
+        }
+
+        for (const v of Object.values(node)) walk(v)
+    }
+
+    walk(schema)
+    return out
+}
+
+function computeScoreSummary(
+    answers: Record<string, unknown> | null,
+    ratingQuestions: RatingQuestion[],
+): ScoreSummary {
+    if (!answers || ratingQuestions.length === 0) {
+        return { total_score: 0, max_score: 0, percentage: 0, rating_questions: 0 }
+    }
+
+    let total = 0
+    let maxTotal = 0
+
+    for (const q of ratingQuestions) {
+        maxTotal += q.max
+        const n = toFiniteNumber(answers[q.id])
+        const scored = n === null ? 0 : clamp(n, q.min, q.max)
+        total += scored
+    }
+
+    const percentage = maxTotal > 0 ? (total / maxTotal) * 100 : 0
+
+    return {
+        total_score: total,
+        max_score: maxTotal,
+        percentage,
+        rating_questions: ratingQuestions.length,
+    }
+}
+
+function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
+    if (!payload) return null
+    if (isRecord(payload)) {
+        const candidate = (payload.schema as unknown) ?? payload.item ?? payload.data ?? payload.result ?? payload
+        return isRecord(candidate) ? (candidate as Record<string, unknown>) : isRecord(payload) ? (payload as Record<string, unknown>) : null
+    }
+    return null
+}
+
+function getSchemaTitle(schema: Record<string, unknown> | null): string {
+    if (!schema) return "Active feedback form"
+    return (
+        toStringSafe(schema.title) ||
+        toStringSafe(schema.name) ||
+        toStringSafe(schema.label) ||
+        "Active feedback form"
+    )
+}
+
+function countQuestions(schema: Record<string, unknown> | null): number {
+    if (!schema) return 0
+    const seen = new Set<string>()
+    let count = 0
+
+    const walk = (node: unknown) => {
+        if (node === null || node === undefined) return
+        if (Array.isArray(node)) {
+            for (const it of node) walk(it)
+            return
+        }
+        if (!isRecord(node)) return
+
+        const maybeType = toStringSafe(node.type)?.toLowerCase() ?? null
+        const maybeId = pickQuestionId(node)
+        if (maybeId) {
+            const k = maybeId.trim().toLowerCase()
+            if (!seen.has(k)) {
+                // Count question-like nodes (including rating/text/etc). Keep broad but safe.
+                if (maybeType || node.label || node.title || node.question) {
+                    seen.add(k)
+                    count += 1
+                }
+            }
+        }
+
+        for (const v of Object.values(node)) walk(v)
+    }
+
+    walk(schema)
+    return count
+}
+
 export default function StudentEvaluationsPage() {
     const [evaluations, setEvaluations] = React.useState<StudentEvaluationItem[]>([])
+    const [schema, setSchema] = React.useState<Record<string, unknown> | null>(null)
+
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
@@ -179,13 +443,13 @@ export default function StudentEvaluationsPage() {
     const [search, setSearch] = React.useState("")
     const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
 
-    const loadEvaluations = React.useCallback(async (opts?: { toastOnDone?: boolean }) => {
-        const showToast = !!opts?.toastOnDone
+    const requiredKeys = React.useMemo(() => collectRequiredKeys(schema), [schema])
+    const ratingQuestions = React.useMemo(() => collectRatingQuestions(schema), [schema])
 
-        setRefreshing(showToast)
-        setLoading((prev) => (showToast ? prev : true))
-        setError(null)
+    const schemaTitle = React.useMemo(() => getSchemaTitle(schema), [schema])
+    const schemaQuestionCount = React.useMemo(() => countQuestions(schema), [schema])
 
+    const loadEvaluations = React.useCallback(async () => {
         let latestError = "We couldn’t load your feedback forms."
         let loaded = false
 
@@ -203,8 +467,8 @@ export default function StudentEvaluationsPage() {
                     .map(normalizeEvaluation)
                     .filter((item): item is StudentEvaluationItem => item !== null)
                     .sort((a, b) => {
-                        const ta = a.created_at ? new Date(a.created_at).getTime() : 0
-                        const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+                        const ta = (a.updated_at ?? a.created_at) ? new Date(a.updated_at ?? a.created_at!).getTime() : 0
+                        const tb = (b.updated_at ?? b.created_at) ? new Date(b.updated_at ?? b.created_at!).getTime() : 0
                         return tb - ta
                     })
 
@@ -218,19 +482,47 @@ export default function StudentEvaluationsPage() {
 
         if (!loaded) {
             setEvaluations([])
-            setError(latestError)
-            if (showToast) toast.error(latestError)
-        } else if (showToast) {
-            toast.success("Feedback forms refreshed.")
+            throw new Error(latestError)
         }
-
-        setLoading(false)
-        setRefreshing(false)
     }, [])
 
+    const loadSchema = React.useCallback(async () => {
+        const res = await fetchFirstOk<unknown>(SCHEMA_ENDPOINT_CANDIDATES, { cache: "no-store" })
+        if (!res.ok) {
+            setSchema(null)
+            throw new Error(res.error)
+        }
+
+        const parsed = extractSchemaObject(res.payload)
+        setSchema(parsed)
+    }, [])
+
+    const loadAll = React.useCallback(
+        async (opts?: { toastOnDone?: boolean }) => {
+            const showToast = !!opts?.toastOnDone
+
+            setRefreshing(showToast)
+            setLoading((prev) => (showToast ? prev : true))
+            setError(null)
+
+            try {
+                await Promise.all([loadSchema(), loadEvaluations()])
+                if (showToast) toast.success("Feedback workspace refreshed.")
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : "We couldn’t load your feedback workspace."
+                setError(msg)
+                if (showToast) toast.error(msg)
+            } finally {
+                setLoading(false)
+                setRefreshing(false)
+            }
+        },
+        [loadEvaluations, loadSchema],
+    )
+
     React.useEffect(() => {
-        void loadEvaluations()
-    }, [loadEvaluations])
+        void loadAll()
+    }, [loadAll])
 
     const filtered = React.useMemo(() => {
         const q = search.trim().toLowerCase()
@@ -240,16 +532,20 @@ export default function StudentEvaluationsPage() {
             if (statusFilter !== "all" && s !== statusFilter) return false
             if (!q) return true
 
+            const score = computeScoreSummary(item.answers, ratingQuestions)
+            const scoreLabel = score.max_score > 0 ? `${Math.round(score.percentage)}%` : ""
+
             return (
                 (item.title ?? "").toLowerCase().includes(q) ||
                 (item.group_title ?? "").toLowerCase().includes(q) ||
                 (item.room ?? "").toLowerCase().includes(q) ||
                 (item.program ?? "").toLowerCase().includes(q) ||
                 (item.term ?? "").toLowerCase().includes(q) ||
-                s.includes(q)
+                s.includes(q) ||
+                scoreLabel.toLowerCase().includes(q)
             )
         })
-    }, [evaluations, search, statusFilter])
+    }, [evaluations, search, statusFilter, ratingQuestions])
 
     const totals = React.useMemo(() => {
         let pending = 0
@@ -266,29 +562,73 @@ export default function StudentEvaluationsPage() {
         return { total: evaluations.length, pending, submitted, locked }
     }, [evaluations])
 
+    const statusCounts = React.useMemo(() => {
+        return {
+            all: totals.total,
+            pending: totals.pending,
+            submitted: totals.submitted,
+            locked: totals.locked,
+        } satisfies Record<StatusFilter, number>
+    }, [totals])
+
+    const computeCompletion = React.useCallback(
+        (answers: Record<string, unknown> | null) => {
+            const uniqueReq = Array.from(new Set(requiredKeys))
+            if (uniqueReq.length === 0) return { required: 0, answered: 0, percent: 0 }
+
+            const answered = uniqueReq.reduce((acc, k) => {
+                const v = answers ? answers[k] : undefined
+                return acc + (isMissingAnswer(v) ? 0 : 1)
+            }, 0)
+
+            const percent = uniqueReq.length > 0 ? (answered / uniqueReq.length) * 100 : 0
+            return { required: uniqueReq.length, answered, percent }
+        },
+        [requiredKeys],
+    )
+
     return (
         <DashboardLayout
             title="Student Feedback"
-            description="Share your post-defense feedback, reflections, and satisfaction to help improve the defense experience and process quality."
+            description="Complete your active feedback form and view scoring insights from rating questions to help improve the defense experience."
         >
             <div className="space-y-4">
                 <div className="rounded-lg border bg-card p-4">
                     <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                            <Input
-                                placeholder="Search by thesis/group, room, program, term, or status"
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full md:max-w-xl"
-                            />
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                            <div className="space-y-1">
+                                <p className="text-sm font-semibold">{schemaTitle}</p>
+                                <p className="text-xs text-muted-foreground">
+                                    {schemaQuestionCount > 0 ? (
+                                        <>
+                                            {schemaQuestionCount} question(s) •{" "}
+                                            {requiredKeys.length} required •{" "}
+                                            {ratingQuestions.length} rating item(s)
+                                        </>
+                                    ) : (
+                                        <>
+                                            Active form schema will appear here once available.
+                                        </>
+                                    )}
+                                </p>
+                            </div>
 
-                            <Button
-                                variant="outline"
-                                onClick={() => void loadEvaluations({ toastOnDone: true })}
-                                disabled={loading || refreshing}
-                            >
-                                Refresh
-                            </Button>
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <Input
+                                    placeholder="Search by thesis/group, room, program, term, status, or score"
+                                    value={search}
+                                    onChange={(e) => setSearch(e.target.value)}
+                                    className="w-full md:max-w-xl"
+                                />
+
+                                <Button
+                                    variant="outline"
+                                    onClick={() => void loadAll({ toastOnDone: true })}
+                                    disabled={loading || refreshing}
+                                >
+                                    Refresh
+                                </Button>
+                            </div>
                         </div>
 
                         <div className="space-y-2">
@@ -296,6 +636,7 @@ export default function StudentEvaluationsPage() {
                             <div className="flex flex-wrap gap-2">
                                 {STATUS_FILTERS.map((status) => {
                                     const active = statusFilter === status
+                                    const count = statusCounts[status]
                                     return (
                                         <Button
                                             key={status}
@@ -304,6 +645,9 @@ export default function StudentEvaluationsPage() {
                                             onClick={() => setStatusFilter(status)}
                                         >
                                             {status === "all" ? "All" : toTitleCase(status)}
+                                            <span className="ml-2 rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-semibold">
+                                                {count}
+                                            </span>
                                         </Button>
                                     )
                                 })}
@@ -335,6 +679,9 @@ export default function StudentEvaluationsPage() {
                                 <span className="font-semibold text-foreground">{filtered.length}</span> of{" "}
                                 <span className="font-semibold text-foreground">{evaluations.length}</span> feedback form(s).
                             </p>
+                            <p>
+                                Scores update from rating items in the active form (non-rating questions don’t affect the score).
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -352,8 +699,8 @@ export default function StudentEvaluationsPage() {
                                 <TableHead className="min-w-72">Thesis / Group</TableHead>
                                 <TableHead className="min-w-64">Defense Schedule</TableHead>
                                 <TableHead className="min-w-32">Status</TableHead>
-                                <TableHead className="min-w-44">Submitted</TableHead>
-                                <TableHead className="min-w-44">Locked</TableHead>
+                                <TableHead className="min-w-56">Completion</TableHead>
+                                <TableHead className="min-w-56">Score</TableHead>
                                 <TableHead className="min-w-28">Action</TableHead>
                             </TableRow>
                         </TableHeader>
@@ -374,49 +721,124 @@ export default function StudentEvaluationsPage() {
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                filtered.map((item) => (
-                                    <TableRow key={item.id}>
-                                        <TableCell>
-                                            <div className="flex flex-col gap-1">
-                                                <span className="font-medium">
-                                                    {item.title ?? item.group_title ?? "Untitled feedback form"}
-                                                </span>
-                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                                    {item.program ? <span>{item.program}</span> : null}
-                                                    {item.term ? <span>• {item.term}</span> : null}
+                                filtered.map((item) => {
+                                    const completion = computeCompletion(item.answers)
+                                    const completionPct = Math.max(0, Math.min(100, completion.percent))
+
+                                    const score = computeScoreSummary(item.answers, ratingQuestions)
+                                    const scorePct = Math.max(0, Math.min(100, score.percentage))
+                                    const scoreLabel = score.max_score > 0 ? `${Math.round(scorePct)}%` : "—"
+
+                                    const primaryTitle = item.title ?? item.group_title ?? "Untitled feedback form"
+
+                                    return (
+                                        <TableRow key={item.id}>
+                                            <TableCell>
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="font-medium">{primaryTitle}</span>
+                                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                        {item.program ? <span>{item.program}</span> : null}
+                                                        {item.term ? <span>• {item.term}</span> : null}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        </TableCell>
+                                            </TableCell>
 
-                                        <TableCell className="text-muted-foreground">
-                                            {formatScheduleSummary(item)}
-                                        </TableCell>
+                                            <TableCell className="text-muted-foreground">
+                                                {formatScheduleSummary(item)}
+                                            </TableCell>
 
-                                        <TableCell>
-                                            <span
-                                                className={[
-                                                    "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                    statusTone(item.status),
-                                                ].join(" ")}
-                                            >
-                                                {toTitleCase(item.status)}
-                                            </span>
-                                        </TableCell>
+                                            <TableCell>
+                                                <span
+                                                    className={[
+                                                        "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                                                        statusTone(item.status),
+                                                    ].join(" ")}
+                                                >
+                                                    {toTitleCase(item.status)}
+                                                </span>
+                                            </TableCell>
 
-                                        <TableCell className="text-muted-foreground">{formatDateTime(item.submitted_at)}</TableCell>
-                                        <TableCell className="text-muted-foreground">{formatDateTime(item.locked_at)}</TableCell>
+                                            <TableCell>
+                                                {completion.required === 0 ? (
+                                                    <div className="text-xs text-muted-foreground">
+                                                        —
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center justify-between text-xs">
+                                                            <span className="text-muted-foreground">Required</span>
+                                                            <span className="font-semibold">
+                                                                {completion.answered}/{completion.required}
+                                                            </span>
+                                                        </div>
+                                                        <div className="h-2 w-full rounded-full bg-muted">
+                                                            <div
+                                                                className="h-2 rounded-full bg-primary"
+                                                                style={{ width: `${Math.round(completionPct)}%` }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </TableCell>
 
-                                        <TableCell>
-                                            <Button asChild size="sm" variant="outline">
-                                                <Link href={`/dashboard/student/student-evaluations/${item.id}`}>Open</Link>
-                                            </Button>
-                                        </TableCell>
-                                    </TableRow>
-                                ))
+                                            <TableCell>
+                                                {score.max_score === 0 ? (
+                                                    <div className="text-xs text-muted-foreground">
+                                                        —
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center justify-between text-xs">
+                                                            <span className="text-muted-foreground">Rating score</span>
+                                                            <span className="font-semibold">{scoreLabel}</span>
+                                                        </div>
+                                                        <div className="h-2 w-full rounded-full bg-muted">
+                                                            <div
+                                                                className="h-2 rounded-full bg-primary"
+                                                                style={{ width: `${Math.round(scorePct)}%` }}
+                                                            />
+                                                        </div>
+                                                        <div className="text-xs text-muted-foreground">
+                                                            {score.total_score}/{score.max_score} total
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </TableCell>
+
+                                            <TableCell>
+                                                <Button asChild size="sm" variant="outline">
+                                                    <Link href={`/dashboard/student/student-evaluations/${item.id}`}>
+                                                        {item.status.toLowerCase() === "pending" ? "Continue" : "Open"}
+                                                    </Link>
+                                                </Button>
+                                            </TableCell>
+                                        </TableRow>
+                                    )
+                                })
                             )}
                         </TableBody>
                     </Table>
                 </div>
+
+                {!loading ? (
+                    <div className="rounded-lg border bg-card p-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                                <p className="text-sm font-semibold">Tip</p>
+                                <p className="text-xs text-muted-foreground">
+                                    Use <span className="font-semibold text-foreground">Continue</span> to resume pending feedback.
+                                    Your answers autosave while you fill out the form.
+                                </p>
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-sm font-semibold">About scoring</p>
+                                <p className="text-xs text-muted-foreground">
+                                    The score preview is computed from rating questions in the active form. Text/choice answers won’t change the score.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
             </div>
         </DashboardLayout>
     )
