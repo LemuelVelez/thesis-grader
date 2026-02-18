@@ -48,21 +48,22 @@ function isRouteNotFoundError(message: string): boolean {
 }
 
 /**
- * This route intentionally rewrites the slug so that:
- * /api/student-evaluations/* is handled by the STUDENT route dispatcher,
- * which supports:
+ * This route ONLY rewrites the slug for:
+ *   /api/student-evaluations/*
+ *
+ * so it is handled by the STUDENT route dispatcher which supports:
  * - /schema
  * - /form/schema
  * - /active-form
  * - /my
  * - /me
  *
- * Without this, the generic catch-all may dispatch it to the generic
- * student-evaluations resource handler which does not implement these subroutes.
+ * IMPORTANT:
+ * Do NOT rewrite other routes (e.g. /api/admin/*), otherwise they will 404.
  */
 function buildAuthRouteContextFromRequest(req: NextRequest): AuthRouteContext {
     const pathname = req.nextUrl.pathname ?? '';
-    const parts = pathname.split('/').filter(Boolean); // ["api","student-evaluations",...]
+    const parts = pathname.split('/').filter(Boolean); // ["api", ...]
     const apiIndex = parts.findIndex((p) => p.toLowerCase() === 'api');
     const baseIndex = parts.findIndex((p) => p.toLowerCase() === 'student-evaluations');
 
@@ -73,9 +74,8 @@ function buildAuthRouteContextFromRequest(req: NextRequest): AuthRouteContext {
                 ? parts.slice(apiIndex + 1)
                 : parts;
 
-    // IMPORTANT: force root = "student" and keep tail as the self-evals segments.
-    // This avoids the "student scoped evaluations alias" interception in the central router.
-    const slug = ['student', ...tail];
+    // Only force root = "student" for /api/student-evaluations/*
+    const slug = baseIndex >= 0 ? ['student', ...tail] : tail;
 
     return {
         params: { slug },

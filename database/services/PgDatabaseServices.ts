@@ -55,6 +55,12 @@ import type {
     StudentEvaluationInsert,
     StudentEvaluationPatch,
     StudentEvaluationRow,
+    StudentEvaluationScoreInsert,
+    StudentEvaluationScorePatch,
+    StudentEvaluationScoreRow,
+    StudentFeedbackFormInsert,
+    StudentFeedbackFormPatch,
+    StudentFeedbackFormRow,
     StudentInsert,
     StudentPatch,
     StudentRow,
@@ -892,6 +898,45 @@ class PgStudentEvaluationsService extends PgTableService<
     }
 }
 
+/**
+ * MISSING BEFORE:
+ * student_evaluation_scores concrete service.
+ * Needed by StudentFeedbackService + EntityServiceMap coverage.
+ */
+class PgStudentEvaluationScoresService extends PgTableService<
+    StudentEvaluationScoreRow,
+    StudentEvaluationScoreInsert,
+    StudentEvaluationScorePatch
+> {
+    constructor(executor: Queryable) {
+        super(executor, 'student_evaluation_scores');
+    }
+
+    findById(id: UUID): Promise<StudentEvaluationScoreRow | null> {
+        return this.findOne({ id });
+    }
+
+    findByStudentEvaluationId(studentEvaluationId: UUID): Promise<StudentEvaluationScoreRow | null> {
+        return this.findOne({ student_evaluation_id: studentEvaluationId });
+    }
+
+    listBySchedule(scheduleId: UUID): Promise<StudentEvaluationScoreRow[]> {
+        return this.findMany({
+            where: { schedule_id: scheduleId },
+            orderBy: 'computed_at',
+            orderDirection: 'desc',
+        });
+    }
+
+    listByStudent(studentId: UUID): Promise<StudentEvaluationScoreRow[]> {
+        return this.findMany({
+            where: { student_id: studentId },
+            orderBy: 'computed_at',
+            orderDirection: 'desc',
+        });
+    }
+}
+
 class PgEvaluationExtrasService extends PgTableService<
     EvaluationExtraRow,
     EvaluationExtraInsert,
@@ -1022,6 +1067,55 @@ class PgNotificationsService extends PgTableService<
     }
 }
 
+/**
+ * MISSING BEFORE:
+ * student_feedback_forms concrete service.
+ * Needed by StudentFeedbackService + AdminRoute(/student-feedback/forms) + EntityServiceMap coverage.
+ */
+class PgStudentFeedbackFormsService extends PgTableService<
+    StudentFeedbackFormRow,
+    StudentFeedbackFormInsert,
+    StudentFeedbackFormPatch
+> {
+    constructor(executor: Queryable) {
+        super(executor, 'student_feedback_forms');
+    }
+
+    findById(id: UUID): Promise<StudentFeedbackFormRow | null> {
+        return this.findOne({ id });
+    }
+
+    listActive(
+        query: Omit<ListQuery<StudentFeedbackFormRow>, 'where'> = {},
+    ): Promise<StudentFeedbackFormRow[]> {
+        return this.findMany({
+            ...query,
+            where: { active: true },
+            orderBy: query.orderBy ?? 'version',
+            orderDirection: query.orderDirection ?? 'desc',
+        });
+    }
+
+    async getActiveLatest(): Promise<StudentFeedbackFormRow | null> {
+        const sql = `
+      SELECT *
+      FROM ${quoteIdentifier('student_feedback_forms')}
+      WHERE ${quoteIdentifier('active')} = TRUE
+      ORDER BY ${quoteIdentifier('version')} DESC, ${quoteIdentifier('updated_at')} DESC
+      LIMIT 1
+    `;
+        const result = await this.executor.query<StudentFeedbackFormRow>(sql);
+        return result.rows[0] ?? null;
+    }
+
+    setActive(formId: UUID, active: boolean): Promise<StudentFeedbackFormRow | null> {
+        return this.updateOne(
+            { id: formId },
+            { active, updated_at: nowIso() } as StudentFeedbackFormPatch,
+        );
+    }
+}
+
 class PgPushSubscriptionsService extends PgTableService<
     PushSubscriptionRow,
     PushSubscriptionInsert,
@@ -1105,7 +1199,6 @@ class PgPushSubscriptionsService extends PgTableService<
 
         return {
             ...payload,
-            // id is intentionally injected so table creation does not require extension defaults.
             ...(record.id ? { id: record.id } : { id: randomUUID() }),
             content_encoding: contentEncoding,
             subscription,
@@ -1299,6 +1392,11 @@ function buildEntityServices(executor: Queryable): EntityServiceMap {
         students: new PgStudentsService(executor),
         staff_profiles: new PgStaffProfilesService(executor),
         student_evaluations: new PgStudentEvaluationsService(executor),
+
+        // ✅ FIX: missing concrete services required by EntityServiceMap
+        student_evaluation_scores: new PgStudentEvaluationScoresService(executor),
+        student_feedback_forms: new PgStudentFeedbackFormsService(executor),
+
         evaluation_extras: new PgEvaluationExtrasService(executor),
         panelist_profiles: new PgPanelistProfilesService(executor),
         rubric_scale_levels: new PgRubricScaleLevelsService(executor),
