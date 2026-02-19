@@ -1,68 +1,264 @@
 "use client"
 
 import * as React from "react"
-import { toast } from "sonner"
-
 import DashboardLayout from "@/components/dashboard-layout"
-
-import { AdminEvaluationsForm } from "@/components/evaluation/admin-evaluations-form"
-import { useAdminEvaluationsPage, type AdminEvaluationsPageState } from "@/components/evaluation/admin-evaluations-hook"
-import {
-    AdminEvaluationsError,
-    AdminEvaluationsGroupedTable,
-    AdminEvaluationsStats,
-    AdminEvaluationsToolbar,
-} from "@/components/evaluation/admin-evaluations-table"
-import { statusBadgeClass } from "@/components/evaluation/admin-evaluations-model"
-
-import { Button } from "@/components/ui/button"
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog"
+import { toast } from "sonner"
 import {
     Accordion,
     AccordionContent,
     AccordionItem,
     AccordionTrigger,
 } from "@/components/ui/accordion"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from "@/components/ui/dialog"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription as AlertDialogDesc,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle as AlertDialogTitleUI,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Progress } from "@/components/ui/progress"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import { Badge } from "@/components/ui/badge"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import {
+    Check,
+    ClipboardList,
+    Eye,
+    Loader2,
+    RefreshCcw,
+    Settings2,
+    Trash2,
+    Users,
+    GraduationCap,
+    CalendarClock,
+    DoorOpen,
+    LayoutGrid,
+} from "lucide-react"
 
-type PreviewResponse = {
-    preview?: unknown
-    message?: string
-    error?: string
+type UUID = string
+
+type LooseString<T extends string> = T | (string & {})
+
+type DefenseScheduleStatus = LooseString<"scheduled" | "ongoing" | "completed" | "cancelled">
+type StudentEvalStatus = "pending" | "submitted" | "locked"
+type EvaluationStatus = LooseString<"pending" | "submitted" | "locked">
+
+type EvaluationTargetType = "group" | "student"
+
+type JsonPrimitive = string | number | boolean | null
+type JsonValue = JsonPrimitive | { [k: string]: JsonValue } | JsonValue[]
+type JsonObject = Record<string, JsonValue>
+
+type AdminDefenseScheduleView = {
+    id: UUID
+    group_id: UUID
+    group_title: string | null
+    scheduled_at: string
+    room: string | null
+    status: DefenseScheduleStatus
+    rubric_template_id: UUID | null
+    rubric_template_name: string | null
+    student_feedback_form_id: UUID | null
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === "object" && !Array.isArray(value)
+type StudentFeedbackStatusCounts = {
+    total: number
+    pending: number
+    submitted: number
+    locked: number
 }
 
-function getString(value: unknown): string | null {
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+type AdminStudentFeedbackRow = {
+    id: UUID
+    student_evaluation_id: UUID
+    schedule_id: UUID
+    student_id: UUID
+    student_name: string | null
+    student_email: string | null
+    status: StudentEvalStatus
+    submitted_at: string | null
+    locked_at: string | null
+    form_id: UUID | null
+    form_title: string | null
+    form_version: number | null
+    answers: JsonObject
+
+    total_score?: number | `${number}` | null
+    max_score?: number | `${number}` | null
+    percentage?: number | `${number}` | null
+    breakdown?: JsonObject | null
+    computed_at?: string | null
+    score_ready?: boolean
 }
 
-function getNumber(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value
-    if (typeof value === "string") {
-        const t = value.trim()
+type PanelistScorePreviewItem = {
+    id: UUID
+    evaluation_id: UUID
+    evaluator_id: UUID
+
+    target_type: EvaluationTargetType
+    target_id: UUID
+    target_name: string | null
+
+    criterion_id: UUID
+    criterion: string | null
+    criterion_description: string | null
+
+    weight: number | `${number}` | null
+    min_score: number | null
+    max_score: number | null
+
+    score: number
+    comment: string | null
+}
+
+type PanelistTargetSummary = {
+    target_type: EvaluationTargetType
+    target_id: UUID
+    target_name: string | null
+    criteria_scored: number
+    weighted_score: number
+    weighted_max: number
+    percentage: number
+}
+
+type PanelistEvaluationPreview = {
+    evaluation: {
+        id: UUID
+        schedule_id: UUID
+        evaluator_id: UUID
+        status: EvaluationStatus
+        submitted_at: string | null
+        locked_at: string | null
+        created_at: string
+        evaluator_name: string | null
+        evaluator_email: string | null
+    }
+    overall:
+    | {
+        evaluation_id: UUID
+        schedule_id: UUID
+        group_id: UUID
+        evaluator_id: UUID
+        status: EvaluationStatus
+        criteria_count: number
+        criteria_scored: number
+        overall_percentage: number | `${number}`
+        weighted_score: number | `${number}`
+        weighted_max: number | `${number}`
+        submitted_at: string | null
+        locked_at: string | null
+        created_at: string
+    }
+    | null
+    targets: PanelistTargetSummary[]
+    scores: PanelistScorePreviewItem[]
+}
+
+type AdminEvaluationPreview = {
+    schedule: AdminDefenseScheduleView & {
+        created_by_name?: string | null
+        created_by_email?: string | null
+    }
+    student: {
+        items: AdminStudentFeedbackRow[]
+        count: number
+        includeAnswers: boolean
+        statusCounts: StudentFeedbackStatusCounts
+    }
+    panelist: {
+        items: PanelistEvaluationPreview[]
+        count: number
+        includeScores: boolean
+        includeComments: boolean
+    }
+}
+
+type StudentFeedbackFormQuestion = {
+    id: string
+    label?: string
+    type?: string
+    required?: boolean
+    min?: number
+    max?: number
+    step?: number
+    weight?: number
+    options?: Array<{ value: string; label?: string } | string>
+}
+
+type StudentFeedbackFormSection = {
+    id: string
+    title?: string
+    description?: string
+    questions?: StudentFeedbackFormQuestion[]
+}
+
+type StudentFeedbackFormSchema = JsonObject & {
+    key?: string
+    version?: number
+    title?: string
+    description?: string
+    sections?: StudentFeedbackFormSection[]
+}
+
+type PickUser = {
+    id: UUID
+    name: string
+    email?: string | null
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+    return !!v && typeof v === "object" && !Array.isArray(v)
+}
+
+function asArray<T = unknown>(v: unknown): T[] {
+    return Array.isArray(v) ? (v as T[]) : []
+}
+
+function toStr(v: unknown): string {
+    return typeof v === "string" ? v : ""
+}
+
+function safeName(name: string | null | undefined, fallback: string) {
+    const t = (name ?? "").trim()
+    return t.length > 0 ? t : fallback
+}
+
+function shortId(id: string, keep = 6) {
+    const t = (id ?? "").trim()
+    if (t.length <= keep * 2 + 3) return t
+    return `${t.slice(0, keep)}…${t.slice(-keep)}`
+}
+
+function toNumber(v: unknown): number | null {
+    if (typeof v === "number" && Number.isFinite(v)) return v
+    if (typeof v === "string") {
+        const t = v.trim()
         if (!t) return null
         const n = Number(t)
         return Number.isFinite(n) ? n : null
@@ -70,1774 +266,1849 @@ function getNumber(value: unknown): number | null {
     return null
 }
 
-function formatPercent(value: unknown): string {
-    const n = getNumber(value)
-    if (n === null) return "—"
-    return `${Math.round(n * 10) / 10}%`
+function fmtDateTime(iso: string) {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    })
 }
 
-function formatMaybeScore(value: unknown): string {
-    const n = getNumber(value)
-    if (n === null) return "—"
-    return String(Math.round(n * 100) / 100)
+function statusBadgeVariant(s: string): "secondary" | "default" | "destructive" | "outline" {
+    const v = (s ?? "").toLowerCase()
+    if (v === "locked") return "default"
+    if (v === "submitted") return "secondary"
+    if (v === "cancelled") return "destructive"
+    if (v === "completed") return "default"
+    if (v === "ongoing") return "secondary"
+    return "outline"
 }
 
-function extractApiMessage(payload: unknown): string {
-    if (!isRecord(payload)) return ""
-    const msg = getString(payload.message)
-    const err = getString(payload.error)
-    return msg || err || ""
-}
-
-function prettyValue(value: unknown): string {
-    if (value === null) return "null"
-    if (value === undefined) return "—"
-    if (typeof value === "string") return value
-    if (typeof value === "number" || typeof value === "boolean") return String(value)
+async function readApiError(res: Response): Promise<string> {
     try {
-        return JSON.stringify(value, null, 2)
+        const data = (await res.json()) as any
+        const msg = typeof data?.message === "string" ? data.message : ""
+        const err = typeof data?.error === "string" ? data.error : ""
+        const code = typeof data?.code === "string" ? ` (${data.code})` : ""
+        const merged = [err, msg].filter(Boolean).join(" — ")
+        return merged ? `${merged}${code}` : `Request failed (${res.status})`
     } catch {
-        return String(value)
+        const txt = await res.text().catch(() => "")
+        return txt?.trim() ? txt.trim() : `Request failed (${res.status})`
     }
 }
 
-function humanizeQuestionLabel(input: string): string {
-    const raw = input.trim()
-    if (!raw) return "Question"
-
-    // prefer last segment for dotted paths
-    const last = raw.includes(".") ? raw.split(".").filter(Boolean).slice(-1)[0] ?? raw : raw
-
-    // split camelCase
-    const withSpaces = last.replace(/([a-z])([A-Z])/g, "$1 $2")
-
-    // normalize separators
-    let s = withSpaces.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()
-
-    // remove noisy prefixes
-    s = s.replace(/^(question|q|ans|answer)\s*[:\-]?\s*/i, "")
-    s = s.replace(/^(q)\s*(\d+)\s*/i, "Q$2 ")
-    s = s.replace(/^\d+\s*[:\-]?\s*/i, "")
-
-    // title-case
-    const small = new Set(["a", "an", "and", "or", "of", "to", "in", "on", "for", "with"])
-    const words = s.split(" ").filter(Boolean)
-    const titled = words
-        .map((w, i) => {
-            const lower = w.toLowerCase()
-            if (i !== 0 && small.has(lower)) return lower
-            return lower.charAt(0).toUpperCase() + lower.slice(1)
-        })
-        .join(" ")
-
-    return titled || "Question"
-}
-
-type NormalizedAnswer = {
-    question: string
-    answer: unknown
-    score?: unknown
-    max?: unknown
-}
-
-function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
-    if (!answers) return []
-
-    if (Array.isArray(answers)) {
-        return answers
-            .map<NormalizedAnswer | null>((raw): NormalizedAnswer | null => {
-                if (!isRecord(raw)) return null
-
-                const q =
-                    getString(raw.question) ??
-                    getString(raw.label) ??
-                    getString(raw.prompt) ??
-                    getString(raw.title) ??
-                    getString(raw.name) ??
-                    null
-
-                const a: unknown =
-                    raw.answer ??
-                    raw.value ??
-                    raw.response ??
-                    raw.selected ??
-                    raw.text ??
-                    raw.result ??
-                    null
-
-                const score: unknown | undefined = raw.score ?? raw.points ?? raw.rating ?? undefined
-                const max: unknown | undefined = raw.max ?? raw.max_score ?? raw.out_of ?? undefined
-
-                return {
-                    question: q ?? "Question",
-                    answer: a,
-                    score,
-                    max,
-                }
-            })
-            .filter((x): x is NormalizedAnswer => x !== null)
-    }
-
-    if (isRecord(answers)) {
-        return Object.entries(answers).map(([k, v]) => {
-            if (isRecord(v)) {
-                const q =
-                    getString(v.question) ??
-                    getString(v.label) ??
-                    getString(v.prompt) ??
-                    getString(v.title) ??
-                    getString(v.name) ??
-                    null
-
-                const a: unknown = v.answer ?? v.value ?? v.response ?? v.selected ?? v.text ?? v.result ?? v
-                const score: unknown | undefined = v.score ?? v.points ?? v.rating ?? undefined
-                const max: unknown | undefined = v.max ?? v.max_score ?? v.out_of ?? undefined
-
-                return {
-                    question: q ?? humanizeQuestionLabel(k),
-                    answer: a,
-                    score,
-                    max,
-                }
-            }
-
-            return {
-                question: humanizeQuestionLabel(k),
-                answer: v,
-            }
-        })
-    }
-
-    return [
-        {
-            question: "Answer",
-            answer: answers,
+async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
+    const res = await fetch(url, {
+        ...init,
+        credentials: "include",
+        headers: {
+            "Content-Type": "application/json",
+            ...(init?.headers ?? {}),
         },
-    ]
-}
-
-type StatusCounts = {
-    total: number
-    pending: number
-    submitted: number
-    locked: number
-}
-
-function normalizeTriStatus(value: unknown): "pending" | "submitted" | "locked" {
-    const s = (getString(value) ?? "").toLowerCase()
-    if (s === "submitted") return "submitted"
-    if (s === "locked") return "locked"
-    return "pending"
-}
-
-function computeStatusCounts(items: unknown[]): StatusCounts {
-    const counts: StatusCounts = { total: items.length, pending: 0, submitted: 0, locked: 0 }
-    for (const raw of items) {
-        const row = isRecord(raw) ? raw : null
-        const st = normalizeTriStatus(row?.status)
-        if (st === "submitted") counts.submitted += 1
-        else if (st === "locked") counts.locked += 1
-        else counts.pending += 1
+    })
+    if (!res.ok) {
+        throw new Error(await readApiError(res))
     }
-    return counts
-}
-
-function readStatusCountsFromStudentBlock(studentBlock: Record<string, unknown> | null, studentItems: unknown[]): StatusCounts {
-    const fallback = computeStatusCounts(studentItems)
-    const rawCounts = studentBlock && isRecord(studentBlock.statusCounts) ? (studentBlock.statusCounts as Record<string, unknown>) : null
-    if (!rawCounts) return fallback
-
-    const total = getNumber(rawCounts.total)
-    const pending = getNumber(rawCounts.pending)
-    const submitted = getNumber(rawCounts.submitted)
-    const locked = getNumber(rawCounts.locked)
-
-    const safe: StatusCounts = {
-        total: total !== null ? total : fallback.total,
-        pending: pending !== null ? pending : fallback.pending,
-        submitted: submitted !== null ? submitted : fallback.submitted,
-        locked: locked !== null ? locked : fallback.locked,
-    }
-
-    // If backend didn't send totals (or sent zeros), keep the fallback.
-    if (safe.total === 0 && fallback.total > 0) return fallback
-    return safe
-}
-
-function pickPanelistPreviewItem(panelistItems: unknown[], selectedEvaluationId: string | null): Record<string, unknown> | null {
-    if (!selectedEvaluationId) return null
-    const target = selectedEvaluationId.toLowerCase()
-
-    for (const raw of panelistItems) {
-        const row = isRecord(raw) ? raw : null
-        if (!row) continue
-
-        const evaluation = isRecord(row.evaluation) ? (row.evaluation as Record<string, unknown>) : null
-        const candidate =
-            getString(evaluation?.id) ??
-            getString(row.id) ??
-            getString(row.evaluation_id) ??
-            null
-
-        if (candidate && candidate.toLowerCase() === target) return row
-    }
-
-    return null
+    return (await res.json()) as T
 }
 
 /**
- * IMPORTANT FIX:
- * Some admin list variants may store a different "id" for the selected row (e.g. assignment id)
- * while student preview items use student_evaluation_id.
- *
- * We now:
- * 1) Prefer exact id match (student_evaluation_id / id),
- * 2) Fall back to matching by student user id (assignee) when id mismatches.
+ * Try a list of endpoints (same-shaped data) and return the first success.
+ * Useful when route variants exist (common in evolving admin APIs).
  */
-function pickStudentPreviewItem(
-    studentItems: unknown[],
-    selectedEvaluationId: string | null,
-    selectedStudentId: string | null,
-): Record<string, unknown> | null {
-    const evalId = selectedEvaluationId ? selectedEvaluationId.toLowerCase() : null
-    const studentId = selectedStudentId ? selectedStudentId.toLowerCase() : null
-
-    let fallbackByStudent: Record<string, unknown> | null = null
-
-    for (const raw of studentItems) {
-        const row = isRecord(raw) ? raw : null
-        if (!row) continue
-
-        // Admin rows can use: student_evaluation_id OR id. Prefer explicit student_evaluation_id when present.
-        const candidateEvalId =
-            (getString(row.student_evaluation_id)?.toLowerCase() ??
-                getString(row.studentEvaluationId)?.toLowerCase() ??
-                getString(row.id)?.toLowerCase() ??
-                null)
-
-        const candidateStudentId =
-            getString(row.student_id)?.toLowerCase() ??
-            getString(row.evaluator_id)?.toLowerCase() ??
-            getString(row.user_id)?.toLowerCase() ??
-            null
-
-        if (evalId && candidateEvalId && candidateEvalId === evalId) return row
-
-        if (studentId && candidateStudentId && candidateStudentId === studentId) {
-            // keep best-effort fallback for the selected student
-            fallbackByStudent = row
+async function apiJsonFirst<T>(urls: string[], init?: RequestInit): Promise<T> {
+    let lastErr: unknown = null
+    for (const u of urls) {
+        try {
+            return await apiJson<T>(u, init)
+        } catch (e) {
+            lastErr = e
         }
     }
-
-    return fallbackByStudent
+    throw lastErr instanceof Error ? lastErr : new Error("All endpoints failed.")
 }
 
-/* ----------------------- STUDENT FEEDBACK SYNC (ADMIN UX) ----------------------- */
-
-function isUuidLike(value: string): boolean {
-    const v = value.trim()
-    // permissive UUID check (v1-v5)
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
-}
-
-type StudentFeedbackScheduleResponse = {
-    scheduleId?: string
-    count?: number
-    statusCounts?: {
-        total?: number
-        pending?: number
-        submitted?: number
-        locked?: number
+function renderJsonValue(value: JsonValue): React.ReactNode {
+    if (value === null) return <span className="text-muted-foreground">—</span>
+    if (typeof value === "string") {
+        const t = value.trim()
+        return t ? <span className="wrap-break-word">{t}</span> : <span className="text-muted-foreground">—</span>
     }
-    message?: string
-    error?: string
-}
-
-type StudentFeedbackAssignMeta = {
-    usedFormId?: string | null
-    usedFormTitle?: string | null
-    usedFormVersion?: number | null
-    repinned?: boolean
-    warning?: string | null
-    useActiveForm?: boolean
-    forceActiveForm?: boolean
-}
-
-type StudentFeedbackAssignResponse = {
-    scheduleId?: string
-    groupId?: string
-    formId?: string | null
-    counts?: { created?: number; updated?: number; existing?: number }
-    meta?: StudentFeedbackAssignMeta
-    message?: string
-    error?: string
-    code?: string
-}
-
-type StudentFeedbackFormLite = {
-    id: string
-    key: string | null
-    version: number | null
-    title: string
-    description: string | null
-    active: boolean
-}
-
-type StudentFeedbackFormsListResponse = {
-    items?: unknown
-    count?: unknown
-    warning?: unknown
-    message?: unknown
-    error?: unknown
-}
-
-type StudentFeedbackSchemaResponse = {
-    seedAnswersTemplate?: unknown
-    item?: unknown
-    schema?: unknown
-    warning?: unknown
-    message?: unknown
-    error?: unknown
-}
-
-type EvaluationPreviewScheduleMeta = {
-    scheduleId: string | null
-    groupTitle: string | null
-    pinnedFormId: string | null
-}
-
-function normalizeStudentFeedbackForm(raw: unknown): StudentFeedbackFormLite | null {
-    if (!isRecord(raw)) return null
-    const id = getString(raw.id)
-    if (!id) return null
-
-    const title = getString(raw.title) ?? "Student Feedback Form"
-    const key = getString(raw.key) ?? null
-    const version = getNumber(raw.version)
-    const description = raw.description === null ? null : (getString(raw.description) ?? null)
-    const active = Boolean(raw.active)
-
-    return {
-        id,
-        key,
-        version,
-        title,
-        description,
-        active,
+    if (typeof value === "number") return <span>{Number.isFinite(value) ? value : "—"}</span>
+    if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>
+    if (Array.isArray(value)) {
+        if (value.length === 0) return <span className="text-muted-foreground">—</span>
+        return (
+            <div className="flex flex-wrap gap-1">
+                {value.map((v, idx) => (
+                    <Badge key={idx} variant="secondary" className="font-normal">
+                        {typeof v === "string" ? v : JSON.stringify(v)}
+                    </Badge>
+                ))}
+            </div>
+        )
     }
+    return (
+        <pre className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-xs">
+            {JSON.stringify(value, null, 2)}
+        </pre>
+    )
 }
 
-function safeTryRefreshCtx(ctx: AdminEvaluationsPageState) {
-    const anyCtx = ctx as any
-
-    const candidates: Array<{ fn: unknown; name: string }> = [
-        { name: "refresh", fn: anyCtx.refresh },
-        { name: "refetch", fn: anyCtx.refetch },
-        { name: "reload", fn: anyCtx.reload },
-        { name: "revalidate", fn: anyCtx.revalidate },
-        { name: "invalidate", fn: anyCtx.invalidate },
-        { name: "load", fn: anyCtx.load },
-        { name: "fetchAll", fn: anyCtx.fetchAll },
-        { name: "refreshAll", fn: anyCtx.refreshAll },
-        { name: "mutate", fn: anyCtx.mutate },
-        { name: "refreshData", fn: anyCtx.refreshData },
-    ]
-
-    for (const c of candidates) {
-        if (typeof c.fn !== "function") continue
-        try {
-            c.fn()
-            return
-        } catch {
-            // try next
+function flattenQuestions(schema: StudentFeedbackFormSchema): StudentFeedbackFormQuestion[] {
+    const sections = asArray<StudentFeedbackFormSection>((schema as any)?.sections)
+    const out: StudentFeedbackFormQuestion[] = []
+    for (const s of sections) {
+        const qs = asArray<StudentFeedbackFormQuestion>((s as any)?.questions)
+        for (const q of qs) {
+            if (!q || typeof q !== "object") continue
+            const id = typeof q.id === "string" ? q.id.trim() : ""
+            if (!id) continue
+            out.push(q)
         }
     }
+    return out
 }
 
-function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
-    const anyCtx = ctx as any
-
-    const guessedScheduleId: string | null =
-        anyCtx?.selectedSchedule?.id ??
-        anyCtx?.selectedScheduleId ??
-        anyCtx?.selectedScheduleForAssignment?.id ??
-        anyCtx?.scheduleId ??
-        null
-
-    const [scheduleId, setScheduleId] = React.useState<string>(guessedScheduleId ?? "")
-    const [overwritePending, setOverwritePending] = React.useState(false)
-
-    // NEW (ACTIVE FORM UX)
-    const [forceActiveForm, setForceActiveForm] = React.useState(false)
-    const [forms, setForms] = React.useState<StudentFeedbackFormLite[]>([])
-    const [formsWarning, setFormsWarning] = React.useState<string | null>(null)
-    const [loadingForms, setLoadingForms] = React.useState(false)
-
-    const [seedAnswersTemplate, setSeedAnswersTemplate] = React.useState<Record<string, unknown> | null>(null)
-    const [loadingSchema, setLoadingSchema] = React.useState(false)
-
-    const [scheduleMeta, setScheduleMeta] = React.useState<EvaluationPreviewScheduleMeta>({
-        scheduleId: null,
-        groupTitle: null,
-        pinnedFormId: null,
-    })
-    const [loadingScheduleMeta, setLoadingScheduleMeta] = React.useState(false)
-
-    const [checking, setChecking] = React.useState(false)
-    const [assigning, setAssigning] = React.useState(false)
-    const [error, setError] = React.useState<string | null>(null)
-    const [info, setInfo] = React.useState<StudentFeedbackScheduleResponse | null>(null)
-    const [lastAssignMeta, setLastAssignMeta] = React.useState<StudentFeedbackAssignMeta | null>(null)
-
-    React.useEffect(() => {
-        if (!scheduleId && guessedScheduleId) setScheduleId(guessedScheduleId)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [guessedScheduleId])
-
-    const canUseSchedule = scheduleId.trim().length > 0 && isUuidLike(scheduleId)
-
-    const formsById = React.useMemo(() => {
-        const m = new Map<string, StudentFeedbackFormLite>()
-        for (const f of forms) m.set(f.id, f)
-        return m
-    }, [forms])
-
-    const activeForm = React.useMemo(() => {
-        const act = forms.find((f) => f.active)
-        return act ?? null
-    }, [forms])
-
-    const pinnedForm = React.useMemo(() => {
-        if (!scheduleMeta.pinnedFormId) return null
-        return formsById.get(scheduleMeta.pinnedFormId) ?? null
-    }, [formsById, scheduleMeta.pinnedFormId])
-
-    const pinnedVsActiveMismatch = React.useMemo(() => {
-        if (!canUseSchedule) return false
-        if (!activeForm?.id) return false
-        if (!scheduleMeta.pinnedFormId) return false
-        return scheduleMeta.pinnedFormId !== activeForm.id
-    }, [activeForm?.id, canUseSchedule, scheduleMeta.pinnedFormId])
-
-    const loadForms = React.useCallback(async () => {
-        setLoadingForms(true)
-        setFormsWarning(null)
-
-        try {
-            const res = await fetch(`/api/admin/student-feedback/forms`, { cache: "no-store" })
-            let payload: unknown = {}
-            try {
-                payload = await res.json()
-            } catch {
-                payload = {}
-            }
-
-            if (!res.ok) {
-                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                throw new Error(msg)
-            }
-
-            const p = payload as StudentFeedbackFormsListResponse
-            const warning = getString(p.warning) ?? null
-            if (warning) setFormsWarning(warning)
-
-            const rawItems = (isRecord(payload) && Array.isArray((payload as any).items)) ? ((payload as any).items as unknown[]) : []
-            const normalized = rawItems
-                .map((it) => normalizeStudentFeedbackForm(it))
-                .filter((x): x is StudentFeedbackFormLite => x !== null)
-
-            setForms(normalized)
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to load student feedback forms."
-            setForms([])
-            setFormsWarning(null)
-            toast.error("Forms load failed", { description: message })
-        } finally {
-            setLoadingForms(false)
+function buildQuestionLabelMap(schema: StudentFeedbackFormSchema): Map<string, { label: string; section?: string }> {
+    const map = new Map<string, { label: string; section?: string }>()
+    const sections = asArray<StudentFeedbackFormSection>((schema as any)?.sections)
+    for (const s of sections) {
+        const sectionTitle = typeof s.title === "string" ? s.title : undefined
+        const qs = asArray<StudentFeedbackFormQuestion>((s as any)?.questions)
+        for (const q of qs) {
+            const id = typeof q.id === "string" ? q.id.trim() : ""
+            if (!id) continue
+            const label = safeName(q.label ?? null, id)
+            map.set(id, { label, section: sectionTitle })
         }
-    }, [])
+    }
+    return map
+}
 
-    const loadSchemaSeed = React.useCallback(async () => {
-        setLoadingSchema(true)
-        try {
-            const res = await fetch(`/api/admin/student-feedback/schema`, { cache: "no-store" })
-            let payload: unknown = {}
-            try {
-                payload = await res.json()
-            } catch {
-                payload = {}
-            }
+function computePercent(n: unknown): number | null {
+    const v = toNumber(n)
+    if (v === null) return null
+    const p = Math.max(0, Math.min(100, v))
+    return Number.isFinite(p) ? p : null
+}
 
-            if (!res.ok) {
-                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                throw new Error(msg)
-            }
+function compactCounts(c: StudentFeedbackStatusCounts) {
+    return `${c.submitted} submitted • ${c.locked} locked • ${c.pending} pending`
+}
 
-            const p = payload as StudentFeedbackSchemaResponse
-            const seed = p.seedAnswersTemplate
-            if (isRecord(seed)) {
-                setSeedAnswersTemplate(seed as Record<string, unknown>)
-            } else {
-                // keep null so assignment can still proceed (backend may handle defaults)
-                setSeedAnswersTemplate(null)
-            }
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to load seed answers template."
-            setSeedAnswersTemplate(null)
-            toast.error("Schema load failed", { description: message })
-        } finally {
-            setLoadingSchema(false)
-        }
-    }, [])
+function MultiSelectUsers(props: {
+    label: string
+    placeholder: string
+    items: PickUser[]
+    selectedIds: UUID[]
+    onChange: (ids: UUID[]) => void
+    disabled?: boolean
+    className?: string
+}) {
+    const { label, placeholder, items, selectedIds, onChange, disabled, className } = props
+    const [open, setOpen] = React.useState(false)
 
-    const loadScheduleMeta = React.useCallback(async () => {
-        const id = scheduleId.trim()
-        if (!isUuidLike(id)) return
+    const selected = React.useMemo(() => {
+        const set = new Set(selectedIds)
+        return items.filter((u) => set.has(u.id))
+    }, [items, selectedIds])
 
-        setLoadingScheduleMeta(true)
-        try {
-            const qs = new URLSearchParams({
-                includeStudentAnswers: "false",
-                includePanelistScores: "false",
-                includePanelistComments: "false",
-            })
+    const toggle = (id: UUID) => {
+        const set = new Set(selectedIds)
+        if (set.has(id)) set.delete(id)
+        else set.add(id)
+        onChange(Array.from(set))
+    }
 
-            const res = await fetch(`/api/admin/evaluation-previews/${id}?${qs.toString()}`, {
-                cache: "no-store",
-            })
-
-            let payload: unknown = {}
-            try {
-                payload = await res.json()
-            } catch {
-                payload = {}
-            }
-
-            if (!res.ok) {
-                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                throw new Error(msg)
-            }
-
-            const preview = isRecord(payload) && isRecord((payload as any).preview) ? ((payload as any).preview as Record<string, unknown>) : null
-            const schedule = preview && isRecord(preview.schedule) ? (preview.schedule as Record<string, unknown>) : null
-
-            const pinnedFormId =
-                getString(schedule?.student_feedback_form_id) ??
-                getString(schedule?.studentFeedbackFormId) ??
-                null
-
-            const groupTitle =
-                getString(schedule?.group_title) ??
-                getString(schedule?.groupTitle) ??
-                null
-
-            setScheduleMeta({
-                scheduleId: id,
-                groupTitle,
-                pinnedFormId,
-            })
-        } catch {
-            // best-effort only; do not block assignment UX
-            setScheduleMeta((prev) => ({
-                ...prev,
-                scheduleId: id,
-            }))
-        } finally {
-            setLoadingScheduleMeta(false)
-        }
-    }, [scheduleId])
-
-    React.useEffect(() => {
-        // Initial load for best UX
-        void loadForms()
-        void loadSchemaSeed()
-    }, [loadForms, loadSchemaSeed])
-
-    React.useEffect(() => {
-        if (!canUseSchedule) return
-        void loadScheduleMeta()
-    }, [canUseSchedule, loadScheduleMeta])
-
-    const doCheck = React.useCallback(async () => {
-        const id = scheduleId.trim()
-        if (!isUuidLike(id)) {
-            setError("Please enter a valid Schedule ID (UUID).")
-            setInfo(null)
-            toast.error("Invalid Schedule ID", { description: "Schedule ID must be a valid UUID." })
-            return
-        }
-
-        setChecking(true)
-        setError(null)
-
-        try {
-            const res = await fetch(`/api/admin/student-feedback/schedule/${id}`, { cache: "no-store" })
-            let payload: unknown = {}
-            try {
-                payload = await res.json()
-            } catch {
-                payload = {}
-            }
-
-            if (!res.ok) {
-                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                throw new Error(msg)
-            }
-
-            setInfo(payload as StudentFeedbackScheduleResponse)
-
-            // Also refresh pinned form metadata (best UX for “active form assignment”)
-            void loadScheduleMeta()
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to check student feedback assignments."
-            setError(message)
-            setInfo(null)
-            toast.error("Check failed", { description: message })
-        } finally {
-            setChecking(false)
-        }
-    }, [loadScheduleMeta, scheduleId])
-
-    const doAssign = React.useCallback(async () => {
-        const id = scheduleId.trim()
-        if (!isUuidLike(id)) {
-            toast.error("Invalid Schedule ID", { description: "Schedule ID must be a valid UUID." })
-            return
-        }
-
-        setAssigning(true)
-        setError(null)
-
-        try {
-            const res = await fetch(`/api/admin/student-feedback/schedule/${id}/assign`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    // IMPORTANT: assignment should use ACTIVE feedback form (backend defaults true, we send explicitly for clarity)
-                    useActiveForm: true,
-                    forceActiveForm,
-                    overwritePending,
-                    // Best UX: seed answers template so students always see the active form structure immediately
-                    ...(seedAnswersTemplate ? { seedAnswers: seedAnswersTemplate } : {}),
-                }),
-            })
-
-            let payload: unknown = {}
-            try {
-                payload = await res.json()
-            } catch {
-                payload = {}
-            }
-
-            if (!res.ok) {
-                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                throw new Error(msg)
-            }
-
-            const p = payload as StudentFeedbackAssignResponse
-            const created = p.counts?.created ?? 0
-            const updated = p.counts?.updated ?? 0
-            const existing = p.counts?.existing ?? 0
-
-            const meta = (p.meta && isRecord(p.meta) ? (p.meta as StudentFeedbackAssignMeta) : null) ?? null
-            setLastAssignMeta(meta)
-
-            const usedTitle = meta?.usedFormTitle ?? null
-            const usedVersion = meta?.usedFormVersion ?? null
-            const repinned = Boolean(meta?.repinned)
-            const warning = meta?.warning ?? null
-
-            const parts: string[] = []
-            parts.push(`Created: ${created}`)
-            parts.push(`Updated: ${updated}`)
-            parts.push(`Existing: ${existing}`)
-
-            if (usedTitle) parts.push(`Form: ${usedTitle}${typeof usedVersion === "number" ? ` (v${usedVersion})` : ""}`)
-            else if (activeForm?.title) parts.push(`Form: ${activeForm.title}${typeof activeForm.version === "number" ? ` (v${activeForm.version})` : ""}`)
-
-            if (repinned) parts.push("Pinned schedule → active form")
-            if (warning) parts.push(warning)
-
-            toast.success("Student feedback assigned (Active Form)", {
-                description: parts.join(" • "),
-            })
-
-            // Refresh admin page datasets (best-effort) and re-check counts for immediate UI accuracy.
-            safeTryRefreshCtx(ctx)
-            await doCheck()
-            await loadScheduleMeta()
-        } catch (err) {
-            const message = err instanceof Error ? err.message : "Failed to assign student feedback."
-            setError(message)
-            toast.error("Assign failed", { description: message })
-        } finally {
-            setAssigning(false)
-        }
-    }, [activeForm?.title, activeForm?.version, ctx, doCheck, forceActiveForm, loadScheduleMeta, overwritePending, scheduleId, seedAnswersTemplate])
-
-    const count = info?.count ?? info?.statusCounts?.total ?? 0
-    const pending = info?.statusCounts?.pending ?? 0
-    const submitted = info?.statusCounts?.submitted ?? 0
-    const locked = info?.statusCounts?.locked ?? 0
-
-    const showMissing = canUseSchedule && !checking && !error && (count ?? 0) === 0
+    const clear = () => onChange([])
 
     return (
+        <div className={cn("space-y-2", className)}>
+            <Label className="text-sm">{label}</Label>
+
+            <Popover open={open} onOpenChange={setOpen}>
+                <PopoverTrigger asChild>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full justify-between"
+                        disabled={disabled}
+                    >
+                        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                            {selected.length === 0 ? (
+                                <span className="truncate text-muted-foreground">{placeholder}</span>
+                            ) : (
+                                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                                    <div className="flex flex-wrap gap-1">
+                                        {selected.slice(0, 2).map((u) => (
+                                            <Badge key={u.id} variant="secondary" className="font-normal">
+                                                {u.name}
+                                            </Badge>
+                                        ))}
+                                        {selected.length > 2 ? (
+                                            <Badge variant="outline" className="font-normal">
+                                                +{selected.length - 2} more
+                                            </Badge>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <Settings2 className="h-4 w-4 shrink-0 opacity-70" />
+                    </Button>
+                </PopoverTrigger>
+
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                    <Command>
+                        <CommandInput placeholder="Search by name…" />
+                        <CommandList>
+                            <CommandEmpty>No results.</CommandEmpty>
+                            <CommandGroup>
+                                {items.map((u) => {
+                                    const checked = selectedIds.includes(u.id)
+                                    return (
+                                        <CommandItem
+                                            key={u.id}
+                                            value={`${u.name} ${u.email ?? ""} ${u.id}`}
+                                            onSelect={() => toggle(u.id)}
+                                            className="flex items-center gap-2"
+                                        >
+                                            <span
+                                                className={cn(
+                                                    "flex h-4 w-4 items-center justify-center rounded-sm border",
+                                                    checked ? "bg-primary text-primary-foreground" : "bg-background"
+                                                )}
+                                            >
+                                                {checked ? <Check className="h-3 w-3" /> : null}
+                                            </span>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-sm">{u.name}</div>
+                                                {u.email ? (
+                                                    <div className="truncate text-xs text-muted-foreground">{u.email}</div>
+                                                ) : (
+                                                    <div className="truncate text-xs text-muted-foreground">{shortId(u.id)}</div>
+                                                )}
+                                            </div>
+                                        </CommandItem>
+                                    )
+                                })}
+                            </CommandGroup>
+                        </CommandList>
+
+                        <div className="flex items-center justify-between gap-2 border-t p-2">
+                            <div className="text-xs text-muted-foreground">
+                                {selectedIds.length} selected
+                            </div>
+                            <Button type="button" variant="ghost" size="sm" onClick={clear} disabled={selectedIds.length === 0}>
+                                Clear
+                            </Button>
+                        </div>
+                    </Command>
+                </PopoverContent>
+            </Popover>
+        </div>
+    )
+}
+
+function StatPill(props: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
+    return (
+        <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
+            <div className="text-muted-foreground">{props.icon}</div>
+            <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">{props.label}</div>
+                <div className="truncate text-sm font-medium">{props.value}</div>
+            </div>
+        </div>
+    )
+}
+
+function EmptyState(props: { title: string; description?: string; action?: React.ReactNode }) {
+    return (
+        <div className="flex flex-col items-center justify-center rounded-xl border bg-muted/20 p-8 text-center">
+            <div className="text-base font-semibold">{props.title}</div>
+            {props.description ? <div className="mt-1 max-w-lg text-sm text-muted-foreground">{props.description}</div> : null}
+            {props.action ? <div className="mt-4">{props.action}</div> : null}
+        </div>
+    )
+}
+
+export default function AdminEvaluationsPage() {
+    const [loading, setLoading] = React.useState(true)
+    const [refreshKey, setRefreshKey] = React.useState(0)
+
+    const [schedules, setSchedules] = React.useState<AdminDefenseScheduleView[]>([])
+    const [query, setQuery] = React.useState("")
+
+    // Lazy caches
+    const [previewByScheduleId, setPreviewByScheduleId] = React.useState<Map<UUID, AdminEvaluationPreview>>(new Map())
+    const [loadingPreviewIds, setLoadingPreviewIds] = React.useState<Set<UUID>>(new Set())
+
+    const [panelistsByScheduleId, setPanelistsByScheduleId] = React.useState<Map<UUID, PickUser[]>>(new Map())
+    const [studentsByGroupId, setStudentsByGroupId] = React.useState<Map<UUID, PickUser[]>>(new Map())
+
+    // Preview options
+    const [includeStudentAnswers, setIncludeStudentAnswers] = React.useState(true)
+    const [includePanelistScores, setIncludePanelistScores] = React.useState(true)
+    const [includePanelistComments, setIncludePanelistComments] = React.useState(true)
+
+    const loadSchedules = React.useCallback(async () => {
+        setLoading(true)
+        const tId = toast.loading("Loading defense schedules…")
+        try {
+            // Try multiple route variants (common across versions)
+            const data = await apiJsonFirst<any>(
+                [
+                    "/api/admin/defense-schedules?limit=500&orderBy=scheduled_at&orderDirection=desc&detailed=true",
+                    "/api/admin/defense-schedules?limit=500&orderBy=scheduled_at&orderDirection=desc",
+                    "/api/admin/defense-schedule?limit=500&orderBy=scheduled_at&orderDirection=desc",
+                ],
+                { method: "GET" }
+            )
+
+            const items = asArray<any>(data?.items ?? data?.rows ?? data?.data ?? [])
+            const normalized: AdminDefenseScheduleView[] = items
+                .map((r) => ({
+                    id: toStr(r?.id) as UUID,
+                    group_id: toStr(r?.group_id) as UUID,
+                    group_title: typeof r?.group_title === "string" ? r.group_title : null,
+                    scheduled_at: toStr(r?.scheduled_at),
+                    room: typeof r?.room === "string" ? r.room : null,
+                    status: (toStr(r?.status) || "scheduled") as DefenseScheduleStatus,
+                    rubric_template_id: (typeof r?.rubric_template_id === "string" ? r.rubric_template_id : null) as UUID | null,
+                    rubric_template_name: typeof r?.rubric_template_name === "string" ? r.rubric_template_name : null,
+                    student_feedback_form_id: (typeof r?.student_feedback_form_id === "string" ? r.student_feedback_form_id : null) as UUID | null,
+                }))
+                .filter((r) => !!r.id && !!r.group_id && !!r.scheduled_at)
+
+            setSchedules(normalized)
+            toast.success(`Loaded ${normalized.length} schedule(s).`, { id: tId })
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Failed to load schedules.", { id: tId })
+            setSchedules([])
+        } finally {
+            setLoading(false)
+        }
+    }, [])
+
+    React.useEffect(() => {
+        void loadSchedules()
+    }, [loadSchedules, refreshKey])
+
+    const grouped = React.useMemo(() => {
+        const q = query.trim().toLowerCase()
+        const filtered = q
+            ? schedules.filter((s) => {
+                const g = (s.group_title ?? "").toLowerCase()
+                const r = (s.room ?? "").toLowerCase()
+                const rt = (s.rubric_template_name ?? "").toLowerCase()
+                const st = (s.status ?? "").toLowerCase()
+                return g.includes(q) || r.includes(q) || rt.includes(q) || st.includes(q) || s.id.toLowerCase().includes(q)
+            })
+            : schedules
+
+        const map = new Map<string, { group_id: UUID; group_title: string; schedules: AdminDefenseScheduleView[] }>()
+        for (const s of filtered) {
+            const key = s.group_id
+            const title = safeName(s.group_title, `Group ${shortId(s.group_id)}`)
+            const existing = map.get(key)
+            if (!existing) map.set(key, { group_id: s.group_id, group_title: title, schedules: [s] })
+            else existing.schedules.push(s)
+        }
+
+        // sort schedules within each group by scheduled_at desc
+        const groups = Array.from(map.values()).map((g) => ({
+            ...g,
+            schedules: [...g.schedules].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+        }))
+
+        // sort groups by name
+        groups.sort((a, b) => a.group_title.toLowerCase().localeCompare(b.group_title.toLowerCase()))
+        return groups
+    }, [schedules, query])
+
+    const ensureSchedulePreview = React.useCallback(
+        async (scheduleId: UUID) => {
+            if (previewByScheduleId.has(scheduleId)) return
+
+            setLoadingPreviewIds((prev) => new Set(prev).add(scheduleId))
+            try {
+                const data = await apiJsonFirst<any>(
+                    [
+                        `/api/admin/evaluation-previews/schedule/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+                        `/api/admin/evaluation-previews/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+                    ],
+                    { method: "GET" }
+                )
+                const preview = (data?.preview ?? data?.item ?? data) as AdminEvaluationPreview
+                if (!preview?.schedule?.id) throw new Error("Preview payload is missing schedule data.")
+                setPreviewByScheduleId((prev) => {
+                    const next = new Map(prev)
+                    next.set(scheduleId, preview)
+                    return next
+                })
+            } finally {
+                setLoadingPreviewIds((prev) => {
+                    const next = new Set(prev)
+                    next.delete(scheduleId)
+                    return next
+                })
+            }
+        },
+        [previewByScheduleId, includeStudentAnswers, includePanelistScores, includePanelistComments]
+    )
+
+    const refreshSchedulePreview = React.useCallback(
+        async (scheduleId: UUID) => {
+            const tId = toast.loading("Refreshing preview…")
+            try {
+                const data = await apiJsonFirst<any>(
+                    [
+                        `/api/admin/evaluation-previews/schedule/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+                        `/api/admin/evaluation-previews/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+                    ],
+                    { method: "GET" }
+                )
+                const preview = (data?.preview ?? data?.item ?? data) as AdminEvaluationPreview
+                if (!preview?.schedule?.id) throw new Error("Preview payload is missing schedule data.")
+                setPreviewByScheduleId((prev) => {
+                    const next = new Map(prev)
+                    next.set(scheduleId, preview)
+                    return next
+                })
+                toast.success("Preview updated.", { id: tId })
+            } catch (e) {
+                toast.error(e instanceof Error ? e.message : "Failed to refresh preview.", { id: tId })
+            }
+        },
+        [includeStudentAnswers, includePanelistScores, includePanelistComments]
+    )
+
+    const ensureSchedulePanelists = React.useCallback(
+        async (scheduleId: UUID) => {
+            if (panelistsByScheduleId.has(scheduleId)) return
+
+            try {
+                const data = await apiJsonFirst<any>(
+                    [
+                        `/api/admin/schedule-panelists/schedule/${scheduleId}`,
+                        `/api/admin/defense-schedule-panelists/schedule/${scheduleId}`,
+                        `/api/admin/schedule-panelists/${scheduleId}`,
+                        `/api/admin/defense-schedules/${scheduleId}/panelists`,
+                    ],
+                    { method: "GET" }
+                )
+
+                const items = asArray<any>(data?.items ?? data?.panelists ?? data?.rows ?? [])
+                const normalized: PickUser[] = items
+                    .map((r) => {
+                        const id = (toStr(r?.staff_id ?? r?.user_id ?? r?.id) as UUID) || ""
+                        const name = safeName(
+                            (r?.staff_name as string | null | undefined) ?? (r?.name as string | null | undefined),
+                            id ? `Panelist ${shortId(id)}` : "Unknown"
+                        )
+                        const email = (typeof r?.staff_email === "string" ? r.staff_email : typeof r?.email === "string" ? r.email : null) as
+                            | string
+                            | null
+                        return { id, name, email }
+                    })
+                    .filter((u) => !!u.id)
+
+                setPanelistsByScheduleId((prev) => {
+                    const next = new Map(prev)
+                    next.set(scheduleId, normalized)
+                    return next
+                })
+            } catch {
+                // Best-effort: leave empty; UI will still allow preview and student assignment.
+                setPanelistsByScheduleId((prev) => {
+                    const next = new Map(prev)
+                    next.set(scheduleId, [])
+                    return next
+                })
+            }
+        },
+        [panelistsByScheduleId]
+    )
+
+    const ensureGroupStudents = React.useCallback(
+        async (groupId: UUID) => {
+            if (studentsByGroupId.has(groupId)) return
+
+            try {
+                const data = await apiJsonFirst<any>(
+                    [
+                        `/api/admin/thesis-groups/${groupId}`,
+                        `/api/admin/thesis-group/${groupId}`,
+                        `/api/admin/groups/${groupId}`,
+                        `/api/admin/thesis-groups/${groupId}/members`,
+                        `/api/admin/groups/${groupId}/members`,
+                    ],
+                    { method: "GET" }
+                )
+
+                // Accept a lot of shapes:
+                // - { members: [...] }
+                // - { items: [...] }
+                // - { item: { members: [...] } }
+                const members = asArray<any>(
+                    (data?.members ??
+                        data?.items ??
+                        data?.rows ??
+                        data?.item?.members ??
+                        data?.item?.items ??
+                        data?.group?.members) ?? []
+                )
+
+                const normalized: PickUser[] = members
+                    .map((r) => {
+                        const id = (toStr(r?.student_id ?? r?.user_id ?? r?.id) as UUID) || ""
+                        const name = safeName(
+                            (r?.student_name as string | null | undefined) ?? (r?.name as string | null | undefined),
+                            id ? `Student ${shortId(id)}` : "Unknown"
+                        )
+                        const email = (typeof r?.student_email === "string" ? r.student_email : typeof r?.email === "string" ? r.email : null) as
+                            | string
+                            | null
+                        return { id, name, email }
+                    })
+                    .filter((u) => !!u.id)
+
+                setStudentsByGroupId((prev) => {
+                    const next = new Map(prev)
+                    next.set(groupId, normalized)
+                    return next
+                })
+            } catch {
+                setStudentsByGroupId((prev) => {
+                    const next = new Map(prev)
+                    next.set(groupId, [])
+                    return next
+                })
+            }
+        },
+        [studentsByGroupId]
+    )
+
+    const PageToolbar = (
         <Card>
             <CardHeader className="space-y-1">
-                <CardTitle className="text-base">Student Feedback Assignment (Active Form)</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                    <ClipboardList className="h-5 w-5" />
+                    Evaluations
+                </CardTitle>
                 <CardDescription>
-                    Assign student feedback evaluations using the <span className="font-medium text-foreground">currently active</span> feedback form. This keeps student evaluations consistent per schedule (no mixed versions).
+                    Assign <span className="font-medium">panelist rubric evaluations</span> and{" "}
+                    <span className="font-medium">student feedback forms</span> per defense schedule. Preview questions, answers,
+                    and scores—grouped by thesis group.
                 </CardDescription>
             </CardHeader>
-
-            <CardContent className="space-y-3">
-                {formsWarning ? (
-                    <Alert>
-                        <AlertTitle>Forms storage warning</AlertTitle>
-                        <AlertDescription>{formsWarning}</AlertDescription>
-                    </Alert>
-                ) : null}
-
-                {!loadingForms && forms.length === 0 ? (
-                    <Alert variant="destructive">
-                        <AlertTitle>No active feedback form detected</AlertTitle>
-                        <AlertDescription>
-                            Student evaluation assignment requires an <span className="font-medium">active</span> feedback form.
-                            Please create/activate a feedback form in the admin feedback forms area, then return here to assign evaluations.
-                        </AlertDescription>
-                    </Alert>
-                ) : null}
-
-                <div className="grid gap-3 md:grid-cols-3">
-                    <div className="md:col-span-2 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                            <Label htmlFor="scheduleId">Schedule ID</Label>
-                            <div className="flex items-center gap-2">
-                                {guessedScheduleId ? (
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => {
-                                            setScheduleId(guessedScheduleId)
-                                            toast.message("Using selected schedule", { description: "Schedule ID was filled from your current admin selection." })
-                                        }}
-                                        disabled={assigning || checking}
-                                    >
-                                        Use selected
-                                    </Button>
-                                ) : null}
-                                <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => {
-                                        void loadForms()
-                                        void loadSchemaSeed()
-                                        if (canUseSchedule) void loadScheduleMeta()
-                                        toast.message("Refreshing active form data", { description: "Reloading active feedback form and seed template." })
-                                    }}
-                                    disabled={assigning || checking || loadingForms || loadingSchema}
-                                >
-                                    Refresh forms
-                                </Button>
-                            </div>
+            <CardContent className="space-y-4">
+                <div className="grid gap-3 lg:grid-cols-12">
+                    <div className="lg:col-span-7">
+                        <div className="space-y-2">
+                            <Label className="text-sm">Search</Label>
+                            <Input
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search group, rubric, room, status…"
+                            />
                         </div>
-
-                        <Input
-                            id="scheduleId"
-                            value={scheduleId}
-                            onChange={(e) => setScheduleId(e.target.value)}
-                            placeholder="Paste defense schedule UUID..."
-                        />
-
-                        {!scheduleId.trim() ? (
-                            <p className="text-xs text-muted-foreground">
-                                Tip: open any evaluation preview, copy the <span className="font-medium text-foreground">Schedule ID</span>, then paste here.
-                            </p>
-                        ) : null}
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            {loadingForms ? (
-                                <div className="h-6 w-44 animate-pulse rounded-md bg-muted/60" />
-                            ) : activeForm ? (
-                                <Badge variant="secondary">
-                                    Active Form: {activeForm.title}{typeof activeForm.version === "number" ? ` (v${activeForm.version})` : ""}
-                                </Badge>
-                            ) : (
-                                <Badge variant="destructive">Active Form: Not found</Badge>
-                            )}
-
-                            {loadingScheduleMeta ? (
-                                <div className="h-6 w-40 animate-pulse rounded-md bg-muted/60" />
-                            ) : scheduleMeta.groupTitle ? (
-                                <Badge variant="secondary">Group: {scheduleMeta.groupTitle}</Badge>
-                            ) : null}
-
-                            {loadingScheduleMeta ? null : scheduleMeta.pinnedFormId ? (
-                                pinnedForm ? (
-                                    <Badge variant={pinnedForm.active ? "secondary" : "outline"}>
-                                        Pinned Form: {pinnedForm.title}{typeof pinnedForm.version === "number" ? ` (v${pinnedForm.version})` : ""}
-                                    </Badge>
-                                ) : (
-                                    <Badge variant="outline">Pinned Form ID: {scheduleMeta.pinnedFormId}</Badge>
-                                )
-                            ) : canUseSchedule ? (
-                                <Badge variant="outline">Pinned Form: (none yet)</Badge>
-                            ) : null}
-
-                            {pinnedVsActiveMismatch ? (
-                                <Badge variant="destructive">Pinned ≠ Active</Badge>
-                            ) : null}
-                        </div>
-
-                        {pinnedVsActiveMismatch ? (
-                            <Alert>
-                                <AlertTitle>Schedule is pinned to a different form</AlertTitle>
-                                <AlertDescription>
-                                    This schedule is pinned to a different feedback form than the current active form. When you click{" "}
-                                    <span className="font-medium text-foreground">Assign now</span>, the system will repin to the active form{" "}
-                                    <span className="font-medium text-foreground">only if it’s safe</span> (no submitted/locked student feedback yet).
-                                    If there are already submitted/locked evaluations, it will keep the pinned form to prevent mixed-version data.
-                                </AlertDescription>
-                            </Alert>
-                        ) : null}
-
-                        {lastAssignMeta?.warning ? (
-                            <Alert>
-                                <AlertTitle>Assignment notice</AlertTitle>
-                                <AlertDescription>{lastAssignMeta.warning}</AlertDescription>
-                            </Alert>
-                        ) : null}
                     </div>
 
-                    <div className="space-y-2">
-                        <Label className="block">Options</Label>
+                    <div className="lg:col-span-5">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-end">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setRefreshKey((k) => k + 1)}
+                                className="w-full sm:w-auto"
+                            >
+                                <RefreshCcw className="mr-2 h-4 w-4" />
+                                Refresh
+                            </Button>
 
-                        <div className="space-y-2">
-                            <div className="flex items-center justify-between rounded-md border p-3">
-                                <div className="space-y-0.5">
-                                    <p className="text-sm font-medium">Overwrite pending</p>
-                                    <p className="text-xs text-muted-foreground">Re-seed pending feedback only</p>
-                                </div>
-                                <Switch
-                                    checked={overwritePending}
-                                    onCheckedChange={(v) => setOverwritePending(Boolean(v))}
-                                />
-                            </div>
+                            <Dialog>
+                                <DialogTrigger asChild>
+                                    <Button type="button" variant="secondary" className="w-full sm:w-auto">
+                                        <Settings2 className="mr-2 h-4 w-4" />
+                                        Preview Options
+                                    </Button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-2xl">
+                                    <DialogHeader>
+                                        <DialogTitle>Preview Options</DialogTitle>
+                                        <DialogDescription>
+                                            Control what the preview loads. Turning off heavy data can make previews faster.
+                                        </DialogDescription>
+                                    </DialogHeader>
 
-                            <div className="flex items-center justify-between rounded-md border p-3">
-                                <div className="space-y-0.5">
-                                    <p className="text-sm font-medium">Force active form</p>
-                                    <p className="text-xs text-muted-foreground">Fail if schedule has submitted/locked</p>
-                                </div>
-                                <Switch
-                                    checked={forceActiveForm}
-                                    onCheckedChange={(v) => setForceActiveForm(Boolean(v))}
-                                />
-                            </div>
+                                    <div className="grid gap-4">
+                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Include student answers</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Shows question-by-question answers in preview.
+                                                </div>
+                                            </div>
+                                            <Switch checked={includeStudentAnswers} onCheckedChange={setIncludeStudentAnswers} />
+                                        </div>
 
-                            {forceActiveForm ? (
-                                <Alert variant="destructive">
-                                    <AlertTitle>Force mode enabled</AlertTitle>
-                                    <AlertDescription>
-                                        If this schedule already has <span className="font-medium">submitted/locked</span> student feedback,
-                                        assignment will fail (409) instead of falling back to the pinned form. Use only when you intend
-                                        to keep strict “active form only” consistency.
-                                    </AlertDescription>
-                                </Alert>
-                            ) : null}
+                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Include panelist scores</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Loads rubric scores per criterion.
+                                                </div>
+                                            </div>
+                                            <Switch checked={includePanelistScores} onCheckedChange={setIncludePanelistScores} />
+                                        </div>
 
-                            <div className="rounded-md border p-3">
-                                <p className="text-sm font-medium">Seed template</p>
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                    {loadingSchema ? "Loading seed answers template..." : seedAnswersTemplate ? "Ready (active schema template loaded)" : "Not loaded (assignment may still work)"}
-                                </p>
-                            </div>
+                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Include panelist comments</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Loads per-criterion comments (if saved).
+                                                </div>
+                                            </div>
+                                            <Switch checked={includePanelistComments} onCheckedChange={setIncludePanelistComments} />
+                                        </div>
+
+                                        <div className="text-xs text-muted-foreground">
+                                            Tip: After changing options, refresh a schedule preview to re-fetch with the new settings.
+                                        </div>
+                                    </div>
+                                </DialogContent>
+                            </Dialog>
                         </div>
                     </div>
                 </div>
 
-                {error ? (
-                    <Alert variant="destructive">
-                        <AlertTitle>Student feedback assignment failed</AlertTitle>
-                        <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                ) : null}
+                <Separator />
 
-                {canUseSchedule && info && !checking ? (
+                <div className="grid gap-3 md:grid-cols-3">
+                    <StatPill icon={<LayoutGrid className="h-4 w-4" />} label="Thesis groups" value={grouped.length} />
+                    <StatPill icon={<CalendarClock className="h-4 w-4" />} label="Defense schedules" value={schedules.length} />
+                    <StatPill icon={<Eye className="h-4 w-4" />} label="Previews cached" value={previewByScheduleId.size} />
+                </div>
+            </CardContent>
+        </Card>
+    )
+
+    return (
+        <DashboardLayout
+            title="Evaluations"
+            description="Assign evaluations and preview questions, answers, and scores by thesis group."
+            mainClassName="space-y-6"
+        >
+            {PageToolbar}
+
+            {loading ? (
+                <div className="grid gap-4">
+                    <Skeleton className="h-28 w-full" />
+                    <Skeleton className="h-28 w-full" />
+                    <Skeleton className="h-28 w-full" />
+                </div>
+            ) : grouped.length === 0 ? (
+                <EmptyState
+                    title="No thesis groups found"
+                    description="No defense schedules match your current filters. Try clearing the search, or refresh."
+                    action={
+                        <Button variant="outline" onClick={() => setRefreshKey((k) => k + 1)}>
+                            <RefreshCcw className="mr-2 h-4 w-4" />
+                            Refresh
+                        </Button>
+                    }
+                />
+            ) : (
+                <Accordion type="multiple" className="w-full space-y-3">
+                    {grouped.map((g) => (
+                        <AccordionItem key={g.group_id} value={g.group_id} className="rounded-xl border bg-background px-2">
+                            <AccordionTrigger
+                                className="px-4"
+                                onClick={() => {
+                                    // Prime students list (best effort)
+                                    void ensureGroupStudents(g.group_id)
+                                }}
+                            >
+                                <div className="flex w-full items-center justify-between gap-3 pr-3">
+                                    <div className="min-w-0">
+                                        <div className="truncate text-left text-sm font-semibold">{g.group_title}</div>
+                                        <div className="truncate text-left text-xs text-muted-foreground">
+                                            {g.schedules.length} schedule(s)
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Badge variant="outline" className="font-normal">
+                                            {g.schedules.length} schedules
+                                        </Badge>
+                                    </div>
+                                </div>
+                            </AccordionTrigger>
+
+                            <AccordionContent className="px-4 pb-4">
+                                <div className="grid gap-3">
+                                    {g.schedules.map((s) => (
+                                        <ScheduleCard
+                                            key={s.id}
+                                            schedule={s}
+                                            preview={previewByScheduleId.get(s.id) ?? null}
+                                            previewLoading={loadingPreviewIds.has(s.id)}
+                                            onEnsurePreview={() => void ensureSchedulePreview(s.id)}
+                                            onRefreshPreview={() => void refreshSchedulePreview(s.id)}
+                                            onEnsurePanelists={() => void ensureSchedulePanelists(s.id)}
+                                            onEnsureStudents={() => void ensureGroupStudents(s.group_id)}
+                                            getPanelists={() => panelistsByScheduleId.get(s.id) ?? []}
+                                            getStudents={() => studentsByGroupId.get(s.group_id) ?? []}
+                                            onPreviewCached={(p) => {
+                                                setPreviewByScheduleId((prev) => {
+                                                    const next = new Map(prev)
+                                                    next.set(s.id, p)
+                                                    return next
+                                                })
+                                            }}
+                                            previewOptions={{
+                                                includeStudentAnswers,
+                                                includePanelistScores,
+                                                includePanelistComments,
+                                            }}
+                                        />
+                                    ))}
+                                </div>
+                            </AccordionContent>
+                        </AccordionItem>
+                    ))}
+                </Accordion>
+            )}
+        </DashboardLayout>
+    )
+}
+
+function ScheduleCard(props: {
+    schedule: AdminDefenseScheduleView
+    preview: AdminEvaluationPreview | null
+    previewLoading: boolean
+
+    onEnsurePreview: () => void
+    onRefreshPreview: () => void
+    onEnsurePanelists: () => void
+    onEnsureStudents: () => void
+
+    getPanelists: () => PickUser[]
+    getStudents: () => PickUser[]
+
+    onPreviewCached: (p: AdminEvaluationPreview) => void
+    previewOptions: { includeStudentAnswers: boolean; includePanelistScores: boolean; includePanelistComments: boolean }
+}) {
+    const { schedule, preview, previewLoading } = props
+
+    const studentCounts = preview?.student?.statusCounts ?? null
+    const panelistCount = preview?.panelist?.count ?? null
+
+    const title = safeName(schedule.group_title, `Group ${shortId(schedule.group_id)}`)
+    const rubricName = schedule.rubric_template_name ? schedule.rubric_template_name : "Active rubric (schedule)"
+
+    const studentSubmittedPct = studentCounts && studentCounts.total > 0 ? (studentCounts.submitted / studentCounts.total) * 100 : 0
+    const studentLockedPct = studentCounts && studentCounts.total > 0 ? (studentCounts.locked / studentCounts.total) * 100 : 0
+
+    return (
+        <Card className="overflow-hidden">
+            <CardHeader className="space-y-2">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 space-y-1">
+                        <CardTitle className="truncate text-base">{title}</CardTitle>
+                        <CardDescription className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1">
+                                <CalendarClock className="h-4 w-4" />
+                                {fmtDateTime(schedule.scheduled_at)}
+                            </span>
+                            {schedule.room ? (
+                                <span className="inline-flex items-center gap-1">
+                                    <DoorOpen className="h-4 w-4" />
+                                    {schedule.room}
+                                </span>
+                            ) : null}
+                        </CardDescription>
+                    </div>
+
                     <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">Total: {count}</Badge>
-                        <Badge variant="secondary">Pending: {pending}</Badge>
-                        <Badge variant="secondary">Submitted: {submitted}</Badge>
-                        <Badge variant="secondary">Locked: {locked}</Badge>
+                        <Badge variant={statusBadgeVariant(schedule.status)} className="capitalize">
+                            {String(schedule.status ?? "scheduled")}
+                        </Badge>
+                        <Badge variant="secondary" className="font-normal">
+                            {rubricName}
+                        </Badge>
+                    </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                    <StatPill
+                        icon={<Users className="h-4 w-4" />}
+                        label="Panelist evaluations"
+                        value={panelistCount !== null ? panelistCount : <span className="text-muted-foreground">—</span>}
+                    />
+                    <StatPill
+                        icon={<GraduationCap className="h-4 w-4" />}
+                        label="Student feedback"
+                        value={
+                            studentCounts ? (
+                                <span className="truncate">{studentCounts.total} total</span>
+                            ) : (
+                                <span className="text-muted-foreground">—</span>
+                            )
+                        }
+                    />
+                    <StatPill
+                        icon={<Eye className="h-4 w-4" />}
+                        label="Preview"
+                        value={
+                            preview ? (
+                                <span className="text-sm font-medium">Cached</span>
+                            ) : previewLoading ? (
+                                <span className="inline-flex items-center gap-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Loading…
+                                </span>
+                            ) : (
+                                <span className="text-muted-foreground">Not loaded</span>
+                            )
+                        }
+                    />
+                </div>
+
+                {studentCounts ? (
+                    <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium">Student submission progress</div>
+                            <div className="text-xs text-muted-foreground">{compactCounts(studentCounts)}</div>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                    <span>Submitted</span>
+                                    <span>{Math.round(studentSubmittedPct)}%</span>
+                                </div>
+                                <Progress value={studentSubmittedPct} />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                    <span>Locked</span>
+                                    <span>{Math.round(studentLockedPct)}%</span>
+                                </div>
+                                <Progress value={studentLockedPct} />
+                            </div>
+                        </div>
                     </div>
                 ) : null}
+            </CardHeader>
 
-                {showMissing ? (
-                    <Alert>
-                        <AlertTitle>No student feedback assignments found</AlertTitle>
-                        <AlertDescription>
-                            Students <span className="font-medium text-foreground">cannot submit feedback</span> unless a feedback form is assigned to them for this schedule.
-                            Click <span className="font-medium text-foreground">Assign now</span> to create the missing assignments using the active form.
-                        </AlertDescription>
-                    </Alert>
-                ) : null}
+            <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Schedule ID:</span>{" "}
+                    <TooltipProvider>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <span className="cursor-help">{shortId(schedule.id)}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{schedule.id}</TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
+                    {" • "}
+                    <span className="font-medium text-foreground">Group ID:</span>{" "}
+                    <TooltipProvider>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <span className="cursor-help">{shortId(schedule.group_id)}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{schedule.group_id}</TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
+                </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     <Button
+                        type="button"
                         variant="outline"
-                        onClick={() => void doCheck()}
-                        disabled={!canUseSchedule || checking || assigning}
-                    >
-                        {checking ? "Checking..." : "Check assignments"}
-                    </Button>
-
-                    <Button
-                        onClick={() => void doAssign()}
-                        disabled={!canUseSchedule || assigning || checking || (forms.length > 0 && !activeForm)}
-                    >
-                        {assigning ? "Assigning..." : "Assign now"}
-                    </Button>
-
-                    <Button
-                        variant="ghost"
                         onClick={() => {
-                            safeTryRefreshCtx(ctx)
-                            toast.message("Refreshing page data", {
-                                description: "If student feedback still shows missing, click “Check assignments” to verify the backend state.",
-                            })
+                            props.onEnsurePreview()
+                            props.onEnsurePanelists()
+                            props.onEnsureStudents()
                         }}
-                        disabled={checking || assigning}
+                        className="w-full sm:w-auto"
                     >
-                        Refresh page data
+                        <Eye className="mr-2 h-4 w-4" />
+                        Load Preview
                     </Button>
+
+                    <PreviewDialog
+                        schedule={schedule}
+                        preview={preview}
+                        previewLoading={previewLoading}
+                        onOpen={() => {
+                            props.onEnsurePreview()
+                        }}
+                        onRefresh={() => props.onRefreshPreview()}
+                    />
+
+                    <AssignSheet
+                        schedule={schedule}
+                        getPreview={() => preview}
+                        ensurePreview={props.onEnsurePreview}
+                        ensurePanelists={props.onEnsurePanelists}
+                        ensureStudents={props.onEnsureStudents}
+                        getPanelists={props.getPanelists}
+                        getStudents={props.getStudents}
+                        onPreviewUpdated={props.onPreviewCached}
+                        previewOptions={props.previewOptions}
+                    />
                 </div>
             </CardContent>
         </Card>
     )
 }
 
-function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState }) {
-    const {
-        viewOpen,
-        setViewOpen,
+function PreviewDialog(props: {
+    schedule: AdminDefenseScheduleView
+    preview: AdminEvaluationPreview | null
+    previewLoading: boolean
+    onOpen: () => void
+    onRefresh: () => void
+}) {
+    const { schedule, preview, previewLoading } = props
+    const [open, setOpen] = React.useState(false)
 
-        selectedViewEvaluation,
-        selectedViewSchedule,
-        selectedViewEvaluator,
+    const [schemaByFormId, setSchemaByFormId] = React.useState<Map<string, StudentFeedbackFormSchema>>(new Map())
+    const [loadingSchemas, setLoadingSchemas] = React.useState(false)
 
-        openEditForm,
-        runAction,
-        busyKey,
+    const loadSchemasForPreview = React.useCallback(async () => {
+        if (!preview?.student?.items?.length) return
+        const formIds = Array.from(
+            new Set(
+                preview.student.items
+                    .map((r) => (typeof r.form_id === "string" ? r.form_id : null))
+                    .filter(Boolean) as string[]
+            )
+        )
+        if (formIds.length === 0) return
 
-        formatDateTime,
-        compactString,
-        toTitleCase,
-        normalizeStatus,
-        roleLabel,
-        resolveGroupNameFromSchedule,
-    } = ctx
-
-    const scheduleId = selectedViewEvaluation?.schedule_id ?? null
-    const selectedKind = selectedViewEvaluation?.kind ?? null
-    const selectedEvaluationId = selectedViewEvaluation?.id ?? null
-    const selectedAssigneeId = selectedViewEvaluation?.evaluator_id ?? null
-
-    const [includeStudentAnswers, setIncludeStudentAnswers] = React.useState(true)
-    const [includePanelistScores, setIncludePanelistScores] = React.useState(true)
-    const [includePanelistComments, setIncludePanelistComments] = React.useState(true)
-
-    const [loadingPreview, setLoadingPreview] = React.useState(false)
-    const [previewError, setPreviewError] = React.useState<string | null>(null)
-    const [previewData, setPreviewData] = React.useState<PreviewResponse | null>(null)
-
-    React.useEffect(() => {
-        if (!viewOpen) return
-        // sensible defaults per flow
-        if (selectedKind === "panelist") {
-            setIncludePanelistScores(true)
-            setIncludePanelistComments(true)
-        } else {
-            setIncludeStudentAnswers(true)
-        }
-    }, [selectedKind, viewOpen])
-
-    const fetchPreview = React.useCallback(
-        async (signal?: AbortSignal) => {
-            if (!scheduleId) return
-
-            setLoadingPreview(true)
-            setPreviewError(null)
-
-            try {
-                const qs = new URLSearchParams({
-                    includeStudentAnswers: String(includeStudentAnswers),
-                    includePanelistScores: String(includePanelistScores),
-                    includePanelistComments: String(includePanelistComments),
-                })
-
-                const res = await fetch(`/api/admin/evaluation-previews/${scheduleId}?${qs.toString()}`, {
-                    cache: "no-store",
-                    signal,
-                })
-
-                let payload: unknown = {}
+        setLoadingSchemas(true)
+        try {
+            const next = new Map(schemaByFormId)
+            for (const formId of formIds) {
+                if (next.has(formId)) continue
                 try {
-                    payload = await res.json()
+                    const data = await apiJsonFirst<any>(
+                        [
+                            `/api/admin/student-feedback/forms/${formId}`,
+                            `/api/admin/student_feedback/forms/${formId}`,
+                        ],
+                        { method: "GET" }
+                    )
+                    const schema = (data?.item?.schema ?? data?.item ?? data?.schema ?? {}) as StudentFeedbackFormSchema
+                    next.set(formId, schema)
                 } catch {
-                    payload = {}
+                    // fallback to active schema
+                    try {
+                        const data = await apiJsonFirst<any>(
+                            ["/api/admin/student-feedback/schema", "/api/admin/student_feedback/schema"],
+                            { method: "GET" }
+                        )
+                        const schema = (data?.item ?? data?.schema ?? {}) as StudentFeedbackFormSchema
+                        next.set(formId, schema)
+                    } catch {
+                        // ignore
+                    }
                 }
-
-                if (!res.ok) {
-                    const msg = extractApiMessage(payload) || `Request failed (${res.status})`
-                    throw new Error(msg)
-                }
-
-                setPreviewData(payload as PreviewResponse)
-            } catch (err) {
-                if (err instanceof DOMException && err.name === "AbortError") return
-                const message = err instanceof Error ? err.message : "Failed to load preview."
-                setPreviewError(message)
-                toast.error("Preview failed", { description: message })
-            } finally {
-                setLoadingPreview(false)
             }
-        },
-        [includePanelistComments, includePanelistScores, includeStudentAnswers, scheduleId],
-    )
+            setSchemaByFormId(next)
+        } finally {
+            setLoadingSchemas(false)
+        }
+    }, [preview, schemaByFormId])
 
     React.useEffect(() => {
-        if (!viewOpen || !scheduleId) return
-        const controller = new AbortController()
-        void fetchPreview(controller.signal)
-        return () => controller.abort()
-    }, [fetchPreview, scheduleId, viewOpen])
+        if (!open) return
+        props.onOpen()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open])
 
     React.useEffect(() => {
-        if (!viewOpen) {
-            setPreviewError(null)
-            setPreviewData(null)
-            setLoadingPreview(false)
-        }
-    }, [viewOpen])
+        if (!open) return
+        void loadSchemasForPreview()
+    }, [open, loadSchemasForPreview])
 
-    const preview = previewData && isRecord(previewData.preview) ? (previewData.preview as Record<string, unknown>) : null
-
-    const studentBlock = preview && isRecord(preview.student) ? (preview.student as Record<string, unknown>) : null
-    const studentItems = studentBlock && Array.isArray(studentBlock.items) ? (studentBlock.items as unknown[]) : []
-
-    const panelistBlock = preview && isRecord(preview.panelist) ? (preview.panelist as Record<string, unknown>) : null
-    const panelistItems = panelistBlock && Array.isArray(panelistBlock.items) ? (panelistBlock.items as unknown[]) : []
-
-    const studentCounts = React.useMemo(() => {
-        return readStatusCountsFromStudentBlock(studentBlock, studentItems)
-    }, [studentBlock, studentItems])
-
-    const currentStatus = selectedViewEvaluation ? normalizeStatus(selectedViewEvaluation.status) : null
-
-    const selectedPanelistPreview = React.useMemo(() => {
-        if (selectedKind !== "panelist") return null
-        return pickPanelistPreviewItem(panelistItems, selectedEvaluationId)
-    }, [panelistItems, selectedEvaluationId, selectedKind])
-
-    const selectedStudentPreview = React.useMemo(() => {
-        if (selectedKind !== "student") return null
-        return pickStudentPreviewItem(studentItems, selectedEvaluationId, selectedAssigneeId)
-    }, [selectedAssigneeId, selectedEvaluationId, selectedKind, studentItems])
-
-    const headerTitle =
-        selectedKind === "panelist"
-            ? "Panelist Rubric Preview"
-            : selectedKind === "student"
-                ? "Student Feedback Preview"
-                : "Evaluation Preview"
-
-    const headerDescription =
-        selectedKind === "panelist"
-            ? "This preview is strictly the selected panelist’s rubric scoring (criteria + scores). Student feedback evaluations are a separate flow and have their own preview."
-            : selectedKind === "student"
-                ? "This preview is strictly the selected student’s feedback evaluation (questions + answers). Status shows Pending/Submitted/Locked — scores only appear when the backend provides a computed summary."
-                : "Preview is limited to the selected evaluation assignment."
-
-    function renderPanelistPreview(row: Record<string, unknown>) {
-        const evaluation = isRecord(row.evaluation) ? (row.evaluation as Record<string, unknown>) : {}
-        const evalId = getString(evaluation.id) ?? selectedEvaluationId ?? "—"
-
-        const status = getString(evaluation.status) ?? "pending"
-        const statusNorm = normalizeStatus(status)
-
-        const overall = isRecord(row.overall) ? (row.overall as Record<string, unknown>) : null
-        const overallPct =
-            (overall?.percentage ??
-                overall?.overall_percentage ??
-                overall?.score_percentage ??
-                row.overall_percentage ??
-                row.score_percentage ??
-                row.percentage) ??
-            null
-
-        const targets = Array.isArray(row.targets) ? (row.targets as unknown[]) : []
-        const scores = Array.isArray(row.scores) ? (row.scores as unknown[]) : []
-
-        const groupedByTarget = new Map<string, { title: string; type: string; items: Record<string, unknown>[] }>()
-        for (const sRaw of scores) {
-            const s = isRecord(sRaw) ? (sRaw as Record<string, unknown>) : {}
-            const tType = getString(s.target_type) ?? "unknown"
-            const tId = getString(s.target_id) ?? "unknown"
-            const tName = getString(s.target_name) ?? (tType === "group" ? "Thesis Group" : "Student")
-            const key = `${tType}:${tId}`
-
-            if (!groupedByTarget.has(key)) {
-                groupedByTarget.set(key, { title: tName, type: tType, items: [] })
-            }
-            groupedByTarget.get(key)!.items.push(s)
-        }
-
-        const targetGroups = Array.from(groupedByTarget.values()).sort((a, b) => {
-            const aP = a.type === "group" ? 0 : 1
-            const bP = b.type === "group" ? 0 : 1
-            if (aP !== bP) return aP - bP
-            return a.title.localeCompare(b.title)
-        })
-
-        return (
-            <div className="space-y-3">
-                <div className="rounded-lg border bg-muted/20 p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span
-                            className={[
-                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                statusBadgeClass(statusNorm),
-                            ].join(" ")}
-                        >
-                            {toTitleCase(statusNorm)}
-                        </span>
-
-                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                            Overall: {formatPercent(overallPct)}
-                        </span>
-
-                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                            Targets: {targets.length}
-                        </span>
-
-                        <span className="ml-auto text-xs text-muted-foreground">
-                            Evaluation ID: <span className="font-medium text-foreground">{evalId}</span>
-                        </span>
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                        Rubric scoring can include <span className="font-medium text-foreground">group</span> and{" "}
-                        <span className="font-medium text-foreground">individual student</span> targets. These are rubric targets (not student feedback evaluations).
-                    </p>
-                </div>
-
-                <div className="rounded-md border p-3">
-                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm font-medium">Rubric Targets Summary</p>
-                        <p className="text-xs text-muted-foreground">
-                            {targets.length} target(s) • {includePanelistScores ? "scores included" : "scores hidden"}
-                        </p>
-                    </div>
-
-                    {targets.length === 0 ? (
-                        <div className="mt-2 text-sm text-muted-foreground">No rubric targets available yet.</div>
-                    ) : (
-                        <div className="mt-2 overflow-x-auto rounded-md border">
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead className="min-w-60">Target</TableHead>
-                                        <TableHead className="min-w-28">Target Type</TableHead>
-                                        <TableHead className="min-w-32">Criteria Scored</TableHead>
-                                        <TableHead className="min-w-32">Percentage</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {targets.map((tRaw: unknown, tIdx: number) => {
-                                        const t = isRecord(tRaw) ? (tRaw as Record<string, unknown>) : {}
-                                        const tName = getString(t.target_name) ?? "Unnamed target"
-                                        const tTypeRaw = getString(t.target_type) ?? "—"
-                                        const tType =
-                                            normalizeStatus(tTypeRaw) === "student"
-                                                ? "Individual Student"
-                                                : normalizeStatus(tTypeRaw) === "group"
-                                                    ? "Thesis Group"
-                                                    : toTitleCase(tTypeRaw)
-                                        const criteria = getNumber(t.criteria_scored)
-                                        const pct = t.percentage
-                                        return (
-                                            <TableRow key={`${evalId}-t-${tIdx}`}>
-                                                <TableCell className="font-medium">{tName}</TableCell>
-                                                <TableCell className="text-muted-foreground">{tType}</TableCell>
-                                                <TableCell className="text-muted-foreground">{criteria ?? "—"}</TableCell>
-                                                <TableCell className="text-muted-foreground">{formatPercent(pct)}</TableCell>
-                                            </TableRow>
-                                        )
-                                    })}
-                                </TableBody>
-                            </Table>
-                        </div>
-                    )}
-                </div>
-
-                <div className="rounded-md border p-3">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="space-y-0.5">
-                            <p className="text-sm font-medium">Rubric Scores</p>
-                            <p className="text-xs text-muted-foreground">
-                                Criteria from the rubric template with scores (and optional comments).
-                            </p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                size="sm"
-                                variant={includePanelistScores ? "default" : "outline"}
-                                onClick={() => setIncludePanelistScores((v) => !v)}
-                            >
-                                {includePanelistScores ? "Scores: ON" : "Scores: OFF"}
-                            </Button>
-
-                            <Button
-                                size="sm"
-                                variant={includePanelistComments ? "default" : "outline"}
-                                onClick={() => setIncludePanelistComments((v) => !v)}
-                                disabled={!includePanelistScores}
-                            >
-                                {includePanelistComments ? "Comments: ON" : "Comments: OFF"}
-                            </Button>
-                        </div>
-                    </div>
-
-                    {!includePanelistScores ? (
-                        <div className="mt-2 text-sm text-muted-foreground">Rubric scores are currently hidden.</div>
-                    ) : scores.length === 0 ? (
-                        <div className="mt-2 text-sm text-muted-foreground">No rubric scores recorded yet.</div>
-                    ) : targetGroups.length === 0 ? (
-                        <div className="mt-2 text-sm text-muted-foreground">No grouped rubric scores available.</div>
-                    ) : (
-                        <Accordion type="multiple" className="mt-3 w-full">
-                            {targetGroups.map((g, gIdx) => (
-                                <AccordionItem key={`${evalId}-g-${gIdx}`} value={`${evalId}-g-${gIdx}`} className="rounded-lg border px-0">
-                                    <AccordionTrigger className="px-3 py-3 hover:no-underline">
-                                        <div className="flex w-full flex-col gap-1 text-left sm:flex-row sm:items-center sm:justify-between">
-                                            <p className="truncate text-sm font-semibold">{g.title}</p>
-                                            <p className="text-xs text-muted-foreground">
-                                                {g.type === "student" ? "Individual Student" : g.type === "group" ? "Thesis Group" : toTitleCase(g.type)} •{" "}
-                                                {g.items.length} criterion item(s)
-                                            </p>
-                                        </div>
-                                    </AccordionTrigger>
-
-                                    <AccordionContent className="px-3 pb-3">
-                                        <div className="overflow-x-auto rounded-md border">
-                                            <Table>
-                                                <TableHeader>
-                                                    <TableRow>
-                                                        <TableHead className="min-w-72">Criterion</TableHead>
-                                                        <TableHead className="min-w-24">Score</TableHead>
-                                                        <TableHead className="min-w-24">Max</TableHead>
-                                                        <TableHead className="min-w-24">Weight</TableHead>
-                                                        {includePanelistComments ? <TableHead className="min-w-96">Comment</TableHead> : null}
-                                                    </TableRow>
-                                                </TableHeader>
-                                                <TableBody>
-                                                    {g.items.map((s, sIdx) => {
-                                                        const criterion = getString(s.criterion) ?? "—"
-                                                        const score = getNumber(s.score)
-                                                        const maxScore = getNumber(s.max_score)
-                                                        const weight = s.weight
-                                                        const comment = includePanelistComments ? getString(s.comment) : null
-
-                                                        return (
-                                                            <TableRow key={`${evalId}-g-${gIdx}-s-${sIdx}`}>
-                                                                <TableCell>
-                                                                    <div className="space-y-0.5">
-                                                                        <p className="text-sm font-medium">{criterion}</p>
-                                                                        {getString(s.criterion_description) ? (
-                                                                            <p className="text-xs text-muted-foreground">
-                                                                                {getString(s.criterion_description)}
-                                                                            </p>
-                                                                        ) : null}
-                                                                    </div>
-                                                                </TableCell>
-                                                                <TableCell className="text-muted-foreground">{score ?? "—"}</TableCell>
-                                                                <TableCell className="text-muted-foreground">{maxScore ?? "—"}</TableCell>
-                                                                <TableCell className="text-muted-foreground">{formatMaybeScore(weight)}</TableCell>
-                                                                {includePanelistComments ? (
-                                                                    <TableCell className="text-muted-foreground">
-                                                                        <div className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-break-word">
-                                                                            {comment ?? "—"}
-                                                                        </div>
-                                                                    </TableCell>
-                                                                ) : null}
-                                                            </TableRow>
-                                                        )
-                                                    })}
-                                                </TableBody>
-                                            </Table>
-                                        </div>
-                                    </AccordionContent>
-                                </AccordionItem>
-                            ))}
-                        </Accordion>
-                    )}
-                </div>
-            </div>
-        )
-    }
-
-    function renderStudentPreview(row: Record<string, unknown>) {
-        const studentId =
-            getString(row.student_id) ??
-            getString(row.evaluator_id) ??
-            getString(row.user_id) ??
-            selectedAssigneeId ??
-            null
-
-        const studentName =
-            getString(row.student_name) ??
-            getString(row.name) ??
-            getString(row.student_email) ??
-            compactString(selectedViewEvaluator?.name) ??
-            compactString(selectedViewEvaluator?.email) ??
-            "Student"
-
-        const studentEmail = getString(row.student_email) ?? getString(row.email) ?? compactString(selectedViewEvaluator?.email)
-
-        const status = getString(row.status) ?? "pending"
-        const statusNorm = normalizeStatus(status)
-        const isPending = statusNorm === "pending"
-
-        const submittedAt = getString(row.submitted_at) ?? null
-        const lockedAt = getString(row.locked_at) ?? null
-        const createdAt = getString(row.created_at) ?? null
-
-        const scoreTotalRaw = row.score_total ?? row.total_score ?? row.total
-        const scoreMaxRaw = row.score_max ?? row.max_score ?? row.max
-        const scorePercentRaw = row.score_percentage ?? row.percentage
-
-        const scoreTotal = getNumber(scoreTotalRaw)
-        const scoreMax = getNumber(scoreMaxRaw)
-        const scorePercent = getNumber(scorePercentRaw)
-
-        // IMPORTANT UX FIX:
-        // - Pending items should NOT show "0%" (it reads like a missing submission).
-        // - Only show score summary when backend provides a meaningful max/summary.
-        const hasMeaningfulMax = !isPending && scoreMax !== null && scoreMax > 0
-        const hasMeaningfulTotal = hasMeaningfulMax && scoreTotal !== null
-        const computedPercent = hasMeaningfulTotal ? (scoreTotal! / scoreMax!) * 100 : null
-        const displayPercent =
-            hasMeaningfulMax
-                ? (scorePercent !== null ? scorePercent : computedPercent)
-                : null
-
-        const answersRaw = row.answers ?? row.responses ?? row.feedback ?? null
-        const normalizedAnswers = normalizeStudentAnswers(answersRaw)
-        const hasAnswers = normalizedAnswers.length > 0
-
-        const scoreHeaderLabel =
-            isPending
-                ? "Awaiting submission"
-                : displayPercent === null
-                    ? "Submitted (no score summary)"
-                    : `Score: ${formatPercent(displayPercent)}`
-
-        return (
-            <div className="space-y-3">
-                <div className="rounded-lg border bg-muted/20 p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span
-                            className={[
-                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                statusBadgeClass(statusNorm),
-                            ].join(" ")}
-                        >
-                            {toTitleCase(statusNorm)}
-                        </span>
-
-                        <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                            {scoreHeaderLabel}
-                        </span>
-
-                        <span className="ml-auto text-xs text-muted-foreground">
-                            Student ID: <span className="font-medium text-foreground">{studentId ?? "—"}</span>
-                        </span>
-                    </div>
-
-                    <div className="mt-2">
-                        <p className="text-sm font-semibold">{studentName}</p>
-                        <p className="text-xs text-muted-foreground">{studentEmail ?? "No email"}</p>
-                    </div>
-
-                    {isPending ? (
-                        <div className="mt-3 rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">
-                            This feedback is <span className="font-medium text-foreground">Pending</span>. The student hasn’t submitted answers yet, so score summary is hidden to avoid showing misleading “0”.
-                        </div>
-                    ) : displayPercent === null ? (
-                        <div className="mt-3 rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">
-                            This feedback is <span className="font-medium text-foreground">{toTitleCase(statusNorm)}</span>. Answers can still be reviewed below. If you expect a computed score summary, click{" "}
-                            <span className="font-medium text-foreground">Refresh Preview</span>.
-                        </div>
-                    ) : null}
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Total</p>
-                        <p className="mt-1 text-sm font-semibold">{hasMeaningfulTotal ? formatMaybeScore(scoreTotal) : "—"}</p>
-                    </div>
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Max</p>
-                        <p className="mt-1 text-sm font-semibold">{hasMeaningfulMax ? formatMaybeScore(scoreMax) : "—"}</p>
-                    </div>
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Percentage</p>
-                        <p className="mt-1 text-sm font-semibold">{displayPercent === null ? "—" : formatPercent(displayPercent)}</p>
-                    </div>
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Created</p>
-                        <p className="mt-1 text-sm font-semibold">{formatDateTime(createdAt)}</p>
-                    </div>
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Submitted</p>
-                        <p className="mt-1 text-sm font-semibold">{formatDateTime(submittedAt)}</p>
-                    </div>
-                    <div className="rounded-md border p-3">
-                        <p className="text-xs text-muted-foreground">Locked</p>
-                        <p className="mt-1 text-sm font-semibold">{formatDateTime(lockedAt)}</p>
-                    </div>
-                </div>
-
-                <div className="rounded-md border p-3">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="space-y-0.5">
-                            <p className="text-sm font-medium">Feedback Answers</p>
-                            <p className="text-xs text-muted-foreground">
-                                Questions are shown with human-friendly labels (not raw attribute keys).
-                            </p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                size="sm"
-                                variant={includeStudentAnswers ? "default" : "outline"}
-                                onClick={() => setIncludeStudentAnswers((v) => !v)}
-                            >
-                                {includeStudentAnswers ? "Answers: ON" : "Answers: OFF"}
-                            </Button>
-                        </div>
-                    </div>
-
-                    {!includeStudentAnswers ? (
-                        <div className="mt-2 text-sm text-muted-foreground">Student answers are currently hidden.</div>
-                    ) : !hasAnswers ? (
-                        <div className="mt-2 text-sm text-muted-foreground">
-                            {isPending ? "No answers yet (still pending submission)." : "No feedback answers available for this submission."}
-                        </div>
-                    ) : (
-                        <div className="mt-3 max-h-96 overflow-y-auto rounded-md border bg-muted/10 p-2">
-                            <div className="space-y-2">
-                                {normalizedAnswers.map((a, idx) => {
-                                    const q = a.question ? a.question : `Question ${idx + 1}`
-                                    const score = a.score
-                                    const max = a.max
-
-                                    return (
-                                        <div key={`ans-${idx}`} className="rounded-md border bg-card p-3">
-                                            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                                                <p className="text-sm font-semibold">{q}</p>
-                                                {score !== undefined || max !== undefined ? (
-                                                    <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                        Score: {formatMaybeScore(score)}{max !== undefined ? ` / ${formatMaybeScore(max)}` : ""}
-                                                    </span>
-                                                ) : null}
-                                            </div>
-                                            <pre className="mt-2 whitespace-pre-wrap wrap-break-word text-sm text-muted-foreground">
-                                                {prettyValue(a.answer)}
-                                            </pre>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
-        )
-    }
+    const title = safeName(schedule.group_title, `Group ${shortId(schedule.group_id)}`)
 
     return (
         <Dialog
-            open={viewOpen}
-            onOpenChange={(open) => {
-                setViewOpen(open)
+            open={open}
+            onOpenChange={(v) => {
+                setOpen(v)
             }}
         >
-            <DialogContent className="sm:max-w-5xl h-[85svh] flex flex-col overflow-hidden">
-                {selectedViewEvaluation ? (
-                    <>
-                        <DialogHeader>
-                            <DialogTitle>{headerTitle}</DialogTitle>
-                            <DialogDescription>{headerDescription}</DialogDescription>
-                        </DialogHeader>
+            <DialogTrigger asChild>
+                <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full sm:w-auto"
+                    disabled={previewLoading}
+                    onClick={() => setOpen(true)}
+                >
+                    {previewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Eye className="mr-2 h-4 w-4" />}
+                    Preview
+                </Button>
+            </DialogTrigger>
 
-                        <div className="flex-1 overflow-y-auto pr-2">
-                            <div className="space-y-4">
-                                <div className="rounded-lg border bg-muted/30 p-3">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-sm font-medium">Assignment Status</span>
-                                        <span
-                                            className={[
-                                                "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
-                                                statusBadgeClass(selectedViewEvaluation.status),
-                                            ].join(" ")}
-                                        >
-                                            {toTitleCase(normalizeStatus(selectedViewEvaluation.status))}
-                                        </span>
-
-                                        <span className="inline-flex rounded-md border px-2 py-1 text-xs font-medium">
-                                            {selectedViewEvaluation.assignee_role === "student"
-                                                ? "Student Feedback Flow"
-                                                : "Panelist Rubric Flow"}
-                                        </span>
-
-                                        <span className="ml-auto text-xs text-muted-foreground">
-                                            Schedule ID: <span className="font-medium text-foreground">{scheduleId}</span>
-                                        </span>
-                                    </div>
-
-                                    {selectedKind === "student" && studentCounts.total > 0 ? (
-                                        <div className="mt-3 flex flex-wrap gap-2">
-                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Student Feedback • Total: <span className="ml-1 font-medium text-foreground">{studentCounts.total}</span>
-                                            </span>
-                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Pending: <span className="ml-1 font-medium text-foreground">{studentCounts.pending}</span>
-                                            </span>
-                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Submitted: <span className="ml-1 font-medium text-foreground">{studentCounts.submitted}</span>
-                                            </span>
-                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                                                Locked: <span className="ml-1 font-medium text-foreground">{studentCounts.locked}</span>
-                                            </span>
-                                        </div>
-                                    ) : null}
-                                </div>
-
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                    <div className="rounded-lg border p-3">
-                                        <p className="text-xs font-medium text-muted-foreground">Thesis Group</p>
-                                        <p className="mt-1 text-sm font-medium">{resolveGroupNameFromSchedule(selectedViewSchedule)}</p>
-                                    </div>
-
-                                    <div className="rounded-lg border p-3">
-                                        <p className="text-xs font-medium text-muted-foreground">Schedule</p>
-                                        <p className="mt-1 text-sm">
-                                            {selectedViewSchedule ? formatDateTime(selectedViewSchedule.scheduled_at) : "Schedule unavailable"}
-                                        </p>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            {compactString(selectedViewSchedule?.room) ?? "No room assigned"}
-                                            {selectedViewSchedule?.status ? ` • ${toTitleCase(selectedViewSchedule.status)}` : ""}
-                                        </p>
-                                    </div>
-
-                                    <div className="rounded-lg border p-3">
-                                        <p className="text-xs font-medium text-muted-foreground">Assignee</p>
-                                        <p className="mt-1 text-sm font-medium">
-                                            {compactString(selectedViewEvaluator?.name) ??
-                                                compactString(selectedViewEvaluator?.email) ??
-                                                "Unknown Assignee"}
-                                        </p>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            {[
-                                                compactString(selectedViewEvaluator?.email),
-                                                selectedViewEvaluator ? roleLabel(selectedViewEvaluator.role) : null,
-                                            ]
-                                                .filter((part): part is string => !!part)
-                                                .join(" • ") || "—"}
-                                        </p>
-                                    </div>
-
-                                    <div className="rounded-lg border p-3">
-                                        <p className="text-xs font-medium text-muted-foreground">Timeline</p>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            Created: {formatDateTime(selectedViewEvaluation.created_at)}
-                                        </p>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            Submitted: {formatDateTime(selectedViewEvaluation.submitted_at)}
-                                        </p>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            Locked: {formatDateTime(selectedViewEvaluation.locked_at)}
-                                        </p>
-                                    </div>
-                                </div>
-
-                                <div className="rounded-lg border bg-card p-3">
-                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                        <div className="space-y-0.5">
-                                            <p className="text-sm font-medium">Preview</p>
-                                            <p className="text-xs text-muted-foreground">
-                                                Preview is strictly scoped to the selected assignment (no mixed flow UI).
-                                            </p>
-                                        </div>
-
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            <Button
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => void fetchPreview()}
-                                                disabled={loadingPreview || !scheduleId}
-                                            >
-                                                {loadingPreview ? "Loading..." : "Refresh Preview"}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    {previewError ? (
-                                        <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                                            {previewError}
-                                        </div>
-                                    ) : null}
-
-                                    {loadingPreview ? (
-                                        <div className="mt-3 space-y-2">
-                                            {Array.from({ length: 4 }).map((_, i) => (
-                                                <div key={`preview-skel-${i}`} className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
-                                            ))}
-                                        </div>
-                                    ) : null}
-
-                                    {!loadingPreview && !previewError ? (
-                                        <div className="mt-4">
-                                            {selectedKind === "panelist" ? (
-                                                selectedPanelistPreview ? (
-                                                    renderPanelistPreview(selectedPanelistPreview)
-                                                ) : (
-                                                    <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                                                        No matching panelist preview found for this assignment. Try{" "}
-                                                        <span className="font-medium text-foreground">Refresh Preview</span>, or verify the evaluation exists.
-                                                    </div>
-                                                )
-                                            ) : selectedKind === "student" ? (
-                                                selectedStudentPreview ? (
-                                                    renderStudentPreview(selectedStudentPreview)
-                                                ) : (
-                                                    <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                                                        No matching student feedback preview found for this assignment. Try{" "}
-                                                        <span className="font-medium text-foreground">Refresh Preview</span>, or verify the student evaluation exists.
-                                                    </div>
-                                                )
-                                            ) : (
-                                                <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                                                    Unknown evaluation kind. Please refresh the page.
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : null}
-                                </div>
+            <DialogContent className="max-w-5xl">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="truncate">{title}</div>
+                            <div className="mt-1 text-sm font-normal text-muted-foreground">
+                                {fmtDateTime(schedule.scheduled_at)}
+                                {schedule.room ? ` • ${schedule.room}` : ""} •{" "}
+                                <span className="capitalize">{String(schedule.status)}</span>
                             </div>
                         </div>
+                        <Button type="button" variant="outline" onClick={props.onRefresh}>
+                            <RefreshCcw className="mr-2 h-4 w-4" />
+                            Refresh
+                        </Button>
+                    </DialogTitle>
+                    <DialogDescription>
+                        Panelists use the <span className="font-medium">active rubric template</span> pinned on the schedule.
+                        Students answer the <span className="font-medium">feedback form</span> (pinned per schedule when
+                        assigned).
+                    </DialogDescription>
+                </DialogHeader>
 
-                        <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    setViewOpen(false)
-                                    openEditForm(selectedViewEvaluation)
-                                }}
-                            >
-                                Edit Assignment
-                            </Button>
-
-                            <div className="flex flex-wrap items-center justify-end gap-2">
-                                {currentStatus !== "pending" ? (
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void runAction(selectedViewEvaluation, "set-pending")}
-                                        disabled={busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:set-pending`}
-                                    >
-                                        {busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:set-pending`
-                                            ? "Updating..."
-                                            : "Set Pending"}
-                                    </Button>
-                                ) : null}
-
-                                {currentStatus === "pending" ? (
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => void runAction(selectedViewEvaluation, "submit")}
-                                        disabled={busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:submit`}
-                                    >
-                                        {busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:submit`
-                                            ? "Submitting..."
-                                            : "Submit"}
-                                    </Button>
-                                ) : null}
-
-                                {currentStatus !== "locked" ? (
-                                    <Button
-                                        onClick={() => void runAction(selectedViewEvaluation, "lock")}
-                                        disabled={busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:lock`}
-                                    >
-                                        {busyKey === `${selectedViewEvaluation.kind}:${selectedViewEvaluation.id}:lock`
-                                            ? "Locking..."
-                                            : "Lock Evaluation"}
-                                    </Button>
-                                ) : (
-                                    <Button variant="outline" onClick={() => setViewOpen(false)}>
-                                        Close
-                                    </Button>
-                                )}
+                {!preview ? (
+                    <div className="space-y-3">
+                        <div className="rounded-xl border p-4">
+                            <div className="flex items-center gap-2">
+                                {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                                <div className="text-sm font-medium">{previewLoading ? "Loading preview…" : "Preview not loaded yet"}</div>
                             </div>
-                        </DialogFooter>
-                    </>
+                            <div className="mt-1 text-sm text-muted-foreground">
+                                Click <span className="font-medium">Load Preview</span> on the schedule card, or wait a moment if it’s loading.
+                            </div>
+                        </div>
+                    </div>
                 ) : (
-                    <>
-                        <DialogHeader>
-                            <DialogTitle>Evaluation Not Available</DialogTitle>
-                            <DialogDescription>
-                                This evaluation is no longer available. It may have been deleted or moved.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <DialogFooter>
-                            <Button onClick={() => setViewOpen(false)}>Close</Button>
-                        </DialogFooter>
-                    </>
+                    <Tabs defaultValue="summary" className="w-full">
+                        <TabsList className="w-full justify-start">
+                            <TabsTrigger value="summary">Summary</TabsTrigger>
+                            <TabsTrigger value="panelist">
+                                Panelists{" "}
+                                <Badge variant="secondary" className="ml-2">
+                                    {preview.panelist.count}
+                                </Badge>
+                            </TabsTrigger>
+                            <TabsTrigger value="student">
+                                Students{" "}
+                                <Badge variant="secondary" className="ml-2">
+                                    {preview.student.count}
+                                </Badge>
+                            </TabsTrigger>
+                        </TabsList>
+
+                        <TabsContent value="summary" className="space-y-4">
+                            <div className="grid gap-3 md:grid-cols-3">
+                                <StatPill icon={<Users className="h-4 w-4" />} label="Panelist evaluations" value={preview.panelist.count} />
+                                <StatPill
+                                    icon={<GraduationCap className="h-4 w-4" />}
+                                    label="Student feedback"
+                                    value={preview.student.count}
+                                />
+                                <StatPill
+                                    icon={<ClipboardList className="h-4 w-4" />}
+                                    label="Rubric template"
+                                    value={safeName(preview.schedule.rubric_template_name, "—")}
+                                />
+                            </div>
+
+                            <div className="rounded-xl border p-4">
+                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                    <div className="text-sm font-medium">Student Status</div>
+                                    <div className="text-xs text-muted-foreground">{compactCounts(preview.student.statusCounts)}</div>
+                                </div>
+                                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                    <div className="rounded-lg border bg-muted/20 p-3">
+                                        <div className="text-xs text-muted-foreground">Pending</div>
+                                        <div className="text-lg font-semibold">{preview.student.statusCounts.pending}</div>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/20 p-3">
+                                        <div className="text-xs text-muted-foreground">Submitted</div>
+                                        <div className="text-lg font-semibold">{preview.student.statusCounts.submitted}</div>
+                                    </div>
+                                    <div className="rounded-lg border bg-muted/20 p-3">
+                                        <div className="text-xs text-muted-foreground">Locked</div>
+                                        <div className="text-lg font-semibold">{preview.student.statusCounts.locked}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </TabsContent>
+
+                        <TabsContent value="panelist" className="space-y-4">
+                            {preview.panelist.count === 0 ? (
+                                <EmptyState
+                                    title="No panelist evaluations assigned yet"
+                                    description="Assign evaluations to panelists (all or specific) to start collecting rubric scores."
+                                />
+                            ) : (
+                                <div className="space-y-3">
+                                    {preview.panelist.items.map((p) => {
+                                        const name = safeName(p.evaluation.evaluator_name, `Panelist ${shortId(p.evaluation.evaluator_id)}`)
+                                        const pct = computePercent(p.overall?.overall_percentage)
+                                        const status = String(p.evaluation.status ?? "pending")
+                                        return (
+                                            <Card key={p.evaluation.id} className="overflow-hidden">
+                                                <CardHeader className="space-y-2">
+                                                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                                        <div className="min-w-0">
+                                                            <div className="truncate text-sm font-semibold">{name}</div>
+                                                            <div className="truncate text-xs text-muted-foreground">{p.evaluation.evaluator_email ?? ""}</div>
+                                                        </div>
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <Badge variant={statusBadgeVariant(status)} className="capitalize">
+                                                                {status}
+                                                            </Badge>
+                                                            {pct !== null ? (
+                                                                <Badge variant="secondary" className="font-normal">
+                                                                    {pct.toFixed(1)}%
+                                                                </Badge>
+                                                            ) : (
+                                                                <Badge variant="outline" className="font-normal">
+                                                                    —
+                                                                </Badge>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {pct !== null ? (
+                                                        <div className="space-y-1">
+                                                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                                <span>Overall score</span>
+                                                                <span>{pct.toFixed(1)}%</span>
+                                                            </div>
+                                                            <Progress value={pct} />
+                                                        </div>
+                                                    ) : null}
+                                                </CardHeader>
+
+                                                <CardContent className="space-y-3">
+                                                    <div className="rounded-lg border bg-muted/20 p-3">
+                                                        <div className="text-xs font-medium text-muted-foreground">Target summaries</div>
+                                                        <div className="mt-2 space-y-2">
+                                                            {p.targets.length === 0 ? (
+                                                                <div className="text-sm text-muted-foreground">No scores yet.</div>
+                                                            ) : (
+                                                                p.targets.map((t) => (
+                                                                    <div
+                                                                        key={`${t.target_type}:${t.target_id}`}
+                                                                        className="flex items-center justify-between gap-3 rounded-md border bg-background p-3"
+                                                                    >
+                                                                        <div className="min-w-0">
+                                                                            <div className="truncate text-sm font-medium">
+                                                                                {t.target_type === "group" ? "Group" : "Student"}:{" "}
+                                                                                {safeName(t.target_name, shortId(t.target_id))}
+                                                                            </div>
+                                                                            <div className="text-xs text-muted-foreground">
+                                                                                {t.criteria_scored} criterion/criteria scored
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="text-right">
+                                                                            <div className="text-sm font-semibold">{t.percentage.toFixed(1)}%</div>
+                                                                            <div className="text-xs text-muted-foreground">
+                                                                                {t.weighted_score.toFixed(2)} / {t.weighted_max.toFixed(2)}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                ))
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {p.scores.length > 0 ? (
+                                                        <Accordion type="single" collapsible className="w-full">
+                                                            <AccordionItem value="scores" className="rounded-lg border px-2">
+                                                                <AccordionTrigger className="px-3">
+                                                                    Detailed rubric scores ({p.scores.length})
+                                                                </AccordionTrigger>
+                                                                <AccordionContent className="px-3 pb-3">
+                                                                    <ScoreDetails scores={p.scores} />
+                                                                </AccordionContent>
+                                                            </AccordionItem>
+                                                        </Accordion>
+                                                    ) : (
+                                                        <div className="text-sm text-muted-foreground">No detailed scores loaded.</div>
+                                                    )}
+                                                </CardContent>
+                                            </Card>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </TabsContent>
+
+                        <TabsContent value="student" className="space-y-4">
+                            {preview.student.count === 0 ? (
+                                <EmptyState
+                                    title="No student feedback assigned yet"
+                                    description="Assign student feedback forms (all or specific) to start collecting student responses."
+                                />
+                            ) : (
+                                <div className="space-y-3">
+                                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                        <div className="text-sm text-muted-foreground">
+                                            Showing {preview.student.count} student evaluation(s)
+                                            {loadingSchemas ? (
+                                                <span className="ml-2 inline-flex items-center gap-2">
+                                                    <Loader2 className="h-3 w-3 animate-spin" /> loading form…
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <Badge variant="outline" className="font-normal">
+                                            Answers: {preview.student.includeAnswers ? "included" : "hidden"}
+                                        </Badge>
+                                    </div>
+
+                                    <div className="grid gap-3">
+                                        {preview.student.items.map((r) => {
+                                            const studentName = safeName(r.student_name, `Student ${shortId(r.student_id)}`)
+                                            const pct = computePercent(r.percentage)
+                                            const formId = typeof r.form_id === "string" ? r.form_id : null
+                                            const schema = formId ? schemaByFormId.get(formId) ?? null : null
+                                            const labelMap = schema ? buildQuestionLabelMap(schema) : null
+
+                                            return (
+                                                <Card key={r.student_evaluation_id} className="overflow-hidden">
+                                                    <CardHeader className="space-y-2">
+                                                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                                            <div className="min-w-0">
+                                                                <div className="truncate text-sm font-semibold">{studentName}</div>
+                                                                <div className="truncate text-xs text-muted-foreground">{r.student_email ?? ""}</div>
+                                                            </div>
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <Badge variant={statusBadgeVariant(r.status)} className="capitalize">
+                                                                    {r.status}
+                                                                </Badge>
+                                                                {pct !== null ? (
+                                                                    <Badge variant="secondary" className="font-normal">
+                                                                        {pct.toFixed(1)}%
+                                                                    </Badge>
+                                                                ) : (
+                                                                    <Badge variant="outline" className="font-normal">
+                                                                        —
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                            <span>
+                                                                Form:{" "}
+                                                                <span className="font-medium text-foreground">
+                                                                    {safeName(r.form_title, "Pinned form")}
+                                                                </span>
+                                                                {typeof r.form_version === "number" ? ` (v${r.form_version})` : ""}
+                                                            </span>
+                                                            {r.submitted_at ? <span>• Submitted: {fmtDateTime(r.submitted_at)}</span> : null}
+                                                            {r.locked_at ? <span>• Locked: {fmtDateTime(r.locked_at)}</span> : null}
+                                                        </div>
+
+                                                        {pct !== null ? (
+                                                            <div className="space-y-1">
+                                                                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                                    <span>Score</span>
+                                                                    <span>{pct.toFixed(1)}%</span>
+                                                                </div>
+                                                                <Progress value={pct} />
+                                                            </div>
+                                                        ) : null}
+                                                    </CardHeader>
+
+                                                    <CardContent className="space-y-3">
+                                                        {preview.student.includeAnswers ? (
+                                                            <Accordion type="single" collapsible className="w-full">
+                                                                <AccordionItem value="answers" className="rounded-lg border px-2">
+                                                                    <AccordionTrigger className="px-3">Answers</AccordionTrigger>
+                                                                    <AccordionContent className="px-3 pb-3">
+                                                                        <AnswerList answers={r.answers} labelMap={labelMap} />
+                                                                    </AccordionContent>
+                                                                </AccordionItem>
+                                                            </Accordion>
+                                                        ) : (
+                                                            <div className="text-sm text-muted-foreground">Answers are hidden by preview options.</div>
+                                                        )}
+                                                    </CardContent>
+                                                </Card>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </TabsContent>
+                    </Tabs>
                 )}
             </DialogContent>
         </Dialog>
     )
 }
 
-export default function AdminEvaluationsPage() {
-    const ctx = useAdminEvaluationsPage()
+function ScoreDetails(props: { scores: PanelistScorePreviewItem[] }) {
+    const grouped = React.useMemo(() => {
+        const map = new Map<string, { targetLabel: string; items: PanelistScorePreviewItem[] }>()
+        for (const s of props.scores) {
+            const key = `${s.target_type}:${s.target_id}`
+            const targetLabel = `${s.target_type === "group" ? "Group" : "Student"}: ${safeName(s.target_name, shortId(s.target_id))}`
+            const ex = map.get(key)
+            if (!ex) map.set(key, { targetLabel, items: [s] })
+            else ex.items.push(s)
+        }
+        // stable ordering: group first, then by name
+        return Array.from(map.values()).sort((a, b) => a.targetLabel.toLowerCase().localeCompare(b.targetLabel.toLowerCase()))
+    }, [props.scores])
 
     return (
-        <DashboardLayout
-            title="Evaluations"
-            description="Assign panelist rubric scoring and student feedback in distinct flows, then manage lifecycle and status in one user-friendly workspace."
-        >
-            <div className="space-y-4">
-                <StudentFeedbackSyncCard ctx={ctx} />
+        <div className="space-y-3">
+            {grouped.map((g) => (
+                <div key={g.targetLabel} className="rounded-lg border bg-muted/20 p-3">
+                    <div className="text-sm font-semibold">{g.targetLabel}</div>
+                    <div className="mt-2 rounded-md border bg-background">
+                        <div className="grid grid-cols-12 gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                            <div className="col-span-6">Criterion</div>
+                            <div className="col-span-2 text-right">Score</div>
+                            <div className="col-span-2 text-right">Max</div>
+                            <div className="col-span-2 text-right">Weight</div>
+                        </div>
 
-                <AdminEvaluationsToolbar ctx={ctx} />
+                        <div className="max-h-80 overflow-auto">
+                            {g.items.map((s) => (
+                                <div key={s.id} className="grid grid-cols-12 gap-2 border-b px-3 py-2 text-sm last:border-b-0">
+                                    <div className="col-span-6 min-w-0">
+                                        <div className="truncate font-medium">{safeName(s.criterion, `Criterion ${shortId(s.criterion_id)}`)}</div>
+                                        {s.criterion_description ? (
+                                            <div className="mt-1 text-xs text-muted-foreground">{s.criterion_description}</div>
+                                        ) : null}
+                                        {s.comment ? (
+                                            <div className="mt-2 rounded-md border bg-muted/20 p-2 text-xs">
+                                                <span className="font-medium">Comment:</span> {s.comment}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                    <div className="col-span-2 text-right font-semibold">{s.score}</div>
+                                    <div className="col-span-2 text-right text-muted-foreground">{s.max_score ?? "—"}</div>
+                                    <div className="col-span-2 text-right text-muted-foreground">{toNumber(s.weight) ?? "—"}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+    )
+}
 
-                <AdminEvaluationsForm ctx={ctx} />
+function AnswerList(props: { answers: JsonObject; labelMap: Map<string, { label: string; section?: string }> | null }) {
+    const entries = React.useMemo(() => {
+        const keys = Object.keys(props.answers ?? {})
+        keys.sort((a, b) => a.localeCompare(b))
+        return keys.map((k) => [k, (props.answers as any)[k] as JsonValue] as const)
+    }, [props.answers])
 
-                <AdminEvaluationsStats ctx={ctx} />
+    if (entries.length === 0) {
+        return <div className="text-sm text-muted-foreground">No answers yet.</div>
+    }
 
-                <AdminEvaluationsError ctx={ctx} />
+    return (
+        <div className="space-y-3">
+            {entries.map(([key, value]) => {
+                const meta = props.labelMap?.get(key) ?? null
+                const label = meta?.label ?? key
+                const section = meta?.section
 
-                <AdminEvaluationsGroupedTable ctx={ctx} />
+                return (
+                    <div key={key} className="rounded-lg border bg-background p-3">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold">{label}</div>
+                                {section ? <div className="truncate text-xs text-muted-foreground">{section}</div> : null}
+                            </div>
+                            <Badge variant="outline" className="font-normal">
+                                {key}
+                            </Badge>
+                        </div>
+                        <div className="mt-2 text-sm">{renderJsonValue(value)}</div>
+                    </div>
+                )
+            })}
+        </div>
+    )
+}
 
-                <AdminEvaluationPreviewDialog ctx={ctx} />
-            </div>
-        </DashboardLayout>
+function AssignSheet(props: {
+    schedule: AdminDefenseScheduleView
+    getPreview: () => AdminEvaluationPreview | null
+    ensurePreview: () => void
+    ensurePanelists: () => void
+    ensureStudents: () => void
+    getPanelists: () => PickUser[]
+    getStudents: () => PickUser[]
+    onPreviewUpdated: (p: AdminEvaluationPreview) => void
+    previewOptions: { includeStudentAnswers: boolean; includePanelistScores: boolean; includePanelistComments: boolean }
+}) {
+    const { schedule } = props
+
+    const [open, setOpen] = React.useState(false)
+
+    // Panelist assignment inputs
+    const [assignAllPanelists, setAssignAllPanelists] = React.useState(true)
+    const [selectedPanelistIds, setSelectedPanelistIds] = React.useState<UUID[]>([])
+
+    // Student assignment inputs
+    const [assignAllStudents, setAssignAllStudents] = React.useState(true)
+    const [selectedStudentIds, setSelectedStudentIds] = React.useState<UUID[]>([])
+    const [overwritePending, setOverwritePending] = React.useState(false)
+    const [forceActiveForm, setForceActiveForm] = React.useState(false)
+
+    const [busy, setBusy] = React.useState(false)
+
+    const preview = props.getPreview()
+    const panelistAssigned = preview?.panelist?.items ?? []
+    const studentAssigned = preview?.student?.items ?? []
+
+    const panelists = props.getPanelists()
+    const students = props.getStudents()
+
+    React.useEffect(() => {
+        if (!open) return
+        props.ensurePreview()
+        props.ensurePanelists()
+        props.ensureStudents()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open])
+
+    const reloadPreview = React.useCallback(async () => {
+        const scheduleId = schedule.id
+        const { includeStudentAnswers, includePanelistScores, includePanelistComments } = props.previewOptions
+        const data = await apiJsonFirst<any>(
+            [
+                `/api/admin/evaluation-previews/schedule/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+                `/api/admin/evaluation-previews/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
+            ],
+            { method: "GET" }
+        )
+        const p = (data?.preview ?? data?.item ?? data) as AdminEvaluationPreview
+        props.onPreviewUpdated(p)
+    }, [schedule.id, props.previewOptions, props])
+
+    const assignPanelists = async () => {
+        setBusy(true)
+        const tId = toast.loading("Assigning panelist evaluations…")
+        try {
+            const targetIds = assignAllPanelists ? panelists.map((p) => p.id) : selectedPanelistIds
+            if (targetIds.length === 0) {
+                toast.error("Select at least one panelist.", { id: tId })
+                setBusy(false)
+                return
+            }
+
+            // Best-effort: create/upsert one-by-one for compatibility
+            const results = await Promise.allSettled(
+                targetIds.map((evaluatorId) =>
+                    apiJson<any>("/api/evaluations", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            schedule_id: schedule.id,
+                            evaluator_id: evaluatorId,
+                        }),
+                    })
+                )
+            )
+
+            const ok = results.filter((r) => r.status === "fulfilled").length
+            const fail = results.length - ok
+
+            await reloadPreview()
+
+            if (fail === 0) toast.success(`Assigned ${ok} panelist evaluation(s).`, { id: tId })
+            else toast.success(`Assigned ${ok} panelist evaluation(s) • ${fail} failed (possibly already assigned).`, { id: tId })
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Failed to assign panelist evaluations.", { id: tId })
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const deletePanelistEvaluation = async (evaluationId: UUID) => {
+        setBusy(true)
+        const tId = toast.loading("Removing evaluation…")
+        try {
+            await apiJson<any>(`/api/evaluations/${evaluationId}`, { method: "DELETE" })
+            await reloadPreview()
+            toast.success("Evaluation removed.", { id: tId })
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Failed to remove evaluation.", { id: tId })
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const assignStudents = async () => {
+        setBusy(true)
+        const tId = toast.loading("Assigning student feedback…")
+        try {
+            const targetIds = assignAllStudents ? [] : selectedStudentIds
+            if (!assignAllStudents && targetIds.length === 0) {
+                toast.error("Select at least one student.", { id: tId })
+                setBusy(false)
+                return
+            }
+
+            // Get seedAnswersTemplate (best UX: consistent seeded payload)
+            let seedAnswersTemplate: JsonObject | null = null
+            try {
+                const schemaData = await apiJsonFirst<any>(
+                    ["/api/admin/student-feedback/schema", "/api/admin/student_feedback/schema"],
+                    { method: "GET" }
+                )
+                seedAnswersTemplate = (schemaData?.seedAnswersTemplate ?? null) as JsonObject | null
+            } catch {
+                seedAnswersTemplate = null
+            }
+
+            await apiJson<any>(`/api/admin/student-feedback/schedule/${schedule.id}/assign`, {
+                method: "POST",
+                body: JSON.stringify({
+                    studentIds: targetIds.length > 0 ? targetIds : undefined,
+                    overwritePending,
+                    useActiveForm: true,
+                    forceActiveForm,
+                    ...(seedAnswersTemplate ? { seedAnswers: seedAnswersTemplate } : {}),
+                }),
+            })
+
+            await reloadPreview()
+            toast.success("Student feedback assigned.", { id: tId })
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Failed to assign student feedback.", { id: tId })
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const groupTitle = safeName(schedule.group_title, `Group ${shortId(schedule.group_id)}`)
+
+    return (
+        <Sheet open={open} onOpenChange={setOpen}>
+            <SheetTrigger asChild>
+                <Button type="button" className="w-full sm:w-auto">
+                    <Users className="mr-2 h-4 w-4" />
+                    Assign
+                </Button>
+            </SheetTrigger>
+
+            <SheetContent className="w-full sm:max-w-xl">
+                <SheetHeader>
+                    <SheetTitle className="truncate">Assign Evaluations</SheetTitle>
+                    <SheetDescription className="space-y-1">
+                        <div className="truncate">
+                            <span className="font-medium text-foreground">{groupTitle}</span>
+                        </div>
+                        <div className="text-xs">
+                            {fmtDateTime(schedule.scheduled_at)}
+                            {schedule.room ? ` • ${schedule.room}` : ""} •{" "}
+                            <span className="capitalize">{String(schedule.status)}</span>
+                        </div>
+                    </SheetDescription>
+                </SheetHeader>
+
+                <div className="mt-5 space-y-4">
+                    <Tabs defaultValue="panelist" className="w-full">
+                        <TabsList className="w-full">
+                            <TabsTrigger value="panelist" className="flex-1">
+                                Panelists
+                            </TabsTrigger>
+                            <TabsTrigger value="student" className="flex-1">
+                                Students
+                            </TabsTrigger>
+                        </TabsList>
+
+                        {/* PANELISTS */}
+                        <TabsContent value="panelist" className="space-y-4">
+                            <Card>
+                                <CardHeader className="space-y-1">
+                                    <CardTitle className="text-sm">Assign panelist evaluations</CardTitle>
+                                    <CardDescription>
+                                        Panelists evaluate the <span className="font-medium">group</span> and{" "}
+                                        <span className="font-medium">students</span> using the active rubric template.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                    <div className="rounded-lg border p-3">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Assignment mode</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Choose all schedule panelists or specific panelists.
+                                                </div>
+                                            </div>
+                                            <Switch checked={assignAllPanelists} onCheckedChange={setAssignAllPanelists} />
+                                        </div>
+
+                                        <div className="mt-2 text-xs text-muted-foreground">
+                                            {assignAllPanelists ? "Assign to all panelists on this schedule." : "Assign to selected panelists only."}
+                                        </div>
+
+                                        {!assignAllPanelists ? (
+                                            <div className="mt-3">
+                                                <MultiSelectUsers
+                                                    label="Select panelists"
+                                                    placeholder="Choose panelists…"
+                                                    items={panelists}
+                                                    selectedIds={selectedPanelistIds}
+                                                    onChange={setSelectedPanelistIds}
+                                                    disabled={busy}
+                                                />
+                                            </div>
+                                        ) : null}
+                                    </div>
+
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                                        <Button type="button" onClick={assignPanelists} disabled={busy}>
+                                            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Users className="mr-2 h-4 w-4" />}
+                                            Assign panelists
+                                        </Button>
+                                    </div>
+
+                                    <Separator />
+
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="text-sm font-medium">Assigned panelist evaluations</div>
+                                            <Badge variant="outline" className="font-normal">
+                                                {panelistAssigned.length}
+                                            </Badge>
+                                        </div>
+
+                                        {panelistAssigned.length === 0 ? (
+                                            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+                                                No panelist evaluations assigned yet.
+                                            </div>
+                                        ) : (
+                                            <ScrollArea className="h-72 rounded-lg border">
+                                                <div className="space-y-2 p-2">
+                                                    {panelistAssigned.map((p) => {
+                                                        const name = safeName(p.evaluation.evaluator_name, `Panelist ${shortId(p.evaluation.evaluator_id)}`)
+                                                        const status = String(p.evaluation.status ?? "pending")
+                                                        const pct = computePercent(p.overall?.overall_percentage)
+                                                        return (
+                                                            <div
+                                                                key={p.evaluation.id}
+                                                                className="flex items-center justify-between gap-3 rounded-lg border bg-background p-3"
+                                                            >
+                                                                <div className="min-w-0">
+                                                                    <div className="truncate text-sm font-semibold">{name}</div>
+                                                                    <div className="truncate text-xs text-muted-foreground">
+                                                                        {p.evaluation.evaluator_email ?? shortId(p.evaluation.evaluator_id)}
+                                                                    </div>
+                                                                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                        <Badge variant={statusBadgeVariant(status)} className="capitalize">
+                                                                            {status}
+                                                                        </Badge>
+                                                                        {pct !== null ? (
+                                                                            <Badge variant="secondary" className="font-normal">
+                                                                                {pct.toFixed(1)}%
+                                                                            </Badge>
+                                                                        ) : (
+                                                                            <Badge variant="outline" className="font-normal">
+                                                                                —
+                                                                            </Badge>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                <AlertDialog>
+                                                                    <AlertDialogTrigger asChild>
+                                                                        <Button type="button" variant="outline" size="sm" disabled={busy}>
+                                                                            <Trash2 className="h-4 w-4" />
+                                                                        </Button>
+                                                                    </AlertDialogTrigger>
+                                                                    <AlertDialogContent>
+                                                                        <AlertDialogHeader>
+                                                                            <AlertDialogTitleUI>Remove this evaluation assignment?</AlertDialogTitleUI>
+                                                                            <AlertDialogDesc>
+                                                                                This will delete the panelist evaluation assignment. Scores already entered may also be removed depending on your backend rules.
+                                                                            </AlertDialogDesc>
+                                                                        </AlertDialogHeader>
+                                                                        <AlertDialogFooter>
+                                                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                                            <AlertDialogAction
+                                                                                onClick={() => void deletePanelistEvaluation(p.evaluation.id)}
+                                                                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                                                            >
+                                                                                Remove
+                                                                            </AlertDialogAction>
+                                                                        </AlertDialogFooter>
+                                                                    </AlertDialogContent>
+                                                                </AlertDialog>
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        )}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
+                        {/* STUDENTS */}
+                        <TabsContent value="student" className="space-y-4">
+                            <Card>
+                                <CardHeader className="space-y-1">
+                                    <CardTitle className="text-sm">Assign student feedback</CardTitle>
+                                    <CardDescription>
+                                        Students answer the pinned feedback form and may produce a computed score summary (based on form weights).
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                    <div className="space-y-3 rounded-lg border p-3">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Assignment mode</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Assign to all students in the thesis group or choose specific students.
+                                                </div>
+                                            </div>
+                                            <Switch checked={assignAllStudents} onCheckedChange={setAssignAllStudents} />
+                                        </div>
+
+                                        {!assignAllStudents ? (
+                                            <MultiSelectUsers
+                                                label="Select students"
+                                                placeholder="Choose students…"
+                                                items={students}
+                                                selectedIds={selectedStudentIds}
+                                                onChange={setSelectedStudentIds}
+                                                disabled={busy}
+                                            />
+                                        ) : (
+                                            <div className="text-xs text-muted-foreground">
+                                                Assigning to <span className="font-medium text-foreground">all group students</span> (based on group membership).
+                                            </div>
+                                        )}
+
+                                        <Separator />
+
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Overwrite pending evaluations</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    If enabled, existing <span className="font-medium">pending</span> evaluations will be reset (fresh seed answers).
+                                                </div>
+                                            </div>
+                                            <Switch checked={overwritePending} onCheckedChange={setOverwritePending} />
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium">Force active form</div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    If the schedule already has submitted/locked evaluations, forcing may fail (data consistency).
+                                                </div>
+                                            </div>
+                                            <Switch checked={forceActiveForm} onCheckedChange={setForceActiveForm} />
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                                        <Button type="button" onClick={assignStudents} disabled={busy}>
+                                            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GraduationCap className="mr-2 h-4 w-4" />}
+                                            Assign students
+                                        </Button>
+                                    </div>
+
+                                    <Separator />
+
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="text-sm font-medium">Assigned student feedback</div>
+                                            <Badge variant="outline" className="font-normal">
+                                                {studentAssigned.length}
+                                            </Badge>
+                                        </div>
+
+                                        {studentAssigned.length === 0 ? (
+                                            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+                                                No student feedback assigned yet.
+                                            </div>
+                                        ) : (
+                                            <ScrollArea className="h-72 rounded-lg border">
+                                                <div className="space-y-2 p-2">
+                                                    {studentAssigned.map((s) => {
+                                                        const name = safeName(s.student_name, `Student ${shortId(s.student_id)}`)
+                                                        const pct = computePercent(s.percentage)
+                                                        return (
+                                                            <div key={s.student_evaluation_id} className="rounded-lg border bg-background p-3">
+                                                                <div className="flex items-start justify-between gap-3">
+                                                                    <div className="min-w-0">
+                                                                        <div className="truncate text-sm font-semibold">{name}</div>
+                                                                        <div className="truncate text-xs text-muted-foreground">
+                                                                            {s.student_email ?? shortId(s.student_id)}
+                                                                        </div>
+                                                                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                            <Badge variant={statusBadgeVariant(s.status)} className="capitalize">
+                                                                                {s.status}
+                                                                            </Badge>
+                                                                            {pct !== null ? (
+                                                                                <Badge variant="secondary" className="font-normal">
+                                                                                    {pct.toFixed(1)}%
+                                                                                </Badge>
+                                                                            ) : (
+                                                                                <Badge variant="outline" className="font-normal">
+                                                                                    —
+                                                                                </Badge>
+                                                                            )}
+                                                                            <Badge variant="outline" className="font-normal">
+                                                                                {safeName(s.form_title, "Pinned form")}
+                                                                                {typeof s.form_version === "number" ? ` v${s.form_version}` : ""}
+                                                                            </Badge>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        )}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+                    </Tabs>
+
+                    <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+                        <div className="font-medium text-foreground">Notes</div>
+                        <ul className="mt-2 list-disc space-y-1 pl-4">
+                            <li>
+                                <span className="font-medium">Panelist evaluations</span> are created via <code>/api/evaluations</code> and are separate from student evaluations.
+                            </li>
+                            <li>
+                                <span className="font-medium">Student feedback</span> is assigned via{" "}
+                                <code>/api/admin/student-feedback/schedule/:scheduleId/assign</code>.
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </SheetContent>
+        </Sheet>
     )
 }
