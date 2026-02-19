@@ -30,6 +30,7 @@ type StudentEvaluationItem = {
     submitted_at: string | null
     locked_at: string | null
     answers: Record<string, unknown> | null
+    form_id?: string | null
 }
 
 type RatingQuestion = {
@@ -75,16 +76,36 @@ type NormalizedSchema = {
     sections: NormalizedSection[]
 }
 
+type FeedbackFormMeta = {
+    formId: string | null
+    title: string | null
+    description: string | null
+    version: number | null
+    source: "pinned" | "active" | "unknown"
+    warning?: string | null
+}
+
 const BTN_CURSOR = "cursor-pointer"
 
 // Keep student evaluation flows separate — do NOT fall back to /api/evaluations here.
-const SCHEMA_ENDPOINT_CANDIDATES = [
+const ACTIVE_SCHEMA_ENDPOINT_CANDIDATES = [
     "/api/student-evaluations/schema",
     "/api/student-evaluations/form/schema",
     "/api/student-evaluations/active-form",
     "/api/students/me/student-evaluations/schema",
     "/api/students/current/student-evaluations/schema",
-]
+] as const
+
+function getEvaluationSchemaEndpointCandidates(evaluationId: string) {
+    const id = evaluationId.trim()
+    if (!id) return [...ACTIVE_SCHEMA_ENDPOINT_CANDIDATES]
+    return [
+        `/api/student-evaluations/${id}/schema`, // ✅ exact pinned schema for THIS evaluation
+        `/api/students/me/student-evaluations/${id}/schema`, // compat
+        `/api/students/current/student-evaluations/${id}/schema`, // compat
+        ...ACTIVE_SCHEMA_ENDPOINT_CANDIDATES, // fallback to active if pinned lookup fails
+    ]
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === "object" && !Array.isArray(value)
@@ -183,13 +204,24 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
         submitted_at: toNullableString(source.submitted_at ?? source.submittedAt ?? raw.submitted_at),
         locked_at: toNullableString(source.locked_at ?? source.lockedAt ?? raw.locked_at),
         answers: toJsonObject(source.answers ?? raw.answers),
+        form_id: toNullableString((source as Record<string, unknown>).form_id ?? (source as Record<string, unknown>).formId) ?? null,
     }
+}
+
+function buildValidationSuffix(payload: unknown): string {
+    if (!isRecord(payload)) return ""
+    const missing = (payload.missing ?? (payload as any).data?.missing ?? (payload as any).result?.missing) as unknown
+    if (!Array.isArray(missing)) return ""
+    const keys = missing.filter((x) => typeof x === "string" && x.trim()).slice(0, 8) as string[]
+    if (keys.length === 0) return ""
+    const more = missing.length > keys.length ? ` (+${missing.length - keys.length} more)` : ""
+    return ` Missing: ${keys.join(", ")}${more}`
 }
 
 async function readErrorMessage(res: Response, payload: unknown): Promise<string> {
     if (isRecord(payload)) {
-        const message = toStringSafe(payload.error) ?? toStringSafe(payload.message)
-        if (message) return message
+        const base = toStringSafe(payload.error) ?? toStringSafe(payload.message)
+        if (base) return `${base}${buildValidationSuffix(payload)}`
     }
 
     try {
@@ -205,26 +237,30 @@ async function readErrorMessage(res: Response, payload: unknown): Promise<string
 async function fetchFirstOk<T>(
     endpoints: string[],
     init?: RequestInit,
-): Promise<{ ok: true; payload: T } | { ok: false; error: string }> {
+): Promise<{ ok: true; payload: T; endpoint: string } | { ok: false; error: string; endpoint?: string; payload?: unknown }> {
     let latestError = "Request failed."
+    let latestEndpoint: string | undefined
+    let latestPayload: unknown
 
     for (const endpoint of endpoints) {
+        latestEndpoint = endpoint
         try {
             const res = await fetch(endpoint, init)
             const payload = (await res.json().catch(() => null)) as unknown
+            latestPayload = payload
 
             if (!res.ok) {
                 latestError = await readErrorMessage(res, payload)
                 continue
             }
 
-            return { ok: true, payload: payload as T }
+            return { ok: true, payload: payload as T, endpoint }
         } catch (err) {
             latestError = err instanceof Error ? err.message : latestError
         }
     }
 
-    return { ok: false, error: latestError }
+    return { ok: false, error: latestError, endpoint: latestEndpoint, payload: latestPayload }
 }
 
 function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
@@ -238,6 +274,47 @@ function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
                 : null
     }
     return null
+}
+
+function extractFormMeta(payload: unknown, source: FeedbackFormMeta["source"]): FeedbackFormMeta {
+    const fallback: FeedbackFormMeta = {
+        formId: null,
+        title: null,
+        description: null,
+        version: null,
+        source,
+        warning: null,
+    }
+
+    if (!payload || !isRecord(payload)) return fallback
+
+    const warning = toNullableString((payload as any).warning) ?? null
+
+    const formId =
+        toNullableString((payload as any).formId ?? (payload as any).form_id) ??
+        (isRecord((payload as any).form) ? toNullableString((payload as any).form.id) : null) ??
+        null
+
+    const formObj = isRecord((payload as any).form) ? ((payload as any).form as Record<string, unknown>) : null
+    const title = toNullableString(formObj?.title ?? (payload as any).title ?? (payload as any).schemaTitle) ?? null
+    const description = toNullableString(formObj?.description ?? (payload as any).description) ?? null
+
+    const versionRaw = formObj?.version ?? (payload as any).version
+    const version =
+        typeof versionRaw === "number" && Number.isFinite(versionRaw)
+            ? versionRaw
+            : typeof versionRaw === "string" && versionRaw.trim()
+                ? Number(versionRaw)
+                : null
+
+    return {
+        formId,
+        title,
+        description,
+        version: version !== null && Number.isFinite(version) ? Math.floor(version) : null,
+        source,
+        warning,
+    }
 }
 
 function isMissingAnswer(value: unknown): boolean {
@@ -299,7 +376,7 @@ function collectRequiredKeys(schema: unknown): string[] {
 
         for (const it of candidates) {
             if (!isRecord(it)) continue
-            if (it.required !== true) continue
+            if ((it as Record<string, unknown>).required !== true) continue
             const id = pickQuestionId(it)
             if (id) keys.add(id)
         }
@@ -325,7 +402,7 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
 
         if (!isRecord(node)) return
 
-        const type = toStringSafe(node.type)?.toLowerCase() ?? null
+        const type = toStringSafe((node as Record<string, unknown>).type)?.toLowerCase() ?? null
         if (type === "rating") {
             const id = pickQuestionId(node)
             if (id) {
@@ -333,11 +410,11 @@ function collectRatingQuestions(schema: unknown): RatingQuestion[] {
                 if (!seen.has(key)) {
                     seen.add(key)
 
-                    const label = toNullableString(node.label ?? node.title ?? node.question) ?? null
+                    const label = toNullableString((node as Record<string, unknown>).label ?? (node as any).title ?? (node as any).question) ?? null
 
-                    const scaleObj = isRecord(node.scale) ? node.scale : null
-                    const min = toFiniteNumber(scaleObj?.min) ?? 1
-                    const max = toFiniteNumber(scaleObj?.max) ?? 5
+                    const scaleObj = isRecord((node as any).scale) ? ((node as any).scale as Record<string, unknown>) : null
+                    const min = toFiniteNumber(scaleObj?.min) ?? toFiniteNumber((node as any).min) ?? 1
+                    const max = toFiniteNumber(scaleObj?.max) ?? toFiniteNumber((node as any).max) ?? 5
                     const normalizedMin = Math.min(min, max)
                     const normalizedMax = Math.max(min, max)
 
@@ -402,26 +479,40 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
 
     const normalizeQuestion = (q: unknown): NormalizedQuestion | null => {
         if (!isRecord(q)) return null
-        const id = safeString(q.id ?? q.key ?? q.name ?? q.field ?? q.questionId).trim()
-        const label = safeString(q.label ?? q.title ?? q.question).trim()
+        const id = safeString((q as any).id ?? (q as any).key ?? (q as any).name ?? (q as any).field ?? (q as any).questionId).trim()
+        const label = safeString((q as any).label ?? (q as any).title ?? (q as any).question).trim()
         if (!id || !label) return null
 
-        const typeRaw = safeString(q.type).toLowerCase()
+        const typeRaw = safeString((q as any).type).toLowerCase()
         const type: NormalizedQuestion["type"] =
-            typeRaw === "rating" ? "rating" : typeRaw === "text" ? "text" : "unknown"
+            typeRaw === "rating"
+                ? "rating"
+                : typeRaw === "text" || typeRaw === "textarea" || typeRaw === "longtext"
+                    ? "text"
+                    : "unknown"
 
-        const required = q.required === true
+        const required = (q as any).required === true
 
-        const placeholder = safeString(q.placeholder).trim()
-        const maxLength = typeof (q as any).maxLength === "number" ? (q as any).maxLength : undefined
+        const placeholder = safeString((q as any).placeholder).trim()
+
+        const maxLengthRaw =
+            (q as any).maxLength ??
+            (q as any).max_length ??
+            (q as any).maxChars ??
+            (q as any).max_chars
+
+        const maxLength = typeof maxLengthRaw === "number" && Number.isFinite(maxLengthRaw) ? maxLengthRaw : undefined
 
         let scale: RatingScale | undefined
         if (type === "rating") {
             const sc = isRecord((q as any).scale) ? ((q as any).scale as Record<string, unknown>) : null
-            const min = toInt(sc?.min, 1)
-            const max = toInt(sc?.max, 5)
-            const minLabel = safeString(sc?.minLabel).trim() || undefined
-            const maxLabel = safeString(sc?.maxLabel).trim() || undefined
+
+            const min = toInt(sc?.min ?? (q as any).min, 1)
+            const max = toInt(sc?.max ?? (q as any).max, 5)
+
+            const minLabel = safeString(sc?.minLabel ?? (q as any).minLabel ?? (q as any).min_label).trim() || undefined
+            const maxLabel = safeString(sc?.maxLabel ?? (q as any).maxLabel ?? (q as any).max_label).trim() || undefined
+
             const nMin = Math.min(min, max)
             const nMax = Math.max(min, max)
             scale = { min: nMin, max: nMax, minLabel, maxLabel }
@@ -437,8 +528,8 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
 
     const normalizeSection = (s: unknown, idx: number): NormalizedSection | null => {
         if (!isRecord(s)) return null
-        const id = safeString(s.id) || `section_${idx + 1}`
-        const sTitle = safeString(s.title).trim() || `Section ${idx + 1}`
+        const id = safeString((s as any).id) || `section_${idx + 1}`
+        const sTitle = safeString((s as any).title).trim() || `Section ${idx + 1}`
 
         const questionsRaw = Array.isArray((s as any).questions)
             ? (s as any).questions
@@ -454,7 +545,7 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
         return { id, title: sTitle, questions }
     }
 
-    const sectionsRaw = Array.isArray(raw.sections) ? raw.sections : null
+    const sectionsRaw = Array.isArray((raw as any).sections) ? ((raw as any).sections as unknown[]) : null
     if (sectionsRaw && sectionsRaw.length > 0) {
         const sections = sectionsRaw
             .map((s, i) => normalizeSection(s, i))
@@ -467,9 +558,14 @@ function normalizeStudentFeedbackSchema(raw: Record<string, unknown> | null): No
         }
     }
 
-    const topQuestionsRaw = Array.isArray(raw.questions) ? raw.questions : Array.isArray(raw.fields) ? raw.fields : null
+    const topQuestionsRaw = Array.isArray((raw as any).questions)
+        ? ((raw as any).questions as unknown[])
+        : Array.isArray((raw as any).fields)
+            ? ((raw as any).fields as unknown[])
+            : null
+
     if (topQuestionsRaw && topQuestionsRaw.length > 0) {
-        const questions = (topQuestionsRaw as unknown[])
+        const questions = topQuestionsRaw
             .map(normalizeQuestion)
             .filter((x: NormalizedQuestion | null): x is NormalizedQuestion => x !== null)
 
@@ -505,7 +601,11 @@ function AnswerPill({ required, answered }: { required: boolean; answered: boole
     if (!required) {
         return <Badge variant="secondary">Optional</Badge>
     }
-    return answered ? <Badge className="bg-emerald-600 text-white">Answered</Badge> : <Badge className="bg-destructive text-white">Required</Badge>
+    return answered ? (
+        <Badge className="bg-emerald-600 text-white">Answered</Badge>
+    ) : (
+        <Badge className="bg-destructive text-white">Required</Badge>
+    )
 }
 
 export default function StudentEvaluationDetailPage() {
@@ -516,6 +616,14 @@ export default function StudentEvaluationDetailPage() {
 
     const [item, setItem] = React.useState<StudentEvaluationItem | null>(null)
     const [schema, setSchema] = React.useState<Record<string, unknown> | null>(null)
+    const [formMeta, setFormMeta] = React.useState<FeedbackFormMeta>({
+        formId: null,
+        title: null,
+        description: null,
+        version: null,
+        source: "unknown",
+        warning: null,
+    })
 
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
@@ -577,19 +685,47 @@ export default function StudentEvaluationDetailPage() {
 
     const canEdit = mode === "answer" && !isLockedLike && !isSubmittedLike
 
+    // ✅ UX: warn before refresh/close if there are unsaved changes
+    React.useEffect(() => {
+        const handler = (e: BeforeUnloadEvent) => {
+            if (!canEdit || !dirty) return
+            e.preventDefault()
+            e.returnValue = ""
+        }
+        window.addEventListener("beforeunload", handler)
+        return () => window.removeEventListener("beforeunload", handler)
+    }, [canEdit, dirty])
+
     const updateAnswer = React.useCallback((key: string, value: unknown) => {
         setDraftAnswers((prev) => ({ ...(prev ?? {}), [key]: value }))
     }, [])
 
     const loadSchema = React.useCallback(async () => {
-        const res = await fetchFirstOk<unknown>(SCHEMA_ENDPOINT_CANDIDATES, { cache: "no-store" })
+        if (!evaluationId) throw new Error("Invalid evaluation id.")
+
+        // ✅ Prefer the pinned schema for THIS evaluation (uses pinned/active form assignment)
+        const candidates = getEvaluationSchemaEndpointCandidates(evaluationId)
+        const res = await fetchFirstOk<unknown>(candidates, { cache: "no-store" })
+
         if (!res.ok) {
             setSchema(null)
+            setFormMeta({
+                formId: null,
+                title: null,
+                description: null,
+                version: null,
+                source: "unknown",
+                warning: res.error,
+            })
             throw new Error(res.error)
         }
+
         const parsed = extractSchemaObject(res.payload)
         setSchema(parsed)
-    }, [])
+
+        const usedActiveFallback = ACTIVE_SCHEMA_ENDPOINT_CANDIDATES.some((x) => res.endpoint.startsWith(x))
+        setFormMeta(extractFormMeta(res.payload, usedActiveFallback ? "active" : "pinned"))
+    }, [evaluationId])
 
     const loadItem = React.useCallback(async () => {
         if (!evaluationId) throw new Error("Invalid evaluation id.")
@@ -607,7 +743,14 @@ export default function StudentEvaluationDetailPage() {
             throw new Error(res.error)
         }
 
-        const normalized = normalizeEvaluation((res.payload as any)?.item ?? (res.payload as any)?.data ?? (res.payload as any)?.result ?? res.payload)
+        const payload = res.payload as unknown
+        const root =
+            (isRecord(payload) && (payload as any).item) ||
+            (isRecord(payload) && (payload as any).data) ||
+            (isRecord(payload) && (payload as any).result) ||
+            payload
+
+        const normalized = normalizeEvaluation(root)
 
         if (!normalized) {
             setItem(null)
@@ -634,7 +777,9 @@ export default function StudentEvaluationDetailPage() {
             setError(null)
 
             try {
-                await Promise.all([loadSchema(), loadItem()])
+                // schema can safely load first; it also pins/returns the correct form version for this evaluation
+                await loadSchema()
+                await loadItem()
                 if (showToast) toast.success("Feedback form refreshed.")
             } catch (err) {
                 const msg = err instanceof Error ? err.message : "We couldn’t load this feedback form."
@@ -654,6 +799,7 @@ export default function StudentEvaluationDetailPage() {
 
     const patchFirstOk = React.useCallback(async (endpoints: string[], body: Record<string, unknown>) => {
         let latestError = "Request failed."
+        let latestPayload: unknown
 
         for (const endpoint of endpoints) {
             try {
@@ -663,6 +809,7 @@ export default function StudentEvaluationDetailPage() {
                     body: JSON.stringify(body),
                 })
                 const payload = (await res.json().catch(() => null)) as unknown
+                latestPayload = payload
                 if (!res.ok) {
                     latestError = await readErrorMessage(res, payload)
                     continue
@@ -673,11 +820,12 @@ export default function StudentEvaluationDetailPage() {
             }
         }
 
-        return { ok: false as const, error: latestError }
+        return { ok: false as const, error: latestError, payload: latestPayload }
     }, [])
 
     const postFirstOk = React.useCallback(async (endpoints: string[], body?: Record<string, unknown>) => {
         let latestError = "Request failed."
+        let latestPayload: unknown
 
         for (const endpoint of endpoints) {
             try {
@@ -687,6 +835,7 @@ export default function StudentEvaluationDetailPage() {
                     body: body ? JSON.stringify(body) : undefined,
                 })
                 const payload = (await res.json().catch(() => null)) as unknown
+                latestPayload = payload
                 if (!res.ok) {
                     latestError = await readErrorMessage(res, payload)
                     continue
@@ -697,7 +846,7 @@ export default function StudentEvaluationDetailPage() {
             }
         }
 
-        return { ok: false as const, error: latestError }
+        return { ok: false as const, error: latestError, payload: latestPayload }
     }, [])
 
     const [saving, setSaving] = React.useState(false)
@@ -840,6 +989,17 @@ export default function StudentEvaluationDetailPage() {
                                     ? Array.from({ length: Math.max(0, scale.max - scale.min + 1) }, (_, i) => scale.min + i)
                                     : []
 
+                                const currentText =
+                                    typeof current === "string"
+                                        ? current
+                                        : current === null || current === undefined
+                                            ? ""
+                                            : String(current)
+
+                                const charCount = currentText.length
+                                const maxLen = typeof q.maxLength === "number" ? q.maxLength : null
+                                const atLimit = maxLen !== null && charCount >= maxLen
+
                                 return (
                                     <div key={q.id} className="rounded-lg border bg-background p-4">
                                         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -897,22 +1057,29 @@ export default function StudentEvaluationDetailPage() {
                                             </div>
                                         ) : (
                                             <div className="space-y-2">
-                                                <Label className="text-xs text-muted-foreground">Your answer</Label>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <Label className="text-xs text-muted-foreground">Your answer</Label>
+                                                    {maxLen !== null ? (
+                                                        <span
+                                                            className={[
+                                                                "text-xs",
+                                                                atLimit ? "text-destructive" : "text-muted-foreground",
+                                                            ].join(" ")}
+                                                        >
+                                                            {charCount}/{maxLen}
+                                                        </span>
+                                                    ) : null}
+                                                </div>
                                                 <Textarea
-                                                    value={
-                                                        typeof current === "string"
-                                                            ? current
-                                                            : current === null || current === undefined
-                                                                ? ""
-                                                                : String(current)
-                                                    }
+                                                    value={currentText}
                                                     onChange={(e) => updateAnswer(q.id, e.target.value)}
                                                     placeholder={q.placeholder ?? "Type your answer..."}
                                                     className="min-h-24"
                                                     disabled={!canEdit}
+                                                    maxLength={maxLen ?? undefined}
                                                 />
-                                                {typeof q.maxLength === "number" ? (
-                                                    <p className="text-xs text-muted-foreground">Max {q.maxLength} characters</p>
+                                                {maxLen !== null ? (
+                                                    <p className="text-xs text-muted-foreground">Max {maxLen} characters</p>
                                                 ) : null}
                                             </div>
                                         )}
@@ -949,10 +1116,7 @@ export default function StudentEvaluationDetailPage() {
                             <Badge variant="secondary">{Math.round(previewCompletionPct)}%</Badge>
                         </div>
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                            <div
-                                className="h-2 rounded-full bg-primary"
-                                style={{ width: `${Math.round(previewCompletionPct)}%` }}
-                            />
+                            <div className="h-2 rounded-full bg-primary" style={{ width: `${Math.round(previewCompletionPct)}%` }} />
                         </div>
                     </div>
 
@@ -964,9 +1128,7 @@ export default function StudentEvaluationDetailPage() {
                                     {previewScore.max_score > 0 ? `${previewScore.total_score}/${previewScore.max_score} total` : "No rating questions"}
                                 </p>
                             </div>
-                            <Badge variant="secondary">
-                                {previewScore.max_score > 0 ? `${Math.round(previewScorePct)}%` : "—"}
-                            </Badge>
+                            <Badge variant="secondary">{previewScore.max_score > 0 ? `${Math.round(previewScorePct)}%` : "—"}</Badge>
                         </div>
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                             <div className="h-2 rounded-full bg-primary" style={{ width: `${Math.round(previewScorePct)}%` }} />
@@ -976,8 +1138,12 @@ export default function StudentEvaluationDetailPage() {
 
                 <Tabs defaultValue="answers">
                     <TabsList className="flex w-full flex-wrap justify-start gap-2">
-                        <TabsTrigger value="answers" className={BTN_CURSOR}>Answers</TabsTrigger>
-                        <TabsTrigger value="raw" className={BTN_CURSOR}>Raw JSON</TabsTrigger>
+                        <TabsTrigger value="answers" className={BTN_CURSOR}>
+                            Answers
+                        </TabsTrigger>
+                        <TabsTrigger value="raw" className={BTN_CURSOR}>
+                            Raw JSON
+                        </TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="answers" className="mt-4 space-y-3">
@@ -1033,9 +1199,7 @@ export default function StudentEvaluationDetailPage() {
                         ) : (
                             <div className="rounded-lg border bg-muted/10 p-4">
                                 <p className="text-sm font-semibold">Preview</p>
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                    Showing saved answers even without a structured schema.
-                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">Showing saved answers even without a structured schema.</p>
                                 <div className="mt-3 whitespace-pre-wrap rounded-md border bg-background p-3 text-xs">
                                     {stringifyAnswer(previewAnswers)}
                                 </div>
@@ -1056,6 +1220,8 @@ export default function StudentEvaluationDetailPage() {
             </div>
         )
     }
+
+    const formTitle = formMeta.title ?? (normalizedSchema?.title ?? null)
 
     return (
         <DashboardLayout title="Student Feedback" description="Open a feedback form, save your draft, and submit when ready.">
@@ -1087,6 +1253,13 @@ export default function StudentEvaluationDetailPage() {
                                         </span>
                                     ) : null}
 
+                                    {formTitle ? (
+                                        <Badge variant="outline" className="max-w-[320px] truncate">
+                                            Form: {formTitle}
+                                            {formMeta.version !== null ? ` • v${formMeta.version}` : ""}
+                                        </Badge>
+                                    ) : null}
+
                                     {mode === "answer" && dirty ? <Badge className="bg-destructive text-white">Unsaved</Badge> : null}
                                 </div>
 
@@ -1098,6 +1271,7 @@ export default function StudentEvaluationDetailPage() {
                                                 {item.program ? `${item.program} • ` : ""}
                                                 {item.term ? `${item.term} • ` : ""}
                                                 {scheduleLabel}
+                                                {formMeta.source !== "unknown" ? ` • Using ${formMeta.source === "pinned" ? "assigned" : "active"} form` : ""}
                                             </>
                                         ) : (
                                             <>Open a feedback form to continue.</>
@@ -1118,6 +1292,13 @@ export default function StudentEvaluationDetailPage() {
                                 </Button>
                             </div>
                         </div>
+
+                        {formMeta.warning ? (
+                            <div className="rounded-lg border border-amber-600/30 bg-amber-600/10 p-3 text-sm">
+                                <p className="font-semibold">Form notice</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{formMeta.warning}</p>
+                            </div>
+                        ) : null}
 
                         {error ? (
                             <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -1182,7 +1363,7 @@ export default function StudentEvaluationDetailPage() {
                                                 <p className="text-xs text-muted-foreground">
                                                     {score.max_score > 0
                                                         ? `${score.total_score}/${score.max_score} total from ${score.rating_questions} rating item(s)`
-                                                        : "No rating questions detected in the active schema."}
+                                                        : "No rating questions detected in the assigned form."}
                                                 </p>
                                             </div>
 
@@ -1206,8 +1387,12 @@ export default function StudentEvaluationDetailPage() {
                                         <CardContent className="space-y-3">
                                             <Tabs value={mode} onValueChange={(v) => setMode(v as "answer" | "preview")}>
                                                 <TabsList className="grid w-full grid-cols-2">
-                                                    <TabsTrigger value="answer" className={BTN_CURSOR}>Answer</TabsTrigger>
-                                                    <TabsTrigger value="preview" className={BTN_CURSOR}>Preview</TabsTrigger>
+                                                    <TabsTrigger value="answer" className={BTN_CURSOR}>
+                                                        Answer
+                                                    </TabsTrigger>
+                                                    <TabsTrigger value="preview" className={BTN_CURSOR}>
+                                                        Preview
+                                                    </TabsTrigger>
                                                 </TabsList>
                                             </Tabs>
 
