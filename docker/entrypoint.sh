@@ -4,9 +4,17 @@ set -e
 echo "==> Thesis Grader starting..."
 echo "==> NODE_ENV=${NODE_ENV:-production} PORT=${PORT:-3000}"
 
-# Optional: wait a moment for DB DNS in some environments (Coolify usually fine)
+# Fail fast with a clear error (this is the root cause in your logs)
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "!! ERROR: Missing DATABASE_URL"
+  echo "   - If deploying on Coolify (Dockerfile/Image): set DATABASE_URL in the App's Environment Variables."
+  echo "   - If running locally: put DATABASE_URL in .env (and load it) or set it in docker-compose.yml environment."
+  exit 1
+fi
+
+# Optional: wait a moment for DB DNS / network readiness in some environments
 if [ "${WAIT_FOR_DB_SECONDS:-0}" != "0" ]; then
-  echo "==> Waiting ${WAIT_FOR_DB_SECONDS}s for database..."
+  echo "==> Waiting ${WAIT_FOR_DB_SECONDS}s for database/network..."
   sleep "${WAIT_FOR_DB_SECONDS}"
 fi
 

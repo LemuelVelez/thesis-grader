@@ -69,7 +69,9 @@ RUN chmod +x ./docker/entrypoint.sh
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${PORT}/" >/dev/null || exit 1
+# Use a lightweight endpoint that doesn't require DB/page rendering,
+# and give more time for migrations + cold start
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null || exit 1
 
 ENTRYPOINT ["./docker/entrypoint.sh"]
