@@ -210,6 +210,54 @@ function normalizeStudentAnswers(answers: unknown): NormalizedAnswer[] {
     ]
 }
 
+type StatusCounts = {
+    total: number
+    pending: number
+    submitted: number
+    locked: number
+}
+
+function normalizeTriStatus(value: unknown): "pending" | "submitted" | "locked" {
+    const s = (getString(value) ?? "").toLowerCase()
+    if (s === "submitted") return "submitted"
+    if (s === "locked") return "locked"
+    return "pending"
+}
+
+function computeStatusCounts(items: unknown[]): StatusCounts {
+    const counts: StatusCounts = { total: items.length, pending: 0, submitted: 0, locked: 0 }
+    for (const raw of items) {
+        const row = isRecord(raw) ? raw : null
+        const st = normalizeTriStatus(row?.status)
+        if (st === "submitted") counts.submitted += 1
+        else if (st === "locked") counts.locked += 1
+        else counts.pending += 1
+    }
+    return counts
+}
+
+function readStatusCountsFromStudentBlock(studentBlock: Record<string, unknown> | null, studentItems: unknown[]): StatusCounts {
+    const fallback = computeStatusCounts(studentItems)
+    const rawCounts = studentBlock && isRecord(studentBlock.statusCounts) ? (studentBlock.statusCounts as Record<string, unknown>) : null
+    if (!rawCounts) return fallback
+
+    const total = getNumber(rawCounts.total)
+    const pending = getNumber(rawCounts.pending)
+    const submitted = getNumber(rawCounts.submitted)
+    const locked = getNumber(rawCounts.locked)
+
+    const safe: StatusCounts = {
+        total: total !== null ? total : fallback.total,
+        pending: pending !== null ? pending : fallback.pending,
+        submitted: submitted !== null ? submitted : fallback.submitted,
+        locked: locked !== null ? locked : fallback.locked,
+    }
+
+    // If backend didn't send totals (or sent zeros), keep the fallback.
+    if (safe.total === 0 && fallback.total > 0) return fallback
+    return safe
+}
+
 function pickPanelistPreviewItem(panelistItems: unknown[], selectedEvaluationId: string | null): Record<string, unknown> | null {
     if (!selectedEvaluationId) return null
     const target = selectedEvaluationId.toLowerCase()
@@ -239,7 +287,13 @@ function pickStudentPreviewItem(studentItems: unknown[], selectedEvaluationId: s
         const row = isRecord(raw) ? raw : null
         if (!row) continue
 
-        const candidateEvalId = getString(row.id)?.toLowerCase() ?? getString(row.student_evaluation_id)?.toLowerCase() ?? null
+        // Admin rows can use: student_evaluation_id OR id. Prefer explicit student_evaluation_id when present.
+        const candidateEvalId =
+            (getString(row.student_evaluation_id)?.toLowerCase() ??
+                getString(row.studentEvaluationId)?.toLowerCase() ??
+                getString(row.id)?.toLowerCase() ??
+                null)
+
         const candidateStudentId =
             getString(row.student_id)?.toLowerCase() ??
             getString(row.evaluator_id)?.toLowerCase() ??
@@ -365,6 +419,10 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
     const panelistBlock = preview && isRecord(preview.panelist) ? (preview.panelist as Record<string, unknown>) : null
     const panelistItems = panelistBlock && Array.isArray(panelistBlock.items) ? (panelistBlock.items as unknown[]) : []
 
+    const studentCounts = React.useMemo(() => {
+        return readStatusCountsFromStudentBlock(studentBlock, studentItems)
+    }, [studentBlock, studentItems])
+
     const currentStatus = selectedViewEvaluation ? normalizeStatus(selectedViewEvaluation.status) : null
 
     const selectedPanelistPreview = React.useMemo(() => {
@@ -388,7 +446,7 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
         selectedKind === "panelist"
             ? "This preview is strictly the selected panelist’s rubric scoring (criteria + scores). Student feedback evaluations are a separate flow and have their own preview."
             : selectedKind === "student"
-                ? "This preview is strictly the selected student’s feedback evaluation (questions + answers + score). Panelist rubric scoring is a separate flow and has its own preview."
+                ? "This preview is strictly the selected student’s feedback evaluation (questions + answers). Status shows Pending/Submitted/Locked — scores only appear when the backend provides a computed summary."
                 : "Preview is limited to the selected evaluation assignment."
 
     function renderPanelistPreview(row: Record<string, unknown>) {
@@ -639,13 +697,41 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
 
         const status = getString(row.status) ?? "pending"
         const statusNorm = normalizeStatus(status)
+        const isPending = statusNorm === "pending"
 
-        const scoreTotal = row.score_total ?? row.total_score ?? row.total
-        const scoreMax = row.score_max ?? row.max_score ?? row.max
-        const scorePercent = row.score_percentage ?? row.percentage
+        const submittedAt = getString(row.submitted_at) ?? null
+        const lockedAt = getString(row.locked_at) ?? null
+        const createdAt = getString(row.created_at) ?? null
+
+        const scoreTotalRaw = row.score_total ?? row.total_score ?? row.total
+        const scoreMaxRaw = row.score_max ?? row.max_score ?? row.max
+        const scorePercentRaw = row.score_percentage ?? row.percentage
+
+        const scoreTotal = getNumber(scoreTotalRaw)
+        const scoreMax = getNumber(scoreMaxRaw)
+        const scorePercent = getNumber(scorePercentRaw)
+
+        // IMPORTANT UX FIX:
+        // - Pending items should NOT show "0%" (it reads like a missing submission).
+        // - Only show score summary when backend provides a meaningful max/summary.
+        const hasMeaningfulMax = !isPending && scoreMax !== null && scoreMax > 0
+        const hasMeaningfulTotal = hasMeaningfulMax && scoreTotal !== null
+        const computedPercent = hasMeaningfulTotal ? (scoreTotal! / scoreMax!) * 100 : null
+        const displayPercent =
+            hasMeaningfulMax
+                ? (scorePercent !== null ? scorePercent : computedPercent)
+                : null
 
         const answersRaw = row.answers ?? row.responses ?? row.feedback ?? null
         const normalizedAnswers = normalizeStudentAnswers(answersRaw)
+        const hasAnswers = normalizedAnswers.length > 0
+
+        const scoreHeaderLabel =
+            isPending
+                ? "Awaiting submission"
+                : displayPercent === null
+                    ? "Submitted (no score summary)"
+                    : `Score: ${formatPercent(displayPercent)}`
 
         return (
             <div className="space-y-3">
@@ -661,7 +747,7 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                         </span>
 
                         <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
-                            Score: {formatPercent(scorePercent)}
+                            {scoreHeaderLabel}
                         </span>
 
                         <span className="ml-auto text-xs text-muted-foreground">
@@ -673,20 +759,46 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                         <p className="text-sm font-semibold">{studentName}</p>
                         <p className="text-xs text-muted-foreground">{studentEmail ?? "No email"}</p>
                     </div>
+
+                    {isPending ? (
+                        <div className="mt-3 rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">
+                            This feedback is <span className="font-medium text-foreground">Pending</span>. The student hasn’t submitted answers yet, so score summary is hidden to avoid showing misleading “0”.
+                        </div>
+                    ) : displayPercent === null ? (
+                        <div className="mt-3 rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">
+                            This feedback is <span className="font-medium text-foreground">{toTitleCase(statusNorm)}</span>. Answers can still be reviewed below. If you expect a computed score summary, click{" "}
+                            <span className="font-medium text-foreground">Refresh Preview</span>.
+                        </div>
+                    ) : null}
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-3">
                     <div className="rounded-md border p-3">
                         <p className="text-xs text-muted-foreground">Total</p>
-                        <p className="mt-1 text-sm font-semibold">{formatMaybeScore(scoreTotal)}</p>
+                        <p className="mt-1 text-sm font-semibold">{hasMeaningfulTotal ? formatMaybeScore(scoreTotal) : "—"}</p>
                     </div>
                     <div className="rounded-md border p-3">
                         <p className="text-xs text-muted-foreground">Max</p>
-                        <p className="mt-1 text-sm font-semibold">{formatMaybeScore(scoreMax)}</p>
+                        <p className="mt-1 text-sm font-semibold">{hasMeaningfulMax ? formatMaybeScore(scoreMax) : "—"}</p>
                     </div>
                     <div className="rounded-md border p-3">
                         <p className="text-xs text-muted-foreground">Percentage</p>
-                        <p className="mt-1 text-sm font-semibold">{formatPercent(scorePercent)}</p>
+                        <p className="mt-1 text-sm font-semibold">{displayPercent === null ? "—" : formatPercent(displayPercent)}</p>
+                    </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Created</p>
+                        <p className="mt-1 text-sm font-semibold">{formatDateTime(createdAt)}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Submitted</p>
+                        <p className="mt-1 text-sm font-semibold">{formatDateTime(submittedAt)}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Locked</p>
+                        <p className="mt-1 text-sm font-semibold">{formatDateTime(lockedAt)}</p>
                     </div>
                 </div>
 
@@ -712,8 +824,10 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
 
                     {!includeStudentAnswers ? (
                         <div className="mt-2 text-sm text-muted-foreground">Student answers are currently hidden.</div>
-                    ) : normalizedAnswers.length === 0 ? (
-                        <div className="mt-2 text-sm text-muted-foreground">No feedback answers available yet.</div>
+                    ) : !hasAnswers ? (
+                        <div className="mt-2 text-sm text-muted-foreground">
+                            {isPending ? "No answers yet (still pending submission)." : "No feedback answers available for this submission."}
+                        </div>
                     ) : (
                         <div className="mt-3 max-h-96 overflow-y-auto rounded-md border bg-muted/10 p-2">
                             <div className="space-y-2">
@@ -785,6 +899,23 @@ function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState 
                                             Schedule ID: <span className="font-medium text-foreground">{scheduleId}</span>
                                         </span>
                                     </div>
+
+                                    {selectedKind === "student" && studentCounts.total > 0 ? (
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Student Feedback • Total: <span className="ml-1 font-medium text-foreground">{studentCounts.total}</span>
+                                            </span>
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Pending: <span className="ml-1 font-medium text-foreground">{studentCounts.pending}</span>
+                                            </span>
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Submitted: <span className="ml-1 font-medium text-foreground">{studentCounts.submitted}</span>
+                                            </span>
+                                            <span className="inline-flex rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                Locked: <span className="ml-1 font-medium text-foreground">{studentCounts.locked}</span>
+                                            </span>
+                                        </div>
+                                    ) : null}
                                 </div>
 
                                 <div className="grid gap-3 sm:grid-cols-2">
