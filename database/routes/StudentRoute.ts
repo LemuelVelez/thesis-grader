@@ -334,6 +334,7 @@ function parseUuidArrayFromBody(value: unknown): UUID[] {
  * - GET /api/student-evaluations/me
  * - GET /api/student-evaluations/:evaluationId
  * - GET /api/student-evaluations/:evaluationId/(me|item|detail)
+ * - GET /api/student-evaluations/:evaluationId/schema        ✅ NEW (exact schema for pinned evaluation form)
  * - PATCH /api/student-evaluations/:evaluationId/(answers|draft|response)
  * - POST/PATCH /api/student-evaluations/:evaluationId/(submit|finalize|lock)
  * - GET /api/student-evaluations/:evaluationId/score
@@ -430,6 +431,7 @@ async function dispatchStudentSelfEvaluationsRequest(
                         {
                             scheduleId: result.scheduleId,
                             groupId: result.groupId,
+                            formId: (result as any).formId ?? null,
                             counts: result.counts,
                             created: result.created,
                             updated: result.updated,
@@ -502,6 +504,7 @@ async function dispatchStudentSelfEvaluationsRequest(
                     me: 'GET /api/student-evaluations/me',
                     detail: 'GET /api/student-evaluations/:evaluationId',
                     detailAliases: 'GET /api/student-evaluations/:evaluationId/(me|item|detail)',
+                    evalSchema: 'GET /api/student-evaluations/:evaluationId/schema',
                     saveDraft: 'PATCH /api/student-evaluations/:evaluationId/(answers|draft|response)',
                     submit: 'POST /api/student-evaluations/:evaluationId/(submit|finalize)',
                     lock: 'POST /api/student-evaluations/:evaluationId/lock',
@@ -531,6 +534,7 @@ async function dispatchStudentSelfEvaluationsRequest(
                 my: 'GET /api/student-evaluations/my',
                 me: 'GET /api/student-evaluations/me',
                 detail: 'GET /api/student-evaluations/:evaluationId',
+                evalSchema: 'GET /api/student-evaluations/:evaluationId/schema',
                 saveDraft: 'PATCH /api/student-evaluations/:evaluationId',
                 submit: 'POST /api/student-evaluations/:evaluationId/submit',
                 lock: 'POST /api/student-evaluations/:evaluationId/lock',
@@ -624,6 +628,21 @@ async function dispatchStudentSelfEvaluationsRequest(
             if (!item) return null;
             return item;
         };
+
+        // ✅ NEW: GET exact schema for this evaluation (pinned form)
+        if (method === 'GET' && tail.length === 2 && action === 'schema') {
+            const result = await controller.getStudentEvaluationFormSchema(studentId, evaluationId);
+            if (!result) return json404Entity('StudentEvaluation');
+            return json200({
+                studentId,
+                evaluationId,
+                formId: result.form_id,
+                form: result.form,
+                schema: result.schema as any,
+                item: result.schema as any,
+                seedAnswersTemplate: result.seedAnswersTemplate as any,
+            });
+        }
 
         // GET detail (and alias endpoints used by the frontend)
         if (
@@ -928,6 +947,7 @@ export async function dispatchStudentRequest(
      * /api/students/:id/student-evaluations/schema
      * /api/students/:id/student-evaluations/schedule/:scheduleId
      * /api/students/:id/student-evaluations/:evaluationId
+     * /api/students/:id/student-evaluations/:evaluationId/schema    ✅ NEW
      * /api/students/:id/student-evaluations/:evaluationId/score
      * /api/students/:id/student-evaluations/:evaluationId/submit
      * /api/students/:id/student-evaluations/:evaluationId/lock
@@ -1051,6 +1071,22 @@ export async function dispatchStudentRequest(
         // evaluationId-based routes (must be UUID)
         const evalId = t[2];
         if (!evalId || !isUuidLike(evalId)) return json404Api();
+
+        // ✅ NEW: /:id/student-evaluations/:evaluationId/schema (exact pinned schema)
+        if (t.length === 4 && (t[3] ?? '').toLowerCase() === 'schema') {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+            const result = await controller.getStudentEvaluationFormSchema(id as UUID, evalId as UUID);
+            if (!result) return json404Entity('StudentEvaluation');
+            return json200({
+                studentId: id,
+                evaluationId: evalId,
+                formId: result.form_id,
+                form: result.form,
+                schema: result.schema as any,
+                item: result.schema as any,
+                seedAnswersTemplate: result.seedAnswersTemplate as any,
+            });
+        }
 
         // /:id/student-evaluations/:evaluationId
         if (t.length === 3) {

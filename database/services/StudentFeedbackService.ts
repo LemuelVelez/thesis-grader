@@ -1,7 +1,11 @@
 import type {
     DbNumeric,
+    DefenseScheduleRow,
+    GroupMemberRow,
     JsonObject,
     StudentEvalStatus,
+    StudentEvaluationInsert,
+    StudentEvaluationPatch,
     StudentEvaluationRow,
     StudentEvaluationScoreInsert,
     StudentEvaluationScoreRow,
@@ -70,37 +74,111 @@ export interface StudentFeedbackFormQuestion {
     type?: StudentFeedbackFormQuestionType;
     required?: boolean;
 
-    // numeric-ish types
     min?: number;
     max?: number;
+    step?: number;
+
+    /**
+     * Optional weight for scoring. If omitted, numeric questions default to 1.
+     * Scoring model:
+     * - numeric answers are normalized to 0..1 using min/max then multiplied by weight
+     * - max points for the question = weight
+     */
     weight?: number;
 
-    // select-ish types
     options?: Array<{ value: string; label?: string } | string>;
-    placeholder?: string;
 }
 
 export interface StudentFeedbackFormSection {
-    id?: string;
+    id: string;
     title?: string;
     description?: string;
     questions?: StudentFeedbackFormQuestion[];
 }
 
-/**
- * Stored schema format used by staff/student endpoints.
- * Kept intentionally flexible (JsonObject) while providing useful typed accessors.
- */
 export type StudentFeedbackFormSchema = JsonObject & {
-    id?: string;
     key?: string;
-    title?: string;
     version?: number;
+    title?: string;
     description?: string;
     sections?: StudentFeedbackFormSection[];
 };
 
-/* --------------------------------- Results -------------------------------- */
+function flattenQuestions(schema: StudentFeedbackFormSchema): StudentFeedbackFormQuestion[] {
+    const sections = Array.isArray(schema.sections) ? schema.sections : [];
+    const out: StudentFeedbackFormQuestion[] = [];
+
+    for (const s of sections) {
+        const qs = Array.isArray(s.questions) ? s.questions : [];
+        for (const q of qs) {
+            if (!q || typeof q !== 'object') continue;
+            if (typeof q.id !== 'string' || !q.id.trim()) continue;
+            out.push(q);
+        }
+    }
+
+    return out;
+}
+
+function isAnswered(value: unknown): boolean {
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'boolean') return true;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value as object).length > 0;
+    return false;
+}
+
+function clamp(n: number, min: number, max: number): number {
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+}
+
+export type ScoreSummary = {
+    total_score: number;
+    max_score: number;
+    percentage: number;
+    breakdown: JsonObject;
+};
+
+export type ValidateRequiredResult = { ok: true; missing: [] } | { ok: false; missing: string[] };
+
+export type AdminStudentFeedbackRow = {
+    // stable identifiers
+    id: UUID; // evaluation id
+    student_evaluation_id: UUID; // alias for admin hydrator
+    schedule_id: UUID;
+    student_id: UUID;
+
+    // student display
+    student_name: string | null;
+    student_email: string | null;
+
+    // status/timestamps
+    status: StudentEvalStatus;
+    submitted_at: string | null;
+    locked_at: string | null;
+
+    // pinned form used
+    form_id: UUID | null;
+    form_title: string | null;
+    form_version: number | null;
+
+    // answers (admin may optionally render)
+    answers: JsonObject;
+
+    // (optional) score summary fields; admin controller also hydrates from persisted table
+    total_score?: DbNumeric | null;
+    max_score?: DbNumeric | null;
+    percentage?: DbNumeric | null;
+    breakdown?: JsonObject | null;
+    computed_at?: string | null;
+
+    // helper for UI
+    score_ready?: boolean;
+};
 
 export type AssignStudentFeedbackFormsInput = {
     studentIds?: UUID[];
@@ -109,159 +187,57 @@ export type AssignStudentFeedbackFormsInput = {
     initialStatus?: StudentEvalStatus;
 };
 
-export type AssignStudentFeedbackCounts = {
-    created: number;
-    updated: number;
-    existing: number;
-};
-
 export type AssignStudentFeedbackFormsResult = {
     scheduleId: UUID;
     groupId: UUID;
-    counts: AssignStudentFeedbackCounts;
-    created: UUID[]; // student_evaluation ids
-    updated: UUID[]; // student_evaluation ids
-    existing: UUID[]; // student_evaluation ids
-    targetedStudentIds: UUID[]; // resolved student user ids
+    formId: UUID | null;
+
+    targetedStudentIds: UUID[];
+
+    counts: { created: number; updated: number; existing: number };
+
+    created: StudentEvaluationRow[];
+    updated: StudentEvaluationRow[];
+    existing: StudentEvaluationRow[];
 };
 
-export type AdminStudentFeedbackRow = (StudentEvaluationRow & {
-    // aliases used by different frontend variants
-    student_evaluation_id?: UUID;
-    studentEvaluationId?: UUID;
-
-    student_name?: string | null;
-    student_email?: string | null;
-
-    // optional score aliases (admin UI reads multiple keys)
-    total_score?: DbNumeric | null;
-    max_score?: DbNumeric | null;
-    percentage?: DbNumeric | null;
-    breakdown?: JsonObject | null;
-    computed_at?: string | null;
-
-    score_total?: DbNumeric | null;
-    score_max?: DbNumeric | null;
-    score_percentage?: DbNumeric | null;
-
-    score_ready?: boolean;
-});
-
-/* ------------------------------ Score Summary ------------------------------ */
-
-export type StudentFeedbackScoreSummary = {
-    total_score: number;
-    max_score: number;
-    percentage: number;
-    breakdown: JsonObject;
+type EnsurePinnedFormResult = {
+    schedule: DefenseScheduleRow;
+    form: StudentFeedbackFormRow | null;
+    schema: StudentFeedbackFormSchema;
 };
 
 export default class StudentFeedbackService {
     constructor(private readonly services: Services) { }
 
-    /* ----------------------------- Form / Schema ----------------------------- */
-
-    async listForms(tx?: Services): Promise<StudentFeedbackFormRow[]> {
-        const svc = tx ?? this.services;
-        return svc.student_feedback_forms.findMany({
-            orderBy: 'created_at',
-            orderDirection: 'desc',
-            limit: 500,
-        });
-    }
-
-    async getFormById(id: UUID, tx?: Services): Promise<StudentFeedbackFormRow | null> {
-        const svc = tx ?? this.services;
-        return svc.student_feedback_forms.findById(id);
-    }
-
-    async createForm(input: StudentFeedbackFormInsert, tx?: Services): Promise<StudentFeedbackFormRow> {
-        const svc = tx ?? this.services;
-        const t = nowIso();
-        const payload: StudentFeedbackFormInsert = {
-            ...input,
-            active: (input as any).active ?? false,
-            created_at: (input as any).created_at ?? t,
-            updated_at: (input as any).updated_at ?? t,
-        } as any;
-
-        return svc.student_feedback_forms.create(payload);
-    }
-
-    async updateForm(id: UUID, patch: StudentFeedbackFormPatch, tx?: Services): Promise<StudentFeedbackFormRow | null> {
-        const svc = tx ?? this.services;
-        const t = nowIso();
-        const payload: StudentFeedbackFormPatch = {
-            ...patch,
-            updated_at: (patch as any).updated_at ?? t,
-        } as any;
-
-        return svc.student_feedback_forms.updateOne({ id }, payload as any);
-    }
-
-    async activateForm(id: UUID, tx?: Services): Promise<StudentFeedbackFormRow | null> {
-        const svc = tx ?? this.services;
-
-        return svc.transaction(async (tx2) => {
-            const current = await tx2.student_feedback_forms.findById(id);
-            if (!current) return null;
-
-            // best-effort: deactivate other active forms to satisfy "single active" expectation
-            try {
-                const actives = await tx2.student_feedback_forms.findMany({
-                    where: { active: true as any },
-                    limit: 500,
-                } as any);
-
-                await Promise.all(
-                    actives
-                        .filter((f) => f.id !== id)
-                        .map((f) =>
-                            tx2.student_feedback_forms.updateOne(
-                                { id: f.id },
-                                { active: false, updated_at: nowIso() } as any,
-                            ),
-                        ),
-                );
-            } catch {
-                // ignore; DB may already enforce single active.
-            }
-
-            const updated =
-                (await tx2.student_feedback_forms.updateOne(
-                    { id },
-                    { active: true, updated_at: nowIso() } as any,
-                )) ?? (await tx2.student_feedback_forms.findById(id));
-
-            return updated ?? null;
-        });
-    }
+    /* --------------------------- FORM RESOLUTION --------------------------- */
 
     async getActiveForm(tx?: Services): Promise<StudentFeedbackFormRow | null> {
-        const svc = tx ?? this.services;
+        const s = tx ?? this.services;
 
-        // Prefer explicit active=true
+        // Prefer service helper if implemented (getActiveLatest)
         try {
-            const actives = await svc.student_feedback_forms.findMany({
-                where: { active: true as any },
-                orderBy: 'updated_at',
+            const active = await s.student_feedback_forms.getActiveLatest();
+            if (active) return active;
+        } catch {
+            // fallthrough
+        }
+
+        // Fallback: list active
+        try {
+            const actives = await s.student_feedback_forms.listActive({ limit: 5 } as any);
+            if (actives && actives.length > 0) return actives[0] ?? null;
+        } catch {
+            // fallthrough
+        }
+
+        // Final fallback: latest by version
+        try {
+            const latest = await s.student_feedback_forms.findMany({
+                orderBy: 'version' as any,
                 orderDirection: 'desc',
                 limit: 1,
             } as any);
-
-            if (actives && actives.length > 0) return actives[0] ?? null;
-        } catch {
-            // ignore
-        }
-
-        // Fallback: latest form
-        try {
-            const latest = await svc.student_feedback_forms.findMany({
-                orderBy: 'updated_at',
-                orderDirection: 'desc',
-                limit: 1,
-            });
-
             return latest[0] ?? null;
         } catch {
             return null;
@@ -269,7 +245,8 @@ export default class StudentFeedbackService {
     }
 
     async getActiveSchema(tx?: Services): Promise<StudentFeedbackFormSchema> {
-        const form = await this.getActiveForm(tx);
+        const s = tx ?? this.services;
+        const form = await this.getActiveForm(s);
         const schema = toJsonObject(form?.schema ?? {});
         return schema as StudentFeedbackFormSchema;
     }
@@ -279,243 +256,259 @@ export default class StudentFeedbackService {
         return this.getSeedAnswersTemplateForSchema(schema);
     }
 
-    /* ---------------------- Schema helpers (seed/score) ---------------------- */
-
-    private iterateQuestions(schema: StudentFeedbackFormSchema): StudentFeedbackFormQuestion[] {
-        const s = (schema ?? {}) as any;
-        const sections = Array.isArray(s.sections) ? (s.sections as any[]) : [];
-        const out: StudentFeedbackFormQuestion[] = [];
-
-        for (const secRaw of sections) {
-            const sec = isRecord(secRaw) ? (secRaw as any) : {};
-            const questions = Array.isArray(sec.questions) ? (sec.questions as any[]) : [];
-            for (const qRaw of questions) {
-                const q = isRecord(qRaw) ? (qRaw as any) : null;
-                const id = typeof q?.id === 'string' && q.id.trim().length > 0 ? q.id.trim() : null;
-                if (!id) continue;
-
-                out.push({
-                    id,
-                    label: typeof q.label === 'string' ? q.label : undefined,
-                    type: (typeof q.type === 'string' ? q.type : undefined) as any,
-                    required: typeof q.required === 'boolean' ? q.required : undefined,
-                    min: typeof q.min === 'number' ? q.min : undefined,
-                    max: typeof q.max === 'number' ? q.max : undefined,
-                    weight: typeof q.weight === 'number' ? q.weight : undefined,
-                    options: Array.isArray(q.options) ? q.options : undefined,
-                    placeholder: typeof q.placeholder === 'string' ? q.placeholder : undefined,
-                });
-            }
-        }
-
-        return out;
-    }
-
     getSeedAnswersTemplateForSchema(schema: StudentFeedbackFormSchema): JsonObject {
         const out: JsonObject = {};
-        const questions = this.iterateQuestions(schema);
+        const questions = flattenQuestions(schema);
 
         for (const q of questions) {
-            const t = String(q.type ?? '').toLowerCase();
-            if (t === 'checkbox') {
-                out[q.id] = false;
-            } else if (t === 'multiselect') {
-                out[q.id] = [];
-            } else if (t === 'textarea' || t === 'text') {
-                out[q.id] = '';
-            } else if (t === 'rating' || t === 'scale' || t === 'number') {
-                out[q.id] = null;
-            } else {
-                out[q.id] = null;
-            }
+            const type = String(q.type ?? 'text').trim().toLowerCase();
+            if (type === 'text' || type === 'textarea') out[q.id] = '';
+            else if (type === 'multiselect') out[q.id] = [];
+            else if (type === 'checkbox') out[q.id] = false;
+            else out[q.id] = null;
         }
 
         return out;
     }
 
-    validateRequiredAnswers(answers: JsonObject, schema: StudentFeedbackFormSchema): { ok: boolean; missing: string[] } {
-        const a = (answers ?? {}) as JsonObject;
-        const questions = this.iterateQuestions(schema);
-
+    validateRequiredAnswers(answers: JsonObject, schema: StudentFeedbackFormSchema): ValidateRequiredResult {
         const missing: string[] = [];
+        const questions = flattenQuestions(schema);
+
         for (const q of questions) {
             if (!q.required) continue;
-
-            const v = (a as any)[q.id];
-
-            // treat empty strings / null / undefined as missing
-            if (v === null || v === undefined) {
-                missing.push(q.id);
-                continue;
-            }
-            if (typeof v === 'string' && v.trim().length === 0) {
-                missing.push(q.id);
-                continue;
-            }
-            if (Array.isArray(v) && v.length === 0) {
-                missing.push(q.id);
-                continue;
-            }
+            const value = (answers as any)[q.id];
+            if (!isAnswered(value)) missing.push(q.id);
         }
 
-        return { ok: missing.length === 0, missing };
+        return missing.length === 0 ? { ok: true, missing: [] } : { ok: false, missing };
     }
 
-    computeScoreSummary(answers: JsonObject, schema: StudentFeedbackFormSchema): StudentFeedbackScoreSummary {
-        const a = (answers ?? {}) as JsonObject;
-        const questions = this.iterateQuestions(schema);
+    computeScoreSummary(answers: JsonObject, schema: StudentFeedbackFormSchema): ScoreSummary {
+        const questions = flattenQuestions(schema);
 
         let total = 0;
-        let max = 0;
+        let maxTotal = 0;
 
         const breakdown: JsonObject = {};
 
         for (const q of questions) {
-            const t = String(q.type ?? '').toLowerCase();
+            const type = String(q.type ?? '').trim().toLowerCase();
             const weight = typeof q.weight === 'number' && Number.isFinite(q.weight) && q.weight > 0 ? q.weight : 1;
 
-            if (t === 'rating' || t === 'scale' || t === 'number') {
-                const qMax = typeof q.max === 'number' && Number.isFinite(q.max) && q.max > 0 ? q.max : 5;
-                const v = (a as any)[q.id];
-                const n = toNumber(v);
+            const min = typeof q.min === 'number' && Number.isFinite(q.min) ? q.min : 1;
+            const max = typeof q.max === 'number' && Number.isFinite(q.max) ? q.max : 5;
 
-                max += qMax * weight;
+            const raw = (answers as any)[q.id];
 
-                if (n !== null) {
-                    const clamped = Math.max(0, Math.min(qMax, n));
-                    total += clamped * weight;
-                    breakdown[q.id] = { value: clamped, max: qMax, weight };
-                } else {
-                    breakdown[q.id] = { value: null, max: qMax, weight };
-                }
+            const isNumeric =
+                type === 'rating' || type === 'scale' || type === 'number';
 
+            if (!isNumeric) {
+                // keep a lightweight breakdown entry for completeness
+                breakdown[q.id] = {
+                    type,
+                    answered: isAnswered(raw),
+                } as any;
                 continue;
             }
 
-            // Non-numeric questions contribute 0 to score; still capture presence for debugging/preview UX
-            const v = (a as any)[q.id];
-            breakdown[q.id] = { value: v ?? null, weight };
+            const v = toNumber(raw);
+            maxTotal += weight;
+
+            if (v === null) {
+                breakdown[q.id] = {
+                    type,
+                    value: null,
+                    score: 0,
+                    max: weight,
+                    normalized: 0,
+                } as any;
+                continue;
+            }
+
+            const denom = max - min;
+            const normalized =
+                denom > 0 ? clamp((v - min) / denom, 0, 1) : 0;
+
+            const score = normalized * weight;
+
+            total += score;
+
+            breakdown[q.id] = {
+                type,
+                value: v,
+                score,
+                max: weight,
+                normalized,
+            } as any;
         }
 
-        const pct = max > 0 ? (total / max) * 100 : 0;
+        const percentage = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
 
         return {
             total_score: Number.isFinite(total) ? total : 0,
-            max_score: Number.isFinite(max) ? max : 0,
-            percentage: Number.isFinite(pct) ? pct : 0,
+            max_score: Number.isFinite(maxTotal) ? maxTotal : 0,
+            percentage: Number.isFinite(percentage) ? percentage : 0,
             breakdown,
         };
     }
 
-    /* ------------------------------ Assignments ------------------------------ */
+    /* ------------------------------ FORM CRUD ------------------------------ */
 
-    private async resolveStudentUserId(tx: Services, id: UUID): Promise<UUID | null> {
-        // 1) direct user id (preferred)
-        try {
-            const u = await tx.users.findById(id);
-            if (u && u.role === 'student') return u.id as UUID;
-        } catch {
-            // ignore
-        }
-
-        // 2) already a student user id but user lookup failed (rare) — try student profile by user id
-        try {
-            const prof = await tx.students.findByUserId(id);
-            if (prof) return id;
-        } catch {
-            // ignore
-        }
-
-        // 3) if someone accidentally sent a "students table primary key" (if it exists), best-effort map to user_id
-        try {
-            const anyStudents = tx.students as any;
-            if (typeof anyStudents.findById === 'function') {
-                const row = await anyStudents.findById(id);
-                const userId = row?.user_id;
-                if (typeof userId === 'string' && userId.trim().length > 0) return userId as UUID;
-            }
-        } catch {
-            // ignore
-        }
-
-        return null;
+    async listForms(): Promise<StudentFeedbackFormRow[]> {
+        return this.services.student_feedback_forms.findMany({
+            orderBy: 'version' as any,
+            orderDirection: 'desc',
+            limit: 500,
+        } as any);
     }
 
-    private async listGroupStudentIdsBestEffort(tx: Services, groupId: UUID): Promise<UUID[]> {
-        const candidates: Array<{
-            svc: any;
-            fn: 'listByGroup' | 'findMany';
-            whereKey?: string;
-        }> = [];
+    async getFormById(id: UUID): Promise<StudentFeedbackFormRow | null> {
+        return this.services.student_feedback_forms.findById(id);
+    }
 
-        const anyTx = tx as any;
+    async createForm(input: StudentFeedbackFormInsert): Promise<StudentFeedbackFormRow> {
+        // Safer: create as inactive, then activate if requested (prevents unique-active constraints)
+        const activeRequested = !!(input as any).active;
 
-        // Common service names seen across codebases
-        const svcNames = [
-            'thesis_group_students',
-            'thesis_group_members',
-            'group_students',
-            'group_members',
-            'thesis_group_student_members',
-        ];
+        const created = await this.services.student_feedback_forms.create({
+            ...input,
+            active: false,
+            created_at: (input as any).created_at ?? nowIso(),
+            updated_at: (input as any).updated_at ?? nowIso(),
+        } as any);
 
-        for (const name of svcNames) {
-            const svc = anyTx[name];
-            if (!svc) continue;
-
-            if (typeof svc.listByGroup === 'function') {
-                candidates.push({ svc, fn: 'listByGroup' });
-            }
-            if (typeof svc.findMany === 'function') {
-                candidates.push({ svc, fn: 'findMany', whereKey: 'group_id' });
-            }
+        if (activeRequested) {
+            const activated = await this.activateForm(created.id);
+            return activated ?? created;
         }
 
-        for (const c of candidates) {
+        return created;
+    }
+
+    async updateForm(id: UUID, patch: StudentFeedbackFormPatch): Promise<StudentFeedbackFormRow | null> {
+        const activeRequested = (patch as any).active === true;
+
+        // If they want to activate, route through activateForm for single-active semantics.
+        if (activeRequested) {
+            // Apply patch without "active" first
+            const { active: _active, ...rest } = patch as any;
+            if (Object.keys(rest).length > 0) {
+                await this.services.student_feedback_forms.updateOne(
+                    { id },
+                    { ...rest, updated_at: nowIso() } as any,
+                );
+            }
+            return this.activateForm(id);
+        }
+
+        // Normal patch
+        const updated = await this.services.student_feedback_forms.updateOne(
+            { id },
+            { ...patch, updated_at: nowIso() } as any,
+        );
+        return updated;
+    }
+
+    async activateForm(id: UUID): Promise<StudentFeedbackFormRow | null> {
+        return this.services.transaction(async (tx) => {
+            // deactivate all active forms first (best-effort)
             try {
-                const rows =
-                    c.fn === 'listByGroup'
-                        ? await c.svc.listByGroup(groupId)
-                        : await c.svc.findMany({ where: { [c.whereKey ?? 'group_id']: groupId } });
-
-                if (!Array.isArray(rows) || rows.length === 0) continue;
-
-                const ids: UUID[] = [];
-                for (const r of rows) {
-                    const row = isRecord(r) ? (r as any) : {};
-                    const raw =
-                        row.student_id ??
-                        row.user_id ??
-                        row.member_id ??
-                        row.student_user_id ??
-                        row.studentId ??
-                        row.userId ??
-                        null;
-
-                    if (typeof raw === 'string' && raw.trim().length > 0) ids.push(raw as UUID);
-                }
-
-                if (ids.length > 0) return ids;
+                await tx.student_feedback_forms.update({ active: true } as any, { active: false, updated_at: nowIso() } as any);
             } catch {
-                // try next
+                // ignore
+            }
+
+            const updated = await tx.student_feedback_forms.updateOne(
+                { id },
+                { active: true, updated_at: nowIso() } as any,
+            );
+
+            return updated ?? (await tx.student_feedback_forms.findById(id));
+        });
+    }
+
+    /* ---------------------------- ASSIGNMENT CORE --------------------------- */
+
+    private async ensurePinnedFormForSchedule(
+        tx: Services,
+        scheduleId: UUID,
+    ): Promise<EnsurePinnedFormResult | null> {
+        const schedule = await tx.defense_schedules.findById(scheduleId);
+        if (!schedule) return null;
+
+        // Prefer pinned schedule form (migration 014)
+        const pinnedId = (schedule.student_feedback_form_id ?? null) as UUID | null;
+
+        let form: StudentFeedbackFormRow | null = null;
+
+        if (pinnedId) {
+            form = await tx.student_feedback_forms.findById(pinnedId);
+        }
+
+        if (!form) {
+            form = await this.getActiveForm(tx);
+            // pin it (best UX: consistent for the schedule)
+            if (form && !schedule.student_feedback_form_id) {
+                try {
+                    await tx.defense_schedules.updateOne(
+                        { id: scheduleId },
+                        { student_feedback_form_id: form.id, updated_at: nowIso() } as any,
+                    );
+                    schedule.student_feedback_form_id = form.id;
+                } catch {
+                    // best-effort
+                }
             }
         }
 
-        return [];
+        const schemaObj = toJsonObject(form?.schema ?? {});
+        const schema = schemaObj as StudentFeedbackFormSchema;
+
+        return { schedule, form, schema };
     }
 
-    private async upsertScoreBestEffort(
+    private async listGroupMemberStudentIds(
+        tx: Services,
+        groupId: UUID,
+    ): Promise<UUID[]> {
+        const members: GroupMemberRow[] = await tx.group_members.listByGroup(groupId);
+        const seen = new Set<string>();
+        const out: UUID[] = [];
+
+        for (const m of members) {
+            const sid = (m as any).student_id as unknown;
+            if (typeof sid !== 'string' || !sid.trim()) continue;
+            const key = sid.trim().toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(sid.trim() as UUID);
+        }
+
+        return out;
+    }
+
+    private async loadUsersByIds(
+        tx: Services,
+        userIds: UUID[],
+    ): Promise<Map<UUID, UserRow>> {
+        const rows = await Promise.all(userIds.map((id) => tx.users.findById(id)));
+        const map = new Map<UUID, UserRow>();
+        for (const u of rows) {
+            if (u) map.set(u.id, u);
+        }
+        return map;
+    }
+
+    private async upsertScoreSummaryForEvaluation(
         tx: Services,
         evaluation: StudentEvaluationRow,
         schema: StudentFeedbackFormSchema,
         formId: UUID | null,
         computedAt: string,
-        answersOverride?: JsonObject,
     ): Promise<StudentEvaluationScoreRow | null> {
-        const summary = this.computeScoreSummary(
-            (answersOverride ?? (evaluation.answers ?? {})) as JsonObject,
-            schema,
-        );
+        const summary = this.computeScoreSummary((evaluation.answers ?? {}) as JsonObject, schema);
 
         const createPayload: StudentEvaluationScoreInsert = {
             student_evaluation_id: evaluation.id,
@@ -541,47 +534,16 @@ export default class StudentFeedbackService {
             updated_at: computedAt,
         } as any;
 
-        const anyScores = tx.student_evaluation_scores as any;
-
-        // Preferred: native upsert method used elsewhere in codebase
-        if (typeof anyScores.upsert === 'function') {
-            try {
-                return await anyScores.upsert(
-                    { student_evaluation_id: evaluation.id },
-                    createPayload,
-                    patchPayload,
-                );
-            } catch {
-                // fall back below
-            }
-        }
-
-        // Fallback: manual upsert
         try {
-            const existing =
-                (typeof anyScores.findOne === 'function'
-                    ? await anyScores.findOne({ student_evaluation_id: evaluation.id })
-                    : null) ??
-                (typeof anyScores.findByStudentEvaluationId === 'function'
-                    ? await anyScores.findByStudentEvaluationId(evaluation.id)
-                    : null);
-
-            if (existing && typeof anyScores.updateOne === 'function') {
-                const updated = await anyScores.updateOne(
-                    { student_evaluation_id: evaluation.id },
-                    patchPayload,
-                );
-                return (updated ?? existing) as StudentEvaluationScoreRow;
-            }
-
-            if (typeof anyScores.create === 'function') {
-                return (await anyScores.create(createPayload)) as StudentEvaluationScoreRow;
-            }
+            const upserted = await tx.student_evaluation_scores.upsert(
+                { student_evaluation_id: evaluation.id },
+                createPayload,
+                patchPayload,
+            );
+            return upserted;
         } catch {
-            // ignore
+            return null;
         }
-
-        return null;
     }
 
     async assignForSchedule(
@@ -589,214 +551,189 @@ export default class StudentFeedbackService {
         input: AssignStudentFeedbackFormsInput = {},
     ): Promise<AssignStudentFeedbackFormsResult | null> {
         return this.services.transaction(async (tx) => {
-            const schedule = await tx.defense_schedules.findById(scheduleId);
-            if (!schedule) return null;
+            const pinned = await this.ensurePinnedFormForSchedule(tx, scheduleId);
+            if (!pinned) return null;
 
-            const groupId = schedule.group_id as UUID;
+            const { schedule, form, schema } = pinned;
 
-            const overwritePending = input.overwritePending ?? false;
+            const groupMemberStudentIds = await this.listGroupMemberStudentIds(tx, schedule.group_id);
+
+            // if studentIds provided, only assign to students that belong to the schedule's group
+            const targetedStudentIds = (() => {
+                const requested = Array.isArray(input.studentIds) ? input.studentIds : [];
+                if (requested.length === 0) return groupMemberStudentIds;
+
+                const allowed = new Set(groupMemberStudentIds.map((id) => id.toLowerCase()));
+                return requested
+                    .filter((id) => typeof id === 'string' && allowed.has(id.toLowerCase()))
+                    .map((id) => id as UUID);
+            })();
+
+            const overwritePending = !!input.overwritePending;
             const initialStatus: StudentEvalStatus = normalizeStatus(input.initialStatus ?? 'pending');
-
-            const activeForm = await this.getActiveForm(tx);
-            const schema = toJsonObject(activeForm?.schema ?? {}) as StudentFeedbackFormSchema;
 
             const seedAnswers =
                 input.seedAnswers && Object.keys(input.seedAnswers).length > 0
                     ? input.seedAnswers
                     : this.getSeedAnswersTemplateForSchema(schema);
 
-            const rawStudentIds = Array.isArray(input.studentIds) ? input.studentIds : [];
+            const created: StudentEvaluationRow[] = [];
+            const updated: StudentEvaluationRow[] = [];
+            const existing: StudentEvaluationRow[] = [];
 
-            let targetedStudentIds: UUID[] = [];
+            const ts = nowIso();
 
-            if (rawStudentIds.length > 0) {
-                const resolved = await Promise.all(rawStudentIds.map((id) => this.resolveStudentUserId(tx, id)));
-                targetedStudentIds = resolved.filter(Boolean) as UUID[];
-            } else {
-                const groupStudents = await this.listGroupStudentIdsBestEffort(tx, groupId);
-                const resolved = await Promise.all(groupStudents.map((id) => this.resolveStudentUserId(tx, id)));
-                targetedStudentIds = resolved.filter(Boolean) as UUID[];
-            }
-
-            // de-dupe
-            targetedStudentIds = Array.from(new Set(targetedStudentIds.map((x) => x.toLowerCase()))).map(
-                (x) => x as UUID,
-            );
-
-            const created: UUID[] = [];
-            const updated: UUID[] = [];
-            const existingIds: UUID[] = [];
-
-            const t = nowIso();
-
-            for (const studentUserId of targetedStudentIds) {
-                const existing = await tx.student_evaluations.findOne({
+            for (const studentId of targetedStudentIds) {
+                const found = await tx.student_evaluations.findOne({
                     schedule_id: scheduleId,
-                    student_id: studentUserId,
+                    student_id: studentId,
                 });
 
-                if (existing) {
-                    const st = normalizeStatus(existing.status);
+                if (found) {
+                    const status = normalizeStatus(found.status);
 
-                    // Only reset/overwrite when it's pending (to avoid clobbering submissions)
-                    if (st === 'pending' && overwritePending) {
-                        const patched = await tx.student_evaluations.updateOne(
-                            { id: existing.id },
-                            {
-                                answers: seedAnswers,
-                                form_id: activeForm?.id ?? existing.form_id ?? null,
-                                status: initialStatus,
-                                submitted_at: null,
-                                locked_at: null,
-                                updated_at: t,
-                            } as any,
-                        );
+                    if (overwritePending && status === 'pending') {
+                        const patch: StudentEvaluationPatch = {
+                            form_id: form?.id ?? found.form_id ?? null,
+                            status: initialStatus,
+                            answers: seedAnswers,
+                            submitted_at: null,
+                            locked_at: null,
+                            updated_at: ts,
+                        } as any;
 
-                        const final = patched ?? (await tx.student_evaluations.findById(existing.id));
-                        if (final) {
-                            updated.push(final.id);
-                            await this.upsertScoreBestEffort(
-                                tx,
-                                final,
-                                schema,
-                                activeForm?.id ?? final.form_id ?? null,
-                                t,
-                                seedAnswers,
-                            );
+                        const patched =
+                            (await tx.student_evaluations.updateOne({ id: found.id }, patch)) ??
+                            (await tx.student_evaluations.findById(found.id));
+
+                        if (patched) {
+                            updated.push(patched);
+                            await this.upsertScoreSummaryForEvaluation(tx, patched, schema, form?.id ?? null, ts);
                         } else {
-                            existingIds.push(existing.id);
+                            existing.push(found);
                         }
                     } else {
-                        existingIds.push(existing.id);
+                        existing.push(found);
                     }
 
                     continue;
                 }
 
-                const createdRow = await tx.student_evaluations.create({
+                const payload: StudentEvaluationInsert = {
                     schedule_id: scheduleId,
-                    student_id: studentUserId,
-                    form_id: activeForm?.id ?? null,
+                    student_id: studentId,
+                    form_id: form?.id ?? null,
                     status: initialStatus,
                     answers: seedAnswers,
                     submitted_at: null,
                     locked_at: null,
-                    created_at: t,
-                    updated_at: t,
-                } as any);
+                    created_at: ts,
+                    updated_at: ts,
+                };
 
-                if (createdRow) {
-                    created.push(createdRow.id);
-                    await this.upsertScoreBestEffort(
-                        tx,
-                        createdRow,
-                        schema,
-                        activeForm?.id ?? createdRow.form_id ?? null,
-                        t,
-                        seedAnswers,
-                    );
-                }
+                const ev = await tx.student_evaluations.create(payload);
+                created.push(ev);
+                await this.upsertScoreSummaryForEvaluation(tx, ev, schema, form?.id ?? null, ts);
             }
 
             return {
                 scheduleId,
-                groupId,
+                groupId: schedule.group_id,
+                formId: form?.id ?? schedule.student_feedback_form_id ?? null,
+                targetedStudentIds,
                 counts: {
                     created: created.length,
                     updated: updated.length,
-                    existing: existingIds.length,
+                    existing: existing.length,
                 },
                 created,
                 updated,
-                existing: existingIds,
-                targetedStudentIds,
+                existing,
             };
         });
     }
 
-    /* ------------------------------- Admin Lists ------------------------------ */
+    /* --------------------------- ADMIN LIST (DETAILED) --------------------------- */
 
-    async listForScheduleDetailed(scheduleId: UUID, tx?: Services): Promise<AdminStudentFeedbackRow[]> {
-        const svc = tx ?? this.services;
+    async listForScheduleDetailed(scheduleId: UUID): Promise<AdminStudentFeedbackRow[]> {
+        return this.services.transaction(async (tx) => {
+            const schedule = await tx.defense_schedules.findById(scheduleId);
+            if (!schedule) return [];
 
-        const rows = await svc.student_evaluations.findMany({
-            where: { schedule_id: scheduleId },
-            orderBy: 'created_at',
-            orderDirection: 'asc',
-            limit: 5000,
-        });
+            const rows = await tx.student_evaluations.listBySchedule(scheduleId);
 
-        if (!rows || rows.length === 0) return [];
+            const studentIds = Array.from(new Set(rows.map((r) => r.student_id)));
+            const userById = await this.loadUsersByIds(tx, studentIds);
 
-        const studentIds = Array.from(new Set(rows.map((r) => (r.student_id as string).toLowerCase()))).map(
-            (s) => s as UUID,
-        );
+            // Resolve pinned form once
+            const pinnedFormId = schedule.student_feedback_form_id ?? null;
+            const pinnedForm = pinnedFormId ? await tx.student_feedback_forms.findById(pinnedFormId) : null;
 
-        const users = await Promise.all(
-            studentIds.map(async (id) => {
-                try {
-                    return await svc.users.findById(id);
-                } catch {
-                    return null;
-                }
-            }),
-        );
+            // Optional: fetch score summaries (best-effort)
+            const scoreByEvalId = new Map<UUID, StudentEvaluationScoreRow>();
+            try {
+                const scores = await tx.student_evaluation_scores.listBySchedule(scheduleId);
+                for (const s of scores) scoreByEvalId.set(s.student_evaluation_id, s);
+            } catch {
+                // ignore
+            }
 
-        const userById = new Map<UUID, UserRow>();
-        for (const u of users) {
-            if (u) userById.set(u.id as UUID, u);
-        }
+            const out: AdminStudentFeedbackRow[] = rows.map((ev) => {
+                const u = userById.get(ev.student_id) ?? null;
 
-        // Best UX ordering: show pending first (actionable), then submitted, then locked
-        const statusOrder: Record<StudentEvalStatus, number> = {
-            pending: 1,
-            submitted: 2,
-            locked: 3,
-        };
+                const score = scoreByEvalId.get(ev.id) ?? null;
 
-        const mapped: AdminStudentFeedbackRow[] = rows
-            .map((r) => {
-                const u = userById.get(r.student_id as UUID) ?? null;
+                const formId = ev.form_id ?? pinnedForm?.id ?? pinnedFormId ?? null;
 
-                const status = normalizeStatus((r as any).status);
+                const st = normalizeStatus(ev.status);
 
                 const base: AdminStudentFeedbackRow = {
-                    ...(r as any),
-                    status,
-                    // aliases for frontend matching
-                    student_evaluation_id: r.id,
-                    studentEvaluationId: r.id,
-
+                    id: ev.id,
+                    student_evaluation_id: ev.id,
+                    schedule_id: ev.schedule_id,
+                    student_id: ev.student_id,
                     student_name: u?.name ?? null,
                     student_email: u?.email ?? null,
-
-                    // default score fields (hydrated later by AdminController)
-                    total_score: null,
-                    max_score: null,
-                    percentage: null,
-                    breakdown: null,
-                    computed_at: null,
-
-                    // extra aliases UI might read
-                    score_total: null,
-                    score_max: null,
-                    score_percentage: null,
-
-                    score_ready: false,
+                    status: st,
+                    submitted_at: ev.submitted_at ?? null,
+                    locked_at: ev.locked_at ?? null,
+                    form_id: formId,
+                    form_title: pinnedForm?.title ?? null,
+                    form_version: typeof pinnedForm?.version === 'number' ? pinnedForm.version : null,
+                    answers: (ev.answers ?? {}) as JsonObject,
                 };
 
-                return base;
-            })
-            .sort((a, b) => {
-                const aS = statusOrder[normalizeStatus(a.status)] ?? 99;
-                const bS = statusOrder[normalizeStatus(b.status)] ?? 99;
-                if (aS !== bS) return aS - bS;
+                if (score) {
+                    base.total_score = score.total_score ?? null;
+                    base.max_score = score.max_score ?? null;
+                    base.percentage = score.percentage ?? null;
+                    base.breakdown = (score.breakdown ?? {}) as any;
+                    base.computed_at = score.computed_at ?? null;
+                    base.score_ready = st === 'submitted' || st === 'locked';
+                } else {
+                    base.total_score = null;
+                    base.max_score = null;
+                    base.percentage = null;
+                    base.breakdown = null;
+                    base.computed_at = null;
+                    base.score_ready = false;
+                }
 
-                const aName = String(a.student_name ?? '').toLowerCase();
-                const bName = String(b.student_name ?? '').toLowerCase();
-                return aName.localeCompare(bName);
+                return base;
             });
 
-        return mapped;
+            // Stable ordering for admin UX: locked/submitted first, then pending; then student name
+            const statusOrder: Record<StudentEvalStatus, number> = { locked: 1, submitted: 2, pending: 3 };
+
+            return out.sort((a, b) => {
+                const aS = statusOrder[a.status] ?? 99;
+                const bS = statusOrder[b.status] ?? 99;
+                if (aS !== bS) return aS - bS;
+
+                const aName = (a.student_name ?? '').toLowerCase();
+                const bName = (b.student_name ?? '').toLowerCase();
+                return aName.localeCompare(bName);
+            });
+        });
     }
 }

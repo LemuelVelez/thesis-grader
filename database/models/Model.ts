@@ -1,7 +1,7 @@
 /**
  * Central database model types for Thesis Grader
  * Based on migrations:
- * 001..013 in database/migration
+ * 001..014 in database/migration
  */
 
 export type UUID = string;
@@ -117,6 +117,13 @@ export interface DefenseScheduleRow {
     status: DefenseScheduleStatus;
     created_by: UUID | null;
     rubric_template_id: UUID | null;
+
+    /**
+     * Pinned student feedback form used for student evaluation assignment for this schedule.
+     * Added in migration 014 so assignments consistently use a single ACTIVE form version at time of assignment.
+     */
+    student_feedback_form_id: UUID | null;
+
     created_at: ISODateTime;
     updated_at: ISODateTime;
 }
@@ -344,6 +351,7 @@ export type DefenseScheduleInsert = Optional<
     | 'status'
     | 'created_by'
     | 'rubric_template_id'
+    | 'student_feedback_form_id'
     | 'created_at'
     | 'updated_at'
 >;

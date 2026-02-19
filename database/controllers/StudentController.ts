@@ -111,6 +111,13 @@ type StudentEvaluationContext = {
     term: string | null;
 };
 
+export type StudentEvaluationFormSchemaResult = {
+    form: StudentFeedbackFormRow | null;
+    form_id: UUID | null;
+    schema: StudentFeedbackFormSchema;
+    seedAnswersTemplate: JsonObject;
+};
+
 export class StudentController {
     private readonly studentFeedback: StudentFeedbackService;
 
@@ -129,16 +136,71 @@ export class StudentController {
         return user;
     }
 
+    private async resolvePinnedFormForSchedule(
+        tx: Services,
+        scheduleId: UUID,
+    ): Promise<{ schedule: DefenseScheduleRow | null; form: StudentFeedbackFormRow | null }> {
+        const schedule = await tx.defense_schedules.findById(scheduleId);
+        if (!schedule) return { schedule: null, form: null };
+
+        const pinnedId = (schedule.student_feedback_form_id ?? null) as UUID | null;
+
+        if (pinnedId) {
+            const pinnedForm = await tx.student_feedback_forms.findById(pinnedId);
+            if (pinnedForm) return { schedule, form: pinnedForm };
+        }
+
+        // fallback: active (or latest) form
+        const active = await this.studentFeedback.getActiveForm(tx);
+        const form = active ?? null;
+
+        // pin it for the schedule (best UX: consistent version for everyone)
+        if (form && !schedule.student_feedback_form_id) {
+            try {
+                await tx.defense_schedules.updateOne(
+                    { id: scheduleId },
+                    { student_feedback_form_id: form.id, updated_at: nowIso() } as any,
+                );
+                schedule.student_feedback_form_id = form.id;
+            } catch {
+                // best-effort only
+            }
+        }
+
+        return { schedule, form };
+    }
+
     private async resolveFormAndSchemaForEvaluation(
         tx: Services,
         evaluation: StudentEvaluationRow,
     ): Promise<{ form: StudentFeedbackFormRow | null; schema: StudentFeedbackFormSchema }> {
         let form: StudentFeedbackFormRow | null = null;
 
+        // 1) evaluation.form_id wins (the "version used" is pinned here)
         if (evaluation.form_id) {
             form = await tx.student_feedback_forms.findById(evaluation.form_id);
         }
 
+        // 2) if missing, prefer pinned schedule form (migration 014)
+        if (!form) {
+            const pinned = await this.resolvePinnedFormForSchedule(tx, evaluation.schedule_id);
+            form = pinned.form;
+
+            // best-effort: persist evaluation.form_id if it was null (keeps future reads consistent)
+            if (form && !evaluation.form_id) {
+                try {
+                    await tx.student_evaluations.updateOne(
+                        { id: evaluation.id },
+                        { form_id: form.id, updated_at: nowIso() } as any,
+                    );
+                    evaluation.form_id = form.id;
+                } catch {
+                    // best-effort
+                }
+            }
+        }
+
+        // 3) final fallback: active schema
         if (!form) {
             form = await this.studentFeedback.getActiveForm(tx);
         }
@@ -259,6 +321,29 @@ export class StudentController {
 
     async getStudentFeedbackSeedAnswersTemplate(): Promise<JsonObject> {
         return this.studentFeedback.getActiveSeedAnswersTemplate();
+    }
+
+    async getStudentEvaluationFormSchema(
+        studentId: UUID,
+        evaluationId: UUID,
+    ): Promise<StudentEvaluationFormSchemaResult | null> {
+        return this.services.transaction<StudentEvaluationFormSchemaResult | null>(async (tx) => {
+            const studentUser = await this.requireStudentUser(tx, studentId);
+            if (!studentUser) return null;
+
+            const evaluation = await tx.student_evaluations.findById(evaluationId);
+            if (!evaluation || evaluation.student_id !== studentId) return null;
+
+            const { form, schema } = await this.resolveFormAndSchemaForEvaluation(tx, evaluation);
+            const seedAnswersTemplate = this.studentFeedback.getSeedAnswersTemplateForSchema(schema);
+
+            return {
+                form,
+                form_id: form?.id ?? evaluation.form_id ?? null,
+                schema,
+                seedAnswersTemplate,
+            };
+        });
     }
 
     /**
@@ -430,6 +515,9 @@ export class StudentController {
             const studentUser = await this.requireStudentUser(tx, studentId);
             if (!studentUser) return null;
 
+            const schedule = await tx.defense_schedules.findById(input.schedule_id);
+            if (!schedule) return null;
+
             const existing = await tx.student_evaluations.findOne({
                 schedule_id: input.schedule_id,
                 student_id: studentId,
@@ -440,16 +528,21 @@ export class StudentController {
                 return hydratedExisting;
             }
 
-            const activeForm = await this.studentFeedback.getActiveForm(tx);
-            const schema = (activeForm?.schema ?? {}) as JsonObject;
-            const defaultAnswers = input.answers ?? this.studentFeedback.getSeedAnswersTemplateForSchema(schema);
+            // ✅ Pin form at schedule-level if needed, then use it.
+            const pinned = await this.resolvePinnedFormForSchedule(tx, input.schedule_id);
+            const activeOrPinnedForm = pinned.form;
+            const schema = (activeOrPinnedForm?.schema ?? {}) as JsonObject;
+
+            const defaultAnswers =
+                input.answers ??
+                this.studentFeedback.getSeedAnswersTemplateForSchema(schema as any);
 
             const createdAt = nowIso();
 
             const created = await tx.student_evaluations.create({
                 schedule_id: input.schedule_id,
                 student_id: studentId,
-                form_id: activeForm?.id ?? null,
+                form_id: activeOrPinnedForm?.id ?? null,
                 status: 'pending',
                 answers: defaultAnswers,
                 submitted_at: null,
@@ -463,7 +556,7 @@ export class StudentController {
                     tx,
                     created,
                     (schema as StudentFeedbackFormSchema),
-                    activeForm?.id ?? null,
+                    activeOrPinnedForm?.id ?? null,
                     createdAt,
                     defaultAnswers,
                 );
