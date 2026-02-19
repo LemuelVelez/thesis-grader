@@ -104,6 +104,19 @@ function looksLikeUniqueActiveViolation(message: string): boolean {
     return m.includes('active') && (m.includes('student') || m.includes('feedback') || m.includes('forms') || m.includes('form'));
 }
 
+function computeStudentEvalStatusCounts(items: Array<{ status?: unknown }>) {
+    const out = { total: items.length, pending: 0, submitted: 0, locked: 0 };
+
+    for (const it of items) {
+        const s = String((it as any).status ?? '').trim().toLowerCase();
+        if (s === 'submitted') out.submitted += 1;
+        else if (s === 'locked') out.locked += 1;
+        else out.pending += 1;
+    }
+
+    return out;
+}
+
 async function dispatchAdminRankingsRequest(
     req: NextRequest,
     tail: string[],
@@ -352,6 +365,7 @@ async function dispatchAdminStudentFeedbackRequest(
                 form: 'GET|PATCH /api/admin/student-feedback/forms/:formId',
                 activate: 'POST|PATCH /api/admin/student-feedback/forms/:formId/activate',
                 listBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId',
+                summaryBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId/summary',
                 assignForSchedule: 'POST /api/admin/student-feedback/schedule/:scheduleId/assign',
             },
         });
@@ -611,10 +625,46 @@ async function dispatchAdminStudentFeedbackRequest(
         // GET /api/admin/student-feedback/schedule/:scheduleId
         if (tail.length === 2) {
             if (method !== 'GET') return json405(['GET', 'OPTIONS']);
-            const items = await controller.getStudentFeedbackFormsByScheduleDetailed(
-                scheduleId as UUID,
-            );
-            return json200({ scheduleId, items, count: items.length });
+
+            try {
+                const items = await controller.getStudentFeedbackFormsByScheduleDetailed(
+                    scheduleId as UUID,
+                );
+                const statusCounts = computeStudentEvalStatusCounts(items);
+
+                return json200({
+                    scheduleId,
+                    items,
+                    count: items.length,
+                    statusCounts,
+                });
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to load student feedback for schedule.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
+        }
+
+        // GET /api/admin/student-feedback/schedule/:scheduleId/summary
+        if (tail.length === 3 && seg2 === 'summary') {
+            if (method !== 'GET') return json405(['GET', 'OPTIONS']);
+
+            try {
+                const result = await controller.getStudentFeedbackSummaryBySchedule(scheduleId as UUID);
+                return json200(result);
+            } catch (error) {
+                return NextResponse.json(
+                    {
+                        error: 'Failed to load student feedback summary.',
+                        message: toErrorMessage(error),
+                    },
+                    { status: 500 },
+                );
+            }
         }
 
         // POST /api/admin/student-feedback/schedule/:scheduleId/assign

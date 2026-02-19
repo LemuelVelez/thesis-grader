@@ -8,6 +8,8 @@ import type {
     EvaluationScoreRow,
     JsonObject,
     RubricCriteriaRow,
+    StudentEvalStatus,
+    StudentEvaluationScoreRow,
     StudentFeedbackFormInsert,
     StudentFeedbackFormPatch,
     StudentFeedbackFormRow,
@@ -160,12 +162,20 @@ export interface PanelistEvaluationPreview {
     scores: PanelistScorePreviewItem[];
 }
 
+export interface StudentFeedbackStatusCounts {
+    total: number;
+    pending: number;
+    submitted: number;
+    locked: number;
+}
+
 export interface AdminEvaluationPreview {
     schedule: AdminDefenseScheduleView;
     student: {
         items: AdminStudentFeedbackRow[];
         count: number;
         includeAnswers: boolean;
+        statusCounts: StudentFeedbackStatusCounts;
     };
     panelist: {
         items: PanelistEvaluationPreview[];
@@ -244,10 +254,24 @@ export class AdminController {
         return this.studentFeedback.assignForSchedule(scheduleId, input);
     }
 
+    /**
+     * Admin detailed list for a schedule (used by admin pages):
+     * - Always returns accurate status (pending/submitted/locked)
+     * - Hydrates persisted score summary from student_evaluation_scores when available
+     * - Prevents “0 score” from being shown for pending items by normalizing score fields
+     */
     async getStudentFeedbackFormsByScheduleDetailed(
         scheduleId: UUID,
     ): Promise<AdminStudentFeedbackRow[]> {
-        return this.studentFeedback.listForScheduleDetailed(scheduleId);
+        const rows = await this.studentFeedback.listForScheduleDetailed(scheduleId);
+        return this.hydrateStudentFeedbackRowsWithScores(rows);
+    }
+
+    async getStudentFeedbackSummaryBySchedule(
+        scheduleId: UUID,
+    ): Promise<{ scheduleId: UUID; statusCounts: StudentFeedbackStatusCounts }> {
+        const items = await this.getStudentFeedbackFormsByScheduleDetailed(scheduleId);
+        return { scheduleId, statusCounts: this.computeStudentEvalStatusCounts(items) };
     }
 
     /* ---------------------------- EVALUATION PREVIEW --------------------------- */
@@ -280,12 +304,17 @@ export class AdminController {
             }),
         ]);
 
+        const hydratedStudentRaw = await this.hydrateStudentFeedbackRowsWithScores(studentItemsRaw);
+
         const studentItems: AdminStudentFeedbackRow[] = includeStudentAnswers
-            ? studentItemsRaw
-            : studentItemsRaw.map((row) => ({
+            ? hydratedStudentRaw
+            : hydratedStudentRaw.map((row) => ({
                 ...row,
+                // keep shape stable for UI while omitting sensitive payload
                 answers: {} as any,
             }));
+
+        const statusCounts = this.computeStudentEvalStatusCounts(hydratedStudentRaw);
 
         return {
             schedule: scheduleRow,
@@ -293,6 +322,7 @@ export class AdminController {
                 items: studentItems,
                 count: studentItems.length,
                 includeAnswers: includeStudentAnswers,
+                statusCounts,
             },
             panelist: {
                 items: panelistItems,
@@ -804,6 +834,139 @@ export class AdminController {
     }
 
     /* ------------------------------- INTERNALS ------------------------------- */
+
+    private normalizeStudentEvalStatus(raw: unknown): StudentEvalStatus {
+        const s = String(raw ?? '').trim().toLowerCase();
+        if (s === 'submitted') return 'submitted';
+        if (s === 'locked') return 'locked';
+        return 'pending';
+    }
+
+    private computeStudentEvalStatusCounts(
+        items: Array<{ status?: unknown }>,
+    ): StudentFeedbackStatusCounts {
+        const counts: StudentFeedbackStatusCounts = {
+            total: items.length,
+            pending: 0,
+            submitted: 0,
+            locked: 0,
+        };
+
+        for (const it of items) {
+            const status = this.normalizeStudentEvalStatus((it as any).status);
+            if (status === 'submitted') counts.submitted += 1;
+            else if (status === 'locked') counts.locked += 1;
+            else counts.pending += 1;
+        }
+
+        return counts;
+    }
+
+    private getStudentEvaluationIdFromAdminRow(row: AdminStudentFeedbackRow): UUID | null {
+        const r = row as any;
+        const id = (r.student_evaluation_id ?? r.studentEvaluationId ?? r.id) as unknown;
+        if (typeof id === 'string' && id.trim().length > 0) return id as UUID;
+        return null;
+    }
+
+    /**
+     * Fixes the common admin symptom:
+     * - Assigned student feedback shows score as 0 (should be Pending)
+     * - Submitted feedback still shows 0 because joined summary wasn’t hydrated
+     *
+     * We hydrate persisted summary from student_evaluation_scores (by student_evaluation_id)
+     * and normalize score fields for pending rows.
+     */
+    private async hydrateStudentFeedbackRowsWithScores(
+        rows: AdminStudentFeedbackRow[],
+    ): Promise<AdminStudentFeedbackRow[]> {
+        if (!rows || rows.length === 0) return [];
+
+        const normalized = rows.map((r) => ({
+            ...r,
+            status: this.normalizeStudentEvalStatus((r as any).status),
+        })) as AdminStudentFeedbackRow[];
+
+        const idsNeedingScores = Array.from(
+            new Set(
+                normalized
+                    .filter((r) => {
+                        const st = this.normalizeStudentEvalStatus((r as any).status);
+                        return st === 'submitted' || st === 'locked';
+                    })
+                    .map((r) => this.getStudentEvaluationIdFromAdminRow(r))
+                    .filter(Boolean) as UUID[],
+            ),
+        );
+
+        const scoreByStudentEvalId = new Map<UUID, StudentEvaluationScoreRow>();
+
+        if (idsNeedingScores.length > 0) {
+            const svcAny = this.services.student_evaluation_scores as any;
+
+            let scoreRows: StudentEvaluationScoreRow[] = [];
+
+            if (typeof svcAny.listByStudentEvaluationIds === 'function') {
+                // Optional bulk helper (if implemented)
+                scoreRows = await svcAny.listByStudentEvaluationIds(idsNeedingScores);
+            } else {
+                // Fallback: N calls (still safe for typical per-schedule sizes)
+                const fetched = await Promise.all(
+                    idsNeedingScores.map(async (studentEvalId) =>
+                        this.services.student_evaluation_scores.findByStudentEvaluationId(studentEvalId),
+                    ),
+                );
+                scoreRows = fetched.filter(Boolean) as StudentEvaluationScoreRow[];
+            }
+
+            for (const s of scoreRows) {
+                scoreByStudentEvalId.set(s.student_evaluation_id, s);
+            }
+        }
+
+        return normalized.map((row) => {
+            const r: any = { ...row };
+            const status = this.normalizeStudentEvalStatus(r.status);
+            r.status = status;
+
+            const studentEvalId = this.getStudentEvaluationIdFromAdminRow(row);
+            const score = studentEvalId ? (scoreByStudentEvalId.get(studentEvalId) ?? null) : null;
+
+            // Normalize common UI-consumed score fields:
+            // - pending => null (NOT 0)
+            // - submitted/locked with persisted summary => overwrite with summary values
+            // - submitted/locked without summary => null (NOT 0) so UI can show “Submitted” state instead of “0”
+            const scoreKeys = ['total_score', 'max_score', 'percentage', 'breakdown', 'computed_at'];
+
+            if (status === 'pending') {
+                for (const k of scoreKeys) {
+                    if (k in r) {
+                        r[k] = null;
+                    }
+                }
+                r.score_ready = false;
+                return r as AdminStudentFeedbackRow;
+            }
+
+            if (score) {
+                r.total_score = score.total_score as any;
+                r.max_score = score.max_score as any;
+                r.percentage = score.percentage as any;
+                r.breakdown = score.breakdown as any;
+                r.computed_at = score.computed_at as any;
+                r.score_ready = true;
+                return r as AdminStudentFeedbackRow;
+            }
+
+            for (const k of scoreKeys) {
+                if (k in r) {
+                    r[k] = null;
+                }
+            }
+            r.score_ready = false;
+            return r as AdminStudentFeedbackRow;
+        });
+    }
 
     private async resolveCreatedBy(
         schedule: DefenseScheduleRow,

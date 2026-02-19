@@ -356,6 +356,12 @@ export interface StudentEvaluationScoresService
     findByStudentEvaluationId(studentEvaluationId: UUID): Promise<StudentEvaluationScoreRow | null>;
     listBySchedule(scheduleId: UUID): Promise<StudentEvaluationScoreRow[]>;
     listByStudent(studentId: UUID): Promise<StudentEvaluationScoreRow[]>;
+
+    /**
+     * Optional bulk helper to reduce N+1 lookups when hydrating many rows.
+     * Safe for implementations to omit.
+     */
+    listByStudentEvaluationIds?: (studentEvaluationIds: UUID[]) => Promise<StudentEvaluationScoreRow[]>;
 }
 
 export interface EvaluationExtrasService
