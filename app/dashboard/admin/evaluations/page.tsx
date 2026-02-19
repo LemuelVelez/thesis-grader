@@ -440,11 +440,11 @@ function MultiSelectUsers(props: {
                         className="w-full justify-between"
                         disabled={disabled}
                     >
-                        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-auto">
                             {selected.length === 0 ? (
                                 <span className="truncate text-muted-foreground">{placeholder}</span>
                             ) : (
-                                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-auto">
                                     <div className="flex flex-wrap gap-1">
                                         {selected.slice(0, 2).map((u) => (
                                             <Badge key={u.id} variant="secondary" className="font-normal">
@@ -845,7 +845,7 @@ export default function AdminEvaluationsPage() {
                                 </DialogTrigger>
 
                                 {/* Dialog height requirement: h-[85svh] + scroll */}
-                                <DialogContent className="max-w-2xl h-[85svh] overflow-hidden p-0">
+                                <DialogContent className="max-w-2xl h-[85svh] overflow-auto p-0">
                                     <div className="flex h-full flex-col">
                                         <DialogHeader className="px-6 pt-6">
                                             <DialogTitle>Preview Options</DialogTitle>
@@ -854,7 +854,7 @@ export default function AdminEvaluationsPage() {
                                             </DialogDescription>
                                         </DialogHeader>
 
-                                        <div className="flex-1 overflow-hidden px-6 pb-6">
+                                        <div className="flex-1 overflow-auto px-6 pb-6">
                                             <ScrollArea className="h-full pr-4">
                                                 <div className="grid gap-4">
                                                     <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
@@ -1082,7 +1082,7 @@ function ScheduleCard(props: {
 
     return (
         <div ref={cardRef}>
-            <Card className="overflow-hidden">
+            <Card className="overflow-auto">
                 <CardHeader className="space-y-2">
                     <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0 space-y-1">
@@ -1345,7 +1345,7 @@ function PreviewDialog(props: {
             </DialogTrigger>
 
             {/* Dialog height requirement: h-[85svh] + scroll */}
-            <DialogContent className="max-w-5xl h-[85svh] overflow-hidden p-0">
+            <DialogContent className="max-w-5xl h-[85svh] overflow-auto p-0">
                 <div className="flex h-full flex-col">
                     <DialogHeader className="px-6 pt-6">
                         <DialogTitle className="flex items-center justify-between gap-3">
@@ -1369,7 +1369,7 @@ function PreviewDialog(props: {
                         </DialogDescription>
                     </DialogHeader>
 
-                    <div className="flex-1 overflow-hidden px-6 pb-6">
+                    <div className="flex-1 overflow-auto px-6 pb-6">
                         <ScrollArea className="h-full pr-4">
                             {!preview ? (
                                 <div className="space-y-3">
@@ -1451,7 +1451,7 @@ function PreviewDialog(props: {
                                                     const pct = computePercent(p.overall?.overall_percentage)
                                                     const status = String(p.evaluation.status ?? "pending")
                                                     return (
-                                                        <Card key={p.evaluation.id} className="overflow-hidden">
+                                                        <Card key={p.evaluation.id} className="overflow-auto">
                                                             <CardHeader className="space-y-2">
                                                                 <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                                                                     <div className="min-w-0">
@@ -1571,7 +1571,7 @@ function PreviewDialog(props: {
                                                         const labelMap = schema ? buildQuestionLabelMap(schema) : null
 
                                                         return (
-                                                            <Card key={r.student_evaluation_id} className="overflow-hidden">
+                                                            <Card key={r.student_evaluation_id} className="overflow-auto">
                                                                 <CardHeader className="space-y-2">
                                                                     <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                                                                         <div className="min-w-0">
