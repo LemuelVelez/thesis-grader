@@ -1,0 +1,42 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: thesisgrader_app
+    environment:
+      # Coolify typically injects env vars from its UI.
+      # For local docker-compose usage, you can also use env_file: .env below.
+      NODE_ENV: production
+      PORT: 3000
+
+      # Recommended toggles:
+      RUN_MIGRATIONS: "true"
+      SEED_SUPERADMIN_ON_START: "false"
+      # Example DATABASE_URL if you use the db service below:
+      # DATABASE_URL: "postgresql://postgres:postgres@db:5432/thesisgrader"
+      # DATABASE_SSL: "false"
+      # Uncomment for local usage:
+      # env_file:
+      #   - .env
+    depends_on:
+      - db
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: thesisgrader_db
+    environment:
+      POSTGRES_DB: thesisgrader
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - thesisgrader_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  thesisgrader_pgdata:
