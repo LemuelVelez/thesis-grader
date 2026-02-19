@@ -335,26 +335,34 @@ async function apiJsonFirst<T>(urls: string[], init?: RequestInit): Promise<T> {
 
 function renderJsonValue(value: JsonValue): React.ReactNode {
     if (value === null) return <span className="text-muted-foreground">—</span>
+
     if (typeof value === "string") {
         const t = value.trim()
-        return t ? <span className="wrap-break-word">{t}</span> : <span className="text-muted-foreground">—</span>
+        return t ? <span className="whitespace-pre-wrap wrap-break-word">{t}</span> : <span className="text-muted-foreground">—</span>
     }
+
     if (typeof value === "number") return <span>{Number.isFinite(value) ? value : "—"}</span>
     if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>
+
     if (Array.isArray(value)) {
         if (value.length === 0) return <span className="text-muted-foreground">—</span>
         return (
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-col gap-1">
                 {value.map((v, idx) => (
-                    <Badge key={idx} variant="secondary" className="font-normal">
+                    <Badge
+                        key={idx}
+                        variant="secondary"
+                        className="w-fit max-w-full font-normal whitespace-normal wrap-break-word"
+                    >
                         {typeof v === "string" ? v : JSON.stringify(v)}
                     </Badge>
                 ))}
             </div>
         )
     }
+
     return (
-        <pre className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-xs">
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted p-3 text-xs">
             {JSON.stringify(value, null, 2)}
         </pre>
     )
@@ -1498,7 +1506,7 @@ function PreviewDialog(props: {
                                                                                     className="flex items-center justify-between gap-3 rounded-md border bg-background p-3"
                                                                                 >
                                                                                     <div className="min-w-0">
-                                                                                        <div className="truncate text-sm font-medium">
+                                                                                        <div className="text-sm font-medium whitespace-normal wrap-break-word leading-snug">
                                                                                             {t.target_type === "group" ? "Group" : "Student"}:{" "}
                                                                                             {safeName(t.target_name, shortId(t.target_id))}
                                                                                         </div>
@@ -1666,7 +1674,7 @@ function ScoreDetails(props: { scores: PanelistScorePreviewItem[] }) {
         <div className="space-y-3">
             {grouped.map((g) => (
                 <div key={g.targetLabel} className="rounded-lg border bg-muted/20 p-3">
-                    <div className="text-sm font-semibold">{g.targetLabel}</div>
+                    <div className="text-sm font-semibold whitespace-normal wrap-break-word">{g.targetLabel}</div>
                     <div className="mt-2 rounded-md border bg-background">
                         <div className="grid grid-cols-12 gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
                             <div className="col-span-6">Criterion</div>
@@ -1678,13 +1686,17 @@ function ScoreDetails(props: { scores: PanelistScorePreviewItem[] }) {
                         <div className="max-h-80 overflow-auto">
                             {g.items.map((s) => (
                                 <div key={s.id} className="grid grid-cols-12 gap-2 border-b px-3 py-2 text-sm last:border-b-0">
-                                    <div className="col-span-6 min-w-0">
-                                        <div className="truncate font-medium">{safeName(s.criterion, `Criterion ${shortId(s.criterion_id)}`)}</div>
+                                    <div className="col-span-6 min-w-0 space-y-1">
+                                        <div className="font-medium whitespace-normal wrap-break-word leading-snug">
+                                            {safeName(s.criterion, `Criterion ${shortId(s.criterion_id)}`)}
+                                        </div>
                                         {s.criterion_description ? (
-                                            <div className="mt-1 text-xs text-muted-foreground">{s.criterion_description}</div>
+                                            <div className="text-xs text-muted-foreground whitespace-pre-wrap wrap-break-word">
+                                                {s.criterion_description}
+                                            </div>
                                         ) : null}
                                         {s.comment ? (
-                                            <div className="mt-2 rounded-md border bg-muted/20 p-2 text-xs">
+                                            <div className="rounded-md border bg-muted/20 p-2 text-xs max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word">
                                                 <span className="font-medium">Comment:</span> {s.comment}
                                             </div>
                                         ) : null}
@@ -1722,16 +1734,31 @@ function AnswerList(props: { answers: JsonObject; labelMap: Map<string, { label:
 
                 return (
                     <div key={key} className="rounded-lg border bg-background p-3">
-                        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold">{label}</div>
-                                {section ? <div className="truncate text-xs text-muted-foreground">{section}</div> : null}
+                        {/* Vertical header to avoid truncation/overflow */}
+                        <div className="space-y-2">
+                            <div className="space-y-1">
+                                <div className="text-sm font-semibold leading-snug whitespace-normal wrap-break-word">
+                                    {label}
+                                </div>
+                                {section ? (
+                                    <div className="text-xs text-muted-foreground leading-snug whitespace-normal wrap-break-word">
+                                        {section}
+                                    </div>
+                                ) : null}
                             </div>
-                            <Badge variant="outline" className="font-normal">
-                                {key}
-                            </Badge>
+
+                            {/* Key shown but scrollable if long */}
+                            <div className="max-w-full overflow-auto">
+                                <Badge variant="outline" className="font-normal whitespace-nowrap">
+                                    {key}
+                                </Badge>
+                            </div>
                         </div>
-                        <div className="mt-2 text-sm">{renderJsonValue(value)}</div>
+
+                        {/* Answer always fully accessible (scrolls if very long) */}
+                        <div className="mt-3 max-h-96 overflow-auto rounded-md border bg-muted/20 p-3 text-sm">
+                            {renderJsonValue(value)}
+                        </div>
                     </div>
                 )
             })}
