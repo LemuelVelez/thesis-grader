@@ -38,6 +38,12 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
+import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 type PreviewResponse = {
     preview?: unknown
@@ -279,9 +285,24 @@ function pickPanelistPreviewItem(panelistItems: unknown[], selectedEvaluationId:
     return null
 }
 
-function pickStudentPreviewItem(studentItems: unknown[], selectedEvaluationId: string | null, selectedStudentId: string | null): Record<string, unknown> | null {
+/**
+ * IMPORTANT FIX:
+ * Some admin list variants may store a different "id" for the selected row (e.g. assignment id)
+ * while student preview items use student_evaluation_id.
+ *
+ * We now:
+ * 1) Prefer exact id match (student_evaluation_id / id),
+ * 2) Fall back to matching by student user id (assignee) when id mismatches.
+ */
+function pickStudentPreviewItem(
+    studentItems: unknown[],
+    selectedEvaluationId: string | null,
+    selectedStudentId: string | null,
+): Record<string, unknown> | null {
     const evalId = selectedEvaluationId ? selectedEvaluationId.toLowerCase() : null
     const studentId = selectedStudentId ? selectedStudentId.toLowerCase() : null
+
+    let fallbackByStudent: Record<string, unknown> | null = null
 
     for (const raw of studentItems) {
         const row = isRecord(raw) ? raw : null
@@ -301,10 +322,293 @@ function pickStudentPreviewItem(studentItems: unknown[], selectedEvaluationId: s
             null
 
         if (evalId && candidateEvalId && candidateEvalId === evalId) return row
-        if (!evalId && studentId && candidateStudentId && candidateStudentId === studentId) return row
+
+        if (studentId && candidateStudentId && candidateStudentId === studentId) {
+            // keep best-effort fallback for the selected student
+            fallbackByStudent = row
+        }
     }
 
-    return null
+    return fallbackByStudent
+}
+
+/* ----------------------- STUDENT FEEDBACK SYNC (ADMIN UX) ----------------------- */
+
+function isUuidLike(value: string): boolean {
+    const v = value.trim()
+    // permissive UUID check (v1-v5)
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+}
+
+type StudentFeedbackScheduleResponse = {
+    scheduleId?: string
+    count?: number
+    statusCounts?: {
+        total?: number
+        pending?: number
+        submitted?: number
+        locked?: number
+    }
+    message?: string
+    error?: string
+}
+
+type StudentFeedbackAssignResponse = {
+    scheduleId?: string
+    groupId?: string
+    counts?: { created?: number; updated?: number; existing?: number }
+    message?: string
+    error?: string
+}
+
+function safeTryRefreshCtx(ctx: AdminEvaluationsPageState) {
+    const anyCtx = ctx as any
+
+    const candidates: Array<{ fn: unknown; name: string }> = [
+        { name: "refresh", fn: anyCtx.refresh },
+        { name: "refetch", fn: anyCtx.refetch },
+        { name: "reload", fn: anyCtx.reload },
+        { name: "revalidate", fn: anyCtx.revalidate },
+        { name: "invalidate", fn: anyCtx.invalidate },
+        { name: "load", fn: anyCtx.load },
+        { name: "fetchAll", fn: anyCtx.fetchAll },
+        { name: "refreshAll", fn: anyCtx.refreshAll },
+        { name: "mutate", fn: anyCtx.mutate },
+        { name: "refreshData", fn: anyCtx.refreshData },
+    ]
+
+    for (const c of candidates) {
+        if (typeof c.fn !== "function") continue
+        try {
+            c.fn()
+            return
+        } catch {
+            // try next
+        }
+    }
+}
+
+function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
+    const anyCtx = ctx as any
+
+    const guessedScheduleId: string | null =
+        anyCtx?.selectedSchedule?.id ??
+        anyCtx?.selectedScheduleId ??
+        anyCtx?.selectedScheduleForAssignment?.id ??
+        anyCtx?.scheduleId ??
+        null
+
+    const [scheduleId, setScheduleId] = React.useState<string>(guessedScheduleId ?? "")
+    const [overwritePending, setOverwritePending] = React.useState(false)
+
+    const [checking, setChecking] = React.useState(false)
+    const [assigning, setAssigning] = React.useState(false)
+    const [error, setError] = React.useState<string | null>(null)
+    const [info, setInfo] = React.useState<StudentFeedbackScheduleResponse | null>(null)
+
+    React.useEffect(() => {
+        if (!scheduleId && guessedScheduleId) setScheduleId(guessedScheduleId)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [guessedScheduleId])
+
+    const canUseSchedule = scheduleId.trim().length > 0 && isUuidLike(scheduleId)
+
+    const doCheck = React.useCallback(async () => {
+        const id = scheduleId.trim()
+        if (!isUuidLike(id)) {
+            setError("Please enter a valid Schedule ID (UUID).")
+            setInfo(null)
+            toast.error("Invalid Schedule ID", { description: "Schedule ID must be a valid UUID." })
+            return
+        }
+
+        setChecking(true)
+        setError(null)
+
+        try {
+            const res = await fetch(`/api/admin/student-feedback/schedule/${id}`, { cache: "no-store" })
+            let payload: unknown = {}
+            try {
+                payload = await res.json()
+            } catch {
+                payload = {}
+            }
+
+            if (!res.ok) {
+                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
+                throw new Error(msg)
+            }
+
+            setInfo(payload as StudentFeedbackScheduleResponse)
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to check student feedback assignments."
+            setError(message)
+            setInfo(null)
+            toast.error("Check failed", { description: message })
+        } finally {
+            setChecking(false)
+        }
+    }, [scheduleId])
+
+    const doAssign = React.useCallback(async () => {
+        const id = scheduleId.trim()
+        if (!isUuidLike(id)) {
+            toast.error("Invalid Schedule ID", { description: "Schedule ID must be a valid UUID." })
+            return
+        }
+
+        setAssigning(true)
+        setError(null)
+
+        try {
+            const res = await fetch(`/api/admin/student-feedback/schedule/${id}/assign`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    overwritePending,
+                }),
+            })
+
+            let payload: unknown = {}
+            try {
+                payload = await res.json()
+            } catch {
+                payload = {}
+            }
+
+            if (!res.ok) {
+                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
+                throw new Error(msg)
+            }
+
+            const p = payload as StudentFeedbackAssignResponse
+            const created = p.counts?.created ?? 0
+            const updated = p.counts?.updated ?? 0
+            const existing = p.counts?.existing ?? 0
+
+            toast.success("Student feedback assigned", {
+                description: `Created: ${created} • Updated: ${updated} • Existing: ${existing}`,
+            })
+
+            // Refresh admin page datasets (best-effort) and re-check counts for immediate UI accuracy.
+            safeTryRefreshCtx(ctx)
+            await doCheck()
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to assign student feedback."
+            setError(message)
+            toast.error("Assign failed", { description: message })
+        } finally {
+            setAssigning(false)
+        }
+    }, [ctx, doCheck, overwritePending, scheduleId])
+
+    const count = info?.count ?? info?.statusCounts?.total ?? 0
+    const pending = info?.statusCounts?.pending ?? 0
+    const submitted = info?.statusCounts?.submitted ?? 0
+    const locked = info?.statusCounts?.locked ?? 0
+
+    const showMissing = canUseSchedule && !checking && !error && (count ?? 0) === 0
+
+    return (
+        <Card>
+            <CardHeader className="space-y-1">
+                <CardTitle className="text-base">Student Feedback Sync</CardTitle>
+                <CardDescription>
+                    If bulk assignment says “completed” but the group shows “No student feedback evaluations”, use this to verify and sync
+                    assignments for the selected schedule.
+                </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-3">
+                    <div className="md:col-span-2 space-y-2">
+                        <Label htmlFor="scheduleId">Schedule ID</Label>
+                        <Input
+                            id="scheduleId"
+                            value={scheduleId}
+                            onChange={(e) => setScheduleId(e.target.value)}
+                            placeholder="Paste defense schedule UUID..."
+                        />
+                        {!scheduleId.trim() ? (
+                            <p className="text-xs text-muted-foreground">
+                                Tip: open any evaluation preview, copy the <span className="font-medium text-foreground">Schedule ID</span>, then paste here.
+                            </p>
+                        ) : null}
+                    </div>
+
+                    <div className="space-y-2">
+                        <Label className="block">Options</Label>
+                        <div className="flex items-center justify-between rounded-md border p-3">
+                            <div className="space-y-0.5">
+                                <p className="text-sm font-medium">Overwrite pending</p>
+                                <p className="text-xs text-muted-foreground">Re-seed pending feedback only</p>
+                            </div>
+                            <Switch
+                                checked={overwritePending}
+                                onCheckedChange={(v) => setOverwritePending(Boolean(v))}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {error ? (
+                    <Alert variant="destructive">
+                        <AlertTitle>Student feedback sync failed</AlertTitle>
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {canUseSchedule && info && !checking ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="secondary">Total: {count}</Badge>
+                        <Badge variant="secondary">Pending: {pending}</Badge>
+                        <Badge variant="secondary">Submitted: {submitted}</Badge>
+                        <Badge variant="secondary">Locked: {locked}</Badge>
+                    </div>
+                ) : null}
+
+                {showMissing ? (
+                    <Alert>
+                        <AlertTitle>No student feedback assignments found</AlertTitle>
+                        <AlertDescription>
+                            Students <span className="font-medium text-foreground">cannot submit feedback</span> unless a feedback form is assigned to them for this schedule.
+                            Click <span className="font-medium text-foreground">Assign now</span> to create the missing assignments for the group.
+                        </AlertDescription>
+                    </Alert>
+                ) : null}
+
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        variant="outline"
+                        onClick={() => void doCheck()}
+                        disabled={!canUseSchedule || checking || assigning}
+                    >
+                        {checking ? "Checking..." : "Check assignments"}
+                    </Button>
+
+                    <Button
+                        onClick={() => void doAssign()}
+                        disabled={!canUseSchedule || assigning || checking}
+                    >
+                        {assigning ? "Assigning..." : "Assign now"}
+                    </Button>
+
+                    <Button
+                        variant="ghost"
+                        onClick={() => {
+                            safeTryRefreshCtx(ctx)
+                            toast.message("Refreshing page data", {
+                                description: "If student feedback still shows missing, click “Check assignments” to verify the backend state.",
+                            })
+                        }}
+                        disabled={checking || assigning}
+                    >
+                        Refresh page data
+                    </Button>
+                </div>
+            </CardContent>
+        </Card>
+    )
 }
 
 function AdminEvaluationPreviewDialog({ ctx }: { ctx: AdminEvaluationsPageState }) {
@@ -1112,6 +1416,8 @@ export default function AdminEvaluationsPage() {
             description="Assign panelist rubric scoring and student feedback in distinct flows, then manage lifecycle and status in one user-friendly workspace."
         >
             <div className="space-y-4">
+                <StudentFeedbackSyncCard ctx={ctx} />
+
                 <AdminEvaluationsToolbar ctx={ctx} />
 
                 <AdminEvaluationsForm ctx={ctx} />
