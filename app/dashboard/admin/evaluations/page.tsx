@@ -545,6 +545,9 @@ export default function AdminEvaluationsPage() {
     const [schedules, setSchedules] = React.useState<AdminDefenseScheduleView[]>([])
     const [query, setQuery] = React.useState("")
 
+    // Controlled accordion (so we only mount schedules for opened groups)
+    const [openGroupIds, setOpenGroupIds] = React.useState<string[]>([])
+
     // Lazy caches
     const [previewByScheduleId, setPreviewByScheduleId] = React.useState<Map<UUID, AdminEvaluationPreview>>(new Map())
     const [loadingPreviewIds, setLoadingPreviewIds] = React.useState<Set<UUID>>(new Set())
@@ -934,63 +937,73 @@ export default function AdminEvaluationsPage() {
                     }
                 />
             ) : (
-                <Accordion type="multiple" className="w-full space-y-3">
-                    {grouped.map((g) => (
-                        <AccordionItem key={g.group_id} value={g.group_id} className="rounded-xl border bg-background px-2">
-                            <AccordionTrigger
-                                className="px-4"
-                                onClick={() => {
-                                    // Prime students list (best effort)
-                                    void ensureGroupStudents(g.group_id)
-                                }}
-                            >
-                                <div className="flex w-full items-center justify-between gap-3 pr-3">
-                                    <div className="min-w-0">
-                                        <div className="truncate text-left text-sm font-semibold">{g.group_title}</div>
-                                        <div className="truncate text-left text-xs text-muted-foreground">
-                                            {g.schedules.length} schedule(s)
+                <Accordion
+                    type="multiple"
+                    className="w-full space-y-3"
+                    value={openGroupIds}
+                    onValueChange={(v) => setOpenGroupIds(v)}
+                >
+                    {grouped.map((g) => {
+                        const isOpen = openGroupIds.includes(g.group_id)
+                        return (
+                            <AccordionItem key={g.group_id} value={g.group_id} className="rounded-xl border bg-background px-2">
+                                <AccordionTrigger
+                                    className="px-4"
+                                    onClick={() => {
+                                        // Prime students list (best effort)
+                                        void ensureGroupStudents(g.group_id)
+                                    }}
+                                >
+                                    <div className="flex w-full items-center justify-between gap-3 pr-3">
+                                        <div className="min-w-0">
+                                            <div className="truncate text-left text-sm font-semibold">{g.group_title}</div>
+                                            <div className="truncate text-left text-xs text-muted-foreground">
+                                                {g.schedules.length} schedule(s)
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <Badge variant="outline" className="font-normal">
+                                                {g.schedules.length} schedules
+                                            </Badge>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <Badge variant="outline" className="font-normal">
-                                            {g.schedules.length} schedules
-                                        </Badge>
-                                    </div>
-                                </div>
-                            </AccordionTrigger>
+                                </AccordionTrigger>
 
-                            <AccordionContent className="px-4 pb-4">
-                                <div className="grid gap-3">
-                                    {g.schedules.map((s) => (
-                                        <ScheduleCard
-                                            key={s.id}
-                                            schedule={s}
-                                            preview={previewByScheduleId.get(s.id) ?? null}
-                                            previewLoading={loadingPreviewIds.has(s.id)}
-                                            onEnsurePreview={() => void ensureSchedulePreview(s.id)}
-                                            onRefreshPreview={() => void refreshSchedulePreview(s.id)}
-                                            onEnsurePanelists={() => void ensureSchedulePanelists(s.id)}
-                                            onEnsureStudents={() => void ensureGroupStudents(s.group_id)}
-                                            getPanelists={() => panelistsByScheduleId.get(s.id) ?? []}
-                                            getStudents={() => studentsByGroupId.get(s.group_id) ?? []}
-                                            onPreviewCached={(p) => {
-                                                setPreviewByScheduleId((prev) => {
-                                                    const next = new Map(prev)
-                                                    next.set(s.id, p)
-                                                    return next
-                                                })
-                                            }}
-                                            previewOptions={{
-                                                includeStudentAnswers,
-                                                includePanelistScores,
-                                                includePanelistComments,
-                                            }}
-                                        />
-                                    ))}
-                                </div>
-                            </AccordionContent>
-                        </AccordionItem>
-                    ))}
+                                <AccordionContent className="px-4 pb-4">
+                                    {isOpen ? (
+                                        <div className="grid gap-3">
+                                            {g.schedules.map((s) => (
+                                                <ScheduleCard
+                                                    key={s.id}
+                                                    schedule={s}
+                                                    preview={previewByScheduleId.get(s.id) ?? null}
+                                                    previewLoading={loadingPreviewIds.has(s.id)}
+                                                    onEnsurePreview={() => void ensureSchedulePreview(s.id)}
+                                                    onRefreshPreview={() => void refreshSchedulePreview(s.id)}
+                                                    onEnsurePanelists={() => void ensureSchedulePanelists(s.id)}
+                                                    onEnsureStudents={() => void ensureGroupStudents(s.group_id)}
+                                                    getPanelists={() => panelistsByScheduleId.get(s.id) ?? []}
+                                                    getStudents={() => studentsByGroupId.get(s.group_id) ?? []}
+                                                    onPreviewCached={(p) => {
+                                                        setPreviewByScheduleId((prev) => {
+                                                            const next = new Map(prev)
+                                                            next.set(s.id, p)
+                                                            return next
+                                                        })
+                                                    }}
+                                                    previewOptions={{
+                                                        includeStudentAnswers,
+                                                        includePanelistScores,
+                                                        includePanelistComments,
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </AccordionContent>
+                            </AccordionItem>
+                        )
+                    })}
                 </Accordion>
             )}
         </DashboardLayout>
@@ -1024,163 +1037,194 @@ function ScheduleCard(props: {
     const studentSubmittedPct = studentCounts && studentCounts.total > 0 ? (studentCounts.submitted / studentCounts.total) * 100 : 0
     const studentLockedPct = studentCounts && studentCounts.total > 0 ? (studentCounts.locked / studentCounts.total) * 100 : 0
 
+    // Auto-load preview (and best-effort related lists) when the card becomes visible
+    const cardRef = React.useRef<HTMLDivElement | null>(null)
+    const autoLoadedRef = React.useRef(false)
+
+    React.useEffect(() => {
+        if (preview || previewLoading) return
+        if (autoLoadedRef.current) return
+
+        const trigger = () => {
+            if (autoLoadedRef.current) return
+            autoLoadedRef.current = true
+            props.onEnsurePreview()
+            props.onEnsurePanelists()
+            props.onEnsureStudents()
+        }
+
+        // Fallback (older browsers)
+        if (typeof window === "undefined" || !(window as any).IntersectionObserver) {
+            trigger()
+            return
+        }
+
+        const el = cardRef.current
+        if (!el) return
+
+        const obs = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        trigger()
+                        obs.disconnect()
+                        break
+                    }
+                }
+            },
+            { root: null, rootMargin: "240px 0px", threshold: 0.01 }
+        )
+
+        obs.observe(el)
+        return () => obs.disconnect()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [preview, previewLoading, schedule.id])
+
     return (
-        <Card className="overflow-hidden">
-            <CardHeader className="space-y-2">
-                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0 space-y-1">
-                        <CardTitle className="truncate text-base">{title}</CardTitle>
-                        <CardDescription className="flex flex-wrap items-center gap-2">
-                            <span className="inline-flex items-center gap-1">
-                                <CalendarClock className="h-4 w-4" />
-                                {fmtDateTime(schedule.scheduled_at)}
-                            </span>
-                            {schedule.room ? (
+        <div ref={cardRef}>
+            <Card className="overflow-hidden">
+                <CardHeader className="space-y-2">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0 space-y-1">
+                            <CardTitle className="truncate text-base">{title}</CardTitle>
+                            <CardDescription className="flex flex-wrap items-center gap-2">
                                 <span className="inline-flex items-center gap-1">
-                                    <DoorOpen className="h-4 w-4" />
-                                    {schedule.room}
+                                    <CalendarClock className="h-4 w-4" />
+                                    {fmtDateTime(schedule.scheduled_at)}
                                 </span>
-                            ) : null}
-                        </CardDescription>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant={statusBadgeVariant(schedule.status)} className="capitalize">
-                            {String(schedule.status ?? "scheduled")}
-                        </Badge>
-                        <Badge variant="secondary" className="font-normal">
-                            {rubricName}
-                        </Badge>
-                    </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                    <StatPill
-                        icon={<Users className="h-4 w-4" />}
-                        label="Panelist evaluations"
-                        value={panelistCount !== null ? panelistCount : <span className="text-muted-foreground">—</span>}
-                    />
-                    <StatPill
-                        icon={<GraduationCap className="h-4 w-4" />}
-                        label="Student feedback"
-                        value={
-                            studentCounts ? (
-                                <span className="truncate">{studentCounts.total} total</span>
-                            ) : (
-                                <span className="text-muted-foreground">—</span>
-                            )
-                        }
-                    />
-                    <StatPill
-                        icon={<Eye className="h-4 w-4" />}
-                        label="Preview"
-                        value={
-                            preview ? (
-                                <span className="text-sm font-medium">Cached</span>
-                            ) : previewLoading ? (
-                                <span className="inline-flex items-center gap-2">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Loading…
-                                </span>
-                            ) : (
-                                <span className="text-muted-foreground">Not loaded</span>
-                            )
-                        }
-                    />
-                </div>
-
-                {studentCounts ? (
-                    <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium">Student submission progress</div>
-                            <div className="text-xs text-muted-foreground">{compactCounts(studentCounts)}</div>
+                                {schedule.room ? (
+                                    <span className="inline-flex items-center gap-1">
+                                        <DoorOpen className="h-4 w-4" />
+                                        {schedule.room}
+                                    </span>
+                                ) : null}
+                            </CardDescription>
                         </div>
-                        <div className="space-y-2">
-                            <div className="space-y-1">
-                                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                    <span>Submitted</span>
-                                    <span>{Math.round(studentSubmittedPct)}%</span>
-                                </div>
-                                <Progress value={studentSubmittedPct} />
-                            </div>
-                            <div className="space-y-1">
-                                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                    <span>Locked</span>
-                                    <span>{Math.round(studentLockedPct)}%</span>
-                                </div>
-                                <Progress value={studentLockedPct} />
-                            </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={statusBadgeVariant(schedule.status)} className="capitalize">
+                                {String(schedule.status ?? "scheduled")}
+                            </Badge>
+                            <Badge variant="secondary" className="font-normal">
+                                {rubricName}
+                            </Badge>
                         </div>
                     </div>
-                ) : null}
-            </CardHeader>
 
-            <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                {/* Names-first UI: keep raw IDs hidden behind tooltip */}
-                <TooltipProvider>
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 w-fit px-2 text-xs text-muted-foreground"
-                            >
-                                View IDs
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-sm">
-                            <div className="space-y-1 text-xs">
-                                <div>
-                                    <span className="font-medium">Schedule ID:</span> {schedule.id}
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <StatPill
+                            icon={<Users className="h-4 w-4" />}
+                            label="Panelist evaluations"
+                            value={panelistCount !== null ? panelistCount : <span className="text-muted-foreground">—</span>}
+                        />
+                        <StatPill
+                            icon={<GraduationCap className="h-4 w-4" />}
+                            label="Student feedback"
+                            value={
+                                studentCounts ? (
+                                    <span className="truncate">{studentCounts.total} total</span>
+                                ) : (
+                                    <span className="text-muted-foreground">—</span>
+                                )
+                            }
+                        />
+                        <StatPill
+                            icon={<Eye className="h-4 w-4" />}
+                            label="Preview"
+                            value={
+                                preview ? (
+                                    <span className="text-sm font-medium">Cached</span>
+                                ) : previewLoading ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Loading…
+                                    </span>
+                                ) : (
+                                    <span className="text-muted-foreground">Preparing…</span>
+                                )
+                            }
+                        />
+                    </div>
+
+                    {studentCounts ? (
+                        <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="text-sm font-medium">Student submission progress</div>
+                                <div className="text-xs text-muted-foreground">{compactCounts(studentCounts)}</div>
+                            </div>
+                            <div className="space-y-2">
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>Submitted</span>
+                                        <span>{Math.round(studentSubmittedPct)}%</span>
+                                    </div>
+                                    <Progress value={studentSubmittedPct} />
                                 </div>
-                                <div>
-                                    <span className="font-medium">Group ID:</span> {schedule.group_id}
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>Locked</span>
+                                        <span>{Math.round(studentLockedPct)}%</span>
+                                    </div>
+                                    <Progress value={studentLockedPct} />
                                 </div>
                             </div>
-                        </TooltipContent>
-                    </Tooltip>
-                </TooltipProvider>
+                        </div>
+                    ) : null}
+                </CardHeader>
 
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => {
-                            props.onEnsurePreview()
-                            props.onEnsurePanelists()
-                            props.onEnsureStudents()
-                        }}
-                        className="w-full sm:w-auto"
-                    >
-                        <Eye className="mr-2 h-4 w-4" />
-                        Load Preview
-                    </Button>
+                <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    {/* IDs are hidden behind tooltip */}
+                    <TooltipProvider>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 w-fit px-2 text-xs text-muted-foreground"
+                                >
+                                    View IDs
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-sm">
+                                <div className="space-y-1 text-xs">
+                                    <div>
+                                        <span className="font-medium">Schedule ID:</span> {schedule.id}
+                                    </div>
+                                    <div>
+                                        <span className="font-medium">Group ID:</span> {schedule.group_id}
+                                    </div>
+                                </div>
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
 
-                    <PreviewDialog
-                        schedule={schedule}
-                        preview={preview}
-                        previewLoading={previewLoading}
-                        onOpen={() => {
-                            props.onEnsurePreview()
-                        }}
-                        onRefresh={() => props.onRefreshPreview()}
-                    />
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                        <PreviewDialog
+                            schedule={schedule}
+                            preview={preview}
+                            previewLoading={previewLoading}
+                            onOpen={() => {
+                                props.onEnsurePreview()
+                            }}
+                            onRefresh={() => props.onRefreshPreview()}
+                        />
 
-                    <AssignSheet
-                        schedule={schedule}
-                        getPreview={() => preview}
-                        ensurePreview={props.onEnsurePreview}
-                        ensurePanelists={props.onEnsurePanelists}
-                        ensureStudents={props.onEnsureStudents}
-                        getPanelists={props.getPanelists}
-                        getStudents={props.getStudents}
-                        onPreviewUpdated={props.onPreviewCached}
-                        previewOptions={props.previewOptions}
-                    />
-                </div>
-            </CardContent>
-        </Card>
+                        <AssignSheet
+                            schedule={schedule}
+                            getPreview={() => preview}
+                            ensurePreview={props.onEnsurePreview}
+                            ensurePanelists={props.onEnsurePanelists}
+                            ensureStudents={props.onEnsureStudents}
+                            getPanelists={props.getPanelists}
+                            getStudents={props.getStudents}
+                            onPreviewUpdated={props.onPreviewCached}
+                            previewOptions={props.previewOptions}
+                        />
+                    </div>
+                </CardContent>
+            </Card>
+        </div>
     )
 }
 
@@ -1332,10 +1376,10 @@ function PreviewDialog(props: {
                                     <div className="rounded-xl border p-4">
                                         <div className="flex items-center gap-2">
                                             {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                                            <div className="text-sm font-medium">{previewLoading ? "Loading preview…" : "Preview not loaded yet"}</div>
+                                            <div className="text-sm font-medium">{previewLoading ? "Loading preview…" : "Preparing preview…"}</div>
                                         </div>
                                         <div className="mt-1 text-sm text-muted-foreground">
-                                            Click <span className="font-medium">Load Preview</span> on the schedule card, or wait a moment if it’s loading.
+                                            This loads automatically. If it doesn’t appear, use <span className="font-medium">Refresh</span>.
                                         </div>
                                     </div>
                                 </div>
