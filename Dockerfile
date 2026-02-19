@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
 # -----------------------------
 # 1) deps (install node_modules)
@@ -60,9 +60,6 @@ COPY --chown=node:node --from=builder /app/next.config.ts ./next.config.ts
 
 # ✅ REQUIRED: migrations + seed scripts live here
 COPY --chown=node:node --from=builder /app/database ./database
-
-# If you ever read runtime files from other folders, copy them too (optional)
-# COPY --chown=node:node --from=builder /app/types ./types
 
 COPY --chown=node:node docker/entrypoint.sh ./docker/entrypoint.sh
 RUN chmod +x ./docker/entrypoint.sh
