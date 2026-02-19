@@ -30,11 +30,32 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat
 
 ENV NEXT_TELEMETRY_DISABLED=1
+# Helps avoid unexplained build exits on low-memory builders
+ENV NODE_OPTIONS=--max_old_space_size=2048
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-RUN npm run build
+# Coolify passes envs as build secrets; if any are empty/missing, Next build can fail
+# during "Collecting page data". Provide safe defaults for build-time only.
+RUN set -eux; \
+    export APP_URL="${APP_URL:-http://localhost:3000}"; \
+    export DATABASE_SSL="${DATABASE_SSL:-false}"; \
+    export DATABASE_URL="${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:5432/postgres}"; \
+    export PUSH_NOTIFICATIONS_ENABLED="${PUSH_NOTIFICATIONS_ENABLED:-false}"; \
+    export VAPID_SUBJECT="${VAPID_SUBJECT:-mailto:build@localhost}"; \
+    export VAPID_PUBLIC_KEY="${VAPID_PUBLIC_KEY:-build-placeholder}"; \
+    export VAPID_PRIVATE_KEY="${VAPID_PRIVATE_KEY:-build-placeholder}"; \
+    export AWS_REGION="${AWS_REGION:-ap-southeast-2}"; \
+    export S3_BUCKET_NAME="${S3_BUCKET_NAME:-thesisgrader}"; \
+    export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-build-placeholder}"; \
+    export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-build-placeholder}"; \
+    export GMAIL_USER="${GMAIL_USER:-build@localhost}"; \
+    export GMAIL_APP_PASSWORD="${GMAIL_APP_PASSWORD:-build-placeholder}"; \
+    export SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL:-superadmin@thesisgrader.local}"; \
+    export SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD:-87654321}"; \
+    npm run build
+
 RUN npm prune --omit=dev
 
 # -----------------------------
@@ -66,8 +87,6 @@ RUN chmod +x ./docker/entrypoint.sh
 
 EXPOSE 3000
 
-# Use a lightweight endpoint that doesn't require DB/page rendering,
-# and give more time for migrations + cold start
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null || exit 1
 
