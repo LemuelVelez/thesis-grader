@@ -840,47 +840,55 @@ export default function AdminEvaluationsPage() {
                                         Preview Options
                                     </Button>
                                 </DialogTrigger>
-                                <DialogContent className="max-w-2xl">
-                                    <DialogHeader>
-                                        <DialogTitle>Preview Options</DialogTitle>
-                                        <DialogDescription>
-                                            Control what the preview loads. Turning off heavy data can make previews faster.
-                                        </DialogDescription>
-                                    </DialogHeader>
 
-                                    <div className="grid gap-4">
-                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                                            <div className="min-w-0">
-                                                <div className="text-sm font-medium">Include student answers</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    Shows question-by-question answers in preview.
+                                {/* Dialog height requirement: h-[85svh] + scroll */}
+                                <DialogContent className="max-w-2xl h-[85svh] overflow-hidden p-0">
+                                    <div className="flex h-full flex-col">
+                                        <DialogHeader className="px-6 pt-6">
+                                            <DialogTitle>Preview Options</DialogTitle>
+                                            <DialogDescription>
+                                                Control what the preview loads. Turning off heavy data can make previews faster.
+                                            </DialogDescription>
+                                        </DialogHeader>
+
+                                        <div className="flex-1 overflow-hidden px-6 pb-6">
+                                            <ScrollArea className="h-full pr-4">
+                                                <div className="grid gap-4">
+                                                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-medium">Include student answers</div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                Shows question-by-question answers in preview.
+                                                            </div>
+                                                        </div>
+                                                        <Switch checked={includeStudentAnswers} onCheckedChange={setIncludeStudentAnswers} />
+                                                    </div>
+
+                                                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-medium">Include panelist scores</div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                Loads rubric scores per criterion.
+                                                            </div>
+                                                        </div>
+                                                        <Switch checked={includePanelistScores} onCheckedChange={setIncludePanelistScores} />
+                                                    </div>
+
+                                                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-medium">Include panelist comments</div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                Loads per-criterion comments (if saved).
+                                                            </div>
+                                                        </div>
+                                                        <Switch checked={includePanelistComments} onCheckedChange={setIncludePanelistComments} />
+                                                    </div>
+
+                                                    <div className="text-xs text-muted-foreground">
+                                                        Tip: After changing options, refresh a schedule preview to re-fetch with the new settings.
+                                                    </div>
                                                 </div>
-                                            </div>
-                                            <Switch checked={includeStudentAnswers} onCheckedChange={setIncludeStudentAnswers} />
-                                        </div>
-
-                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                                            <div className="min-w-0">
-                                                <div className="text-sm font-medium">Include panelist scores</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    Loads rubric scores per criterion.
-                                                </div>
-                                            </div>
-                                            <Switch checked={includePanelistScores} onCheckedChange={setIncludePanelistScores} />
-                                        </div>
-
-                                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                                            <div className="min-w-0">
-                                                <div className="text-sm font-medium">Include panelist comments</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    Loads per-criterion comments (if saved).
-                                                </div>
-                                            </div>
-                                            <Switch checked={includePanelistComments} onCheckedChange={setIncludePanelistComments} />
-                                        </div>
-
-                                        <div className="text-xs text-muted-foreground">
-                                            Tip: After changing options, refresh a schedule preview to re-fetch with the new settings.
+                                            </ScrollArea>
                                         </div>
                                     </div>
                                 </DialogContent>
@@ -1108,26 +1116,31 @@ function ScheduleCard(props: {
             </CardHeader>
 
             <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">IDs:</span>{" "}
-                    <TooltipProvider>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <span className="cursor-help">Schedule {shortId(schedule.id)}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>{schedule.id}</TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
-                    {" • "}
-                    <TooltipProvider>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <span className="cursor-help">Group {shortId(schedule.group_id)}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>{schedule.group_id}</TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
-                </div>
+                {/* Names-first UI: keep raw IDs hidden behind tooltip */}
+                <TooltipProvider>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-fit px-2 text-xs text-muted-foreground"
+                            >
+                                View IDs
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-sm">
+                            <div className="space-y-1 text-xs">
+                                <div>
+                                    <span className="font-medium">Schedule ID:</span> {schedule.id}
+                                </div>
+                                <div>
+                                    <span className="font-medium">Group ID:</span> {schedule.group_id}
+                                </div>
+                            </div>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
 
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     <Button
@@ -1287,298 +1300,305 @@ function PreviewDialog(props: {
                 </Button>
             </DialogTrigger>
 
-            <DialogContent className="max-w-5xl">
-                <DialogHeader>
-                    <DialogTitle className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                            <div className="truncate">{title}</div>
-                            <div className="mt-1 text-sm font-normal text-muted-foreground">
-                                {fmtDateTime(schedule.scheduled_at)}
-                                {schedule.room ? ` • ${schedule.room}` : ""} •{" "}
-                                <span className="capitalize">{String(schedule.status)}</span>
-                            </div>
-                        </div>
-                        <Button type="button" variant="outline" onClick={props.onRefresh}>
-                            <RefreshCcw className="mr-2 h-4 w-4" />
-                            Refresh
-                        </Button>
-                    </DialogTitle>
-                    <DialogDescription>
-                        Panelists use the <span className="font-medium">active rubric template</span> pinned on the schedule.
-                        Students answer the <span className="font-medium">feedback form</span> (pinned per schedule when
-                        assigned).
-                    </DialogDescription>
-                </DialogHeader>
-
-                {!preview ? (
-                    <div className="space-y-3">
-                        <div className="rounded-xl border p-4">
-                            <div className="flex items-center gap-2">
-                                {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                                <div className="text-sm font-medium">{previewLoading ? "Loading preview…" : "Preview not loaded yet"}</div>
-                            </div>
-                            <div className="mt-1 text-sm text-muted-foreground">
-                                Click <span className="font-medium">Load Preview</span> on the schedule card, or wait a moment if it’s loading.
-                            </div>
-                        </div>
-                    </div>
-                ) : (
-                    <Tabs defaultValue="summary" className="w-full">
-                        <TabsList className="w-full justify-start">
-                            <TabsTrigger value="summary">Summary</TabsTrigger>
-                            <TabsTrigger value="panelist">
-                                Panelists{" "}
-                                <Badge variant="secondary" className="ml-2">
-                                    {preview.panelist.count}
-                                </Badge>
-                            </TabsTrigger>
-                            <TabsTrigger value="student">
-                                Students{" "}
-                                <Badge variant="secondary" className="ml-2">
-                                    {preview.student.count}
-                                </Badge>
-                            </TabsTrigger>
-                        </TabsList>
-
-                        <TabsContent value="summary" className="space-y-4">
-                            <div className="grid gap-3 md:grid-cols-3">
-                                <StatPill icon={<Users className="h-4 w-4" />} label="Panelist evaluations" value={preview.panelist.count} />
-                                <StatPill
-                                    icon={<GraduationCap className="h-4 w-4" />}
-                                    label="Student feedback"
-                                    value={preview.student.count}
-                                />
-                                <StatPill
-                                    icon={<ClipboardList className="h-4 w-4" />}
-                                    label="Rubric template"
-                                    value={safeName(preview.schedule.rubric_template_name, "—")}
-                                />
-                            </div>
-
-                            <div className="rounded-xl border p-4">
-                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                    <div className="text-sm font-medium">Student Status</div>
-                                    <div className="text-xs text-muted-foreground">{compactCounts(preview.student.statusCounts)}</div>
-                                </div>
-                                <div className="mt-3 grid gap-3 md:grid-cols-3">
-                                    <div className="rounded-lg border bg-muted/20 p-3">
-                                        <div className="text-xs text-muted-foreground">Pending</div>
-                                        <div className="text-lg font-semibold">{preview.student.statusCounts.pending}</div>
-                                    </div>
-                                    <div className="rounded-lg border bg-muted/20 p-3">
-                                        <div className="text-xs text-muted-foreground">Submitted</div>
-                                        <div className="text-lg font-semibold">{preview.student.statusCounts.submitted}</div>
-                                    </div>
-                                    <div className="rounded-lg border bg-muted/20 p-3">
-                                        <div className="text-xs text-muted-foreground">Locked</div>
-                                        <div className="text-lg font-semibold">{preview.student.statusCounts.locked}</div>
-                                    </div>
+            {/* Dialog height requirement: h-[85svh] + scroll */}
+            <DialogContent className="max-w-5xl h-[85svh] overflow-hidden p-0">
+                <div className="flex h-full flex-col">
+                    <DialogHeader className="px-6 pt-6">
+                        <DialogTitle className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                                <div className="truncate">{title}</div>
+                                <div className="mt-1 text-sm font-normal text-muted-foreground">
+                                    {fmtDateTime(schedule.scheduled_at)}
+                                    {schedule.room ? ` • ${schedule.room}` : ""} •{" "}
+                                    <span className="capitalize">{String(schedule.status)}</span>
                                 </div>
                             </div>
-                        </TabsContent>
+                            <Button type="button" variant="outline" onClick={props.onRefresh}>
+                                <RefreshCcw className="mr-2 h-4 w-4" />
+                                Refresh
+                            </Button>
+                        </DialogTitle>
+                        <DialogDescription>
+                            Panelists use the <span className="font-medium">active rubric template</span> pinned on the schedule.
+                            Students answer the <span className="font-medium">feedback form</span> (pinned per schedule when
+                            assigned).
+                        </DialogDescription>
+                    </DialogHeader>
 
-                        <TabsContent value="panelist" className="space-y-4">
-                            {preview.panelist.count === 0 ? (
-                                <EmptyState
-                                    title="No panelist evaluations assigned yet"
-                                    description="Assign evaluations to panelists (all or specific) to start collecting rubric scores."
-                                />
-                            ) : (
+                    <div className="flex-1 overflow-hidden px-6 pb-6">
+                        <ScrollArea className="h-full pr-4">
+                            {!preview ? (
                                 <div className="space-y-3">
-                                    {preview.panelist.items.map((p) => {
-                                        const name = safeName(p.evaluation.evaluator_name, `Panelist ${shortId(p.evaluation.evaluator_id)}`)
-                                        const pct = computePercent(p.overall?.overall_percentage)
-                                        const status = String(p.evaluation.status ?? "pending")
-                                        return (
-                                            <Card key={p.evaluation.id} className="overflow-hidden">
-                                                <CardHeader className="space-y-2">
-                                                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                                                        <div className="min-w-0">
-                                                            <div className="truncate text-sm font-semibold">{name}</div>
-                                                            <div className="truncate text-xs text-muted-foreground">{p.evaluation.evaluator_email ?? ""}</div>
-                                                        </div>
-                                                        <div className="flex flex-wrap items-center gap-2">
-                                                            <Badge variant={statusBadgeVariant(status)} className="capitalize">
-                                                                {status}
-                                                            </Badge>
-                                                            {pct !== null ? (
-                                                                <Badge variant="secondary" className="font-normal">
-                                                                    {pct.toFixed(1)}%
-                                                                </Badge>
-                                                            ) : (
-                                                                <Badge variant="outline" className="font-normal">
-                                                                    —
-                                                                </Badge>
-                                                            )}
-                                                        </div>
-                                                    </div>
+                                    <div className="rounded-xl border p-4">
+                                        <div className="flex items-center gap-2">
+                                            {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                                            <div className="text-sm font-medium">{previewLoading ? "Loading preview…" : "Preview not loaded yet"}</div>
+                                        </div>
+                                        <div className="mt-1 text-sm text-muted-foreground">
+                                            Click <span className="font-medium">Load Preview</span> on the schedule card, or wait a moment if it’s loading.
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <Tabs defaultValue="summary" className="w-full">
+                                    <TabsList className="w-full justify-start">
+                                        <TabsTrigger value="summary">Summary</TabsTrigger>
+                                        <TabsTrigger value="panelist">
+                                            Panelists{" "}
+                                            <Badge variant="secondary" className="ml-2">
+                                                {preview.panelist.count}
+                                            </Badge>
+                                        </TabsTrigger>
+                                        <TabsTrigger value="student">
+                                            Students{" "}
+                                            <Badge variant="secondary" className="ml-2">
+                                                {preview.student.count}
+                                            </Badge>
+                                        </TabsTrigger>
+                                    </TabsList>
 
-                                                    {pct !== null ? (
-                                                        <div className="space-y-1">
-                                                            <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                                                <span>Overall score</span>
-                                                                <span>{pct.toFixed(1)}%</span>
-                                                            </div>
-                                                            <Progress value={pct} />
-                                                        </div>
-                                                    ) : null}
-                                                </CardHeader>
+                                    <TabsContent value="summary" className="space-y-4">
+                                        <div className="grid gap-3 md:grid-cols-3">
+                                            <StatPill icon={<Users className="h-4 w-4" />} label="Panelist evaluations" value={preview.panelist.count} />
+                                            <StatPill
+                                                icon={<GraduationCap className="h-4 w-4" />}
+                                                label="Student feedback"
+                                                value={preview.student.count}
+                                            />
+                                            <StatPill
+                                                icon={<ClipboardList className="h-4 w-4" />}
+                                                label="Rubric template"
+                                                value={safeName(preview.schedule.rubric_template_name, "—")}
+                                            />
+                                        </div>
 
-                                                <CardContent className="space-y-3">
-                                                    <div className="rounded-lg border bg-muted/20 p-3">
-                                                        <div className="text-xs font-medium text-muted-foreground">Target summaries</div>
-                                                        <div className="mt-2 space-y-2">
-                                                            {p.targets.length === 0 ? (
-                                                                <div className="text-sm text-muted-foreground">No scores yet.</div>
-                                                            ) : (
-                                                                p.targets.map((t) => (
-                                                                    <div
-                                                                        key={`${t.target_type}:${t.target_id}`}
-                                                                        className="flex items-center justify-between gap-3 rounded-md border bg-background p-3"
-                                                                    >
-                                                                        <div className="min-w-0">
-                                                                            <div className="truncate text-sm font-medium">
-                                                                                {t.target_type === "group" ? "Group" : "Student"}:{" "}
-                                                                                {safeName(t.target_name, shortId(t.target_id))}
-                                                                            </div>
-                                                                            <div className="text-xs text-muted-foreground">
-                                                                                {t.criteria_scored} criterion/criteria scored
-                                                                            </div>
+                                        <div className="rounded-xl border p-4">
+                                            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                                <div className="text-sm font-medium">Student Status</div>
+                                                <div className="text-xs text-muted-foreground">{compactCounts(preview.student.statusCounts)}</div>
+                                            </div>
+                                            <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                                <div className="rounded-lg border bg-muted/20 p-3">
+                                                    <div className="text-xs text-muted-foreground">Pending</div>
+                                                    <div className="text-lg font-semibold">{preview.student.statusCounts.pending}</div>
+                                                </div>
+                                                <div className="rounded-lg border bg-muted/20 p-3">
+                                                    <div className="text-xs text-muted-foreground">Submitted</div>
+                                                    <div className="text-lg font-semibold">{preview.student.statusCounts.submitted}</div>
+                                                </div>
+                                                <div className="rounded-lg border bg-muted/20 p-3">
+                                                    <div className="text-xs text-muted-foreground">Locked</div>
+                                                    <div className="text-lg font-semibold">{preview.student.statusCounts.locked}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </TabsContent>
+
+                                    <TabsContent value="panelist" className="space-y-4">
+                                        {preview.panelist.count === 0 ? (
+                                            <EmptyState
+                                                title="No panelist evaluations assigned yet"
+                                                description="Assign evaluations to panelists (all or specific) to start collecting rubric scores."
+                                            />
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {preview.panelist.items.map((p) => {
+                                                    const name = safeName(p.evaluation.evaluator_name, `Panelist ${shortId(p.evaluation.evaluator_id)}`)
+                                                    const pct = computePercent(p.overall?.overall_percentage)
+                                                    const status = String(p.evaluation.status ?? "pending")
+                                                    return (
+                                                        <Card key={p.evaluation.id} className="overflow-hidden">
+                                                            <CardHeader className="space-y-2">
+                                                                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                                                    <div className="min-w-0">
+                                                                        <div className="truncate text-sm font-semibold">{name}</div>
+                                                                        <div className="truncate text-xs text-muted-foreground">{p.evaluation.evaluator_email ?? ""}</div>
+                                                                    </div>
+                                                                    <div className="flex flex-wrap items-center gap-2">
+                                                                        <Badge variant={statusBadgeVariant(status)} className="capitalize">
+                                                                            {status}
+                                                                        </Badge>
+                                                                        {pct !== null ? (
+                                                                            <Badge variant="secondary" className="font-normal">
+                                                                                {pct.toFixed(1)}%
+                                                                            </Badge>
+                                                                        ) : (
+                                                                            <Badge variant="outline" className="font-normal">
+                                                                                —
+                                                                            </Badge>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {pct !== null ? (
+                                                                    <div className="space-y-1">
+                                                                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                                            <span>Overall score</span>
+                                                                            <span>{pct.toFixed(1)}%</span>
                                                                         </div>
-                                                                        <div className="text-right">
-                                                                            <div className="text-sm font-semibold">{t.percentage.toFixed(1)}%</div>
-                                                                            <div className="text-xs text-muted-foreground">
-                                                                                {t.weighted_score.toFixed(2)} / {t.weighted_max.toFixed(2)}
-                                                                            </div>
+                                                                        <Progress value={pct} />
+                                                                    </div>
+                                                                ) : null}
+                                                            </CardHeader>
+
+                                                            <CardContent className="space-y-3">
+                                                                <div className="rounded-lg border bg-muted/20 p-3">
+                                                                    <div className="text-xs font-medium text-muted-foreground">Target summaries</div>
+                                                                    <div className="mt-2 space-y-2">
+                                                                        {p.targets.length === 0 ? (
+                                                                            <div className="text-sm text-muted-foreground">No scores yet.</div>
+                                                                        ) : (
+                                                                            p.targets.map((t) => (
+                                                                                <div
+                                                                                    key={`${t.target_type}:${t.target_id}`}
+                                                                                    className="flex items-center justify-between gap-3 rounded-md border bg-background p-3"
+                                                                                >
+                                                                                    <div className="min-w-0">
+                                                                                        <div className="truncate text-sm font-medium">
+                                                                                            {t.target_type === "group" ? "Group" : "Student"}:{" "}
+                                                                                            {safeName(t.target_name, shortId(t.target_id))}
+                                                                                        </div>
+                                                                                        <div className="text-xs text-muted-foreground">
+                                                                                            {t.criteria_scored} criterion/criteria scored
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className="text-right">
+                                                                                        <div className="text-sm font-semibold">{t.percentage.toFixed(1)}%</div>
+                                                                                        <div className="text-xs text-muted-foreground">
+                                                                                            {t.weighted_score.toFixed(2)} / {t.weighted_max.toFixed(2)}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ))
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {p.scores.length > 0 ? (
+                                                                    <Accordion type="single" collapsible className="w-full">
+                                                                        <AccordionItem value="scores" className="rounded-lg border px-2">
+                                                                            <AccordionTrigger className="px-3">
+                                                                                Detailed rubric scores ({p.scores.length})
+                                                                            </AccordionTrigger>
+                                                                            <AccordionContent className="px-3 pb-3">
+                                                                                <ScoreDetails scores={p.scores} />
+                                                                            </AccordionContent>
+                                                                        </AccordionItem>
+                                                                    </Accordion>
+                                                                ) : (
+                                                                    <div className="text-sm text-muted-foreground">No detailed scores loaded.</div>
+                                                                )}
+                                                            </CardContent>
+                                                        </Card>
+                                                    )
+                                                })}
+                                            </div>
+                                        )}
+                                    </TabsContent>
+
+                                    <TabsContent value="student" className="space-y-4">
+                                        {preview.student.count === 0 ? (
+                                            <EmptyState
+                                                title="No student feedback assigned yet"
+                                                description="Assign student feedback forms (all or specific) to start collecting student responses."
+                                            />
+                                        ) : (
+                                            <div className="space-y-3">
+                                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                                    <div className="text-sm text-muted-foreground">
+                                                        Showing {preview.student.count} student evaluation(s)
+                                                        {loadingSchemas ? (
+                                                            <span className="ml-2 inline-flex items-center gap-2">
+                                                                <Loader2 className="h-3 w-3 animate-spin" /> loading form…
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+                                                    <Badge variant="outline" className="font-normal">
+                                                        Answers: {preview.student.includeAnswers ? "included" : "hidden"}
+                                                    </Badge>
+                                                </div>
+
+                                                <div className="grid gap-3">
+                                                    {preview.student.items.map((r) => {
+                                                        const studentName = safeName(r.student_name, `Student ${shortId(r.student_id)}`)
+                                                        const pct = computePercent(r.percentage)
+                                                        const formId = typeof r.form_id === "string" ? r.form_id : null
+                                                        const schema = formId ? schemaByFormId.get(formId) ?? null : null
+                                                        const labelMap = schema ? buildQuestionLabelMap(schema) : null
+
+                                                        return (
+                                                            <Card key={r.student_evaluation_id} className="overflow-hidden">
+                                                                <CardHeader className="space-y-2">
+                                                                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                                                        <div className="min-w-0">
+                                                                            <div className="truncate text-sm font-semibold">{studentName}</div>
+                                                                            <div className="truncate text-xs text-muted-foreground">{r.student_email ?? ""}</div>
+                                                                        </div>
+                                                                        <div className="flex flex-wrap items-center gap-2">
+                                                                            <Badge variant={statusBadgeVariant(r.status)} className="capitalize">
+                                                                                {r.status}
+                                                                            </Badge>
+                                                                            {pct !== null ? (
+                                                                                <Badge variant="secondary" className="font-normal">
+                                                                                    {pct.toFixed(1)}%
+                                                                                </Badge>
+                                                                            ) : (
+                                                                                <Badge variant="outline" className="font-normal">
+                                                                                    —
+                                                                                </Badge>
+                                                                            )}
                                                                         </div>
                                                                     </div>
-                                                                ))
-                                                            )}
-                                                        </div>
-                                                    </div>
 
-                                                    {p.scores.length > 0 ? (
-                                                        <Accordion type="single" collapsible className="w-full">
-                                                            <AccordionItem value="scores" className="rounded-lg border px-2">
-                                                                <AccordionTrigger className="px-3">
-                                                                    Detailed rubric scores ({p.scores.length})
-                                                                </AccordionTrigger>
-                                                                <AccordionContent className="px-3 pb-3">
-                                                                    <ScoreDetails scores={p.scores} />
-                                                                </AccordionContent>
-                                                            </AccordionItem>
-                                                        </Accordion>
-                                                    ) : (
-                                                        <div className="text-sm text-muted-foreground">No detailed scores loaded.</div>
-                                                    )}
-                                                </CardContent>
-                                            </Card>
-                                        )
-                                    })}
-                                </div>
+                                                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                                        <span>
+                                                                            Form:{" "}
+                                                                            <span className="font-medium text-foreground">
+                                                                                {safeName(r.form_title, "Pinned form")}
+                                                                            </span>
+                                                                            {typeof r.form_version === "number" ? ` (v${r.form_version})` : ""}
+                                                                        </span>
+                                                                        {r.submitted_at ? <span>• Submitted: {fmtDateTime(r.submitted_at)}</span> : null}
+                                                                        {r.locked_at ? <span>• Locked: {fmtDateTime(r.locked_at)}</span> : null}
+                                                                    </div>
+
+                                                                    {pct !== null ? (
+                                                                        <div className="space-y-1">
+                                                                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                                                <span>Score</span>
+                                                                                <span>{pct.toFixed(1)}%</span>
+                                                                            </div>
+                                                                            <Progress value={pct} />
+                                                                        </div>
+                                                                    ) : null}
+                                                                </CardHeader>
+
+                                                                <CardContent className="space-y-3">
+                                                                    {preview.student.includeAnswers ? (
+                                                                        <Accordion type="single" collapsible className="w-full">
+                                                                            <AccordionItem value="answers" className="rounded-lg border px-2">
+                                                                                <AccordionTrigger className="px-3">Answers</AccordionTrigger>
+                                                                                <AccordionContent className="px-3 pb-3">
+                                                                                    <AnswerList answers={r.answers} labelMap={labelMap} />
+                                                                                </AccordionContent>
+                                                                            </AccordionItem>
+                                                                        </Accordion>
+                                                                    ) : (
+                                                                        <div className="text-sm text-muted-foreground">Answers are hidden by preview options.</div>
+                                                                    )}
+                                                                </CardContent>
+                                                            </Card>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </TabsContent>
+                                </Tabs>
                             )}
-                        </TabsContent>
-
-                        <TabsContent value="student" className="space-y-4">
-                            {preview.student.count === 0 ? (
-                                <EmptyState
-                                    title="No student feedback assigned yet"
-                                    description="Assign student feedback forms (all or specific) to start collecting student responses."
-                                />
-                            ) : (
-                                <div className="space-y-3">
-                                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                        <div className="text-sm text-muted-foreground">
-                                            Showing {preview.student.count} student evaluation(s)
-                                            {loadingSchemas ? (
-                                                <span className="ml-2 inline-flex items-center gap-2">
-                                                    <Loader2 className="h-3 w-3 animate-spin" /> loading form…
-                                                </span>
-                                            ) : null}
-                                        </div>
-                                        <Badge variant="outline" className="font-normal">
-                                            Answers: {preview.student.includeAnswers ? "included" : "hidden"}
-                                        </Badge>
-                                    </div>
-
-                                    <div className="grid gap-3">
-                                        {preview.student.items.map((r) => {
-                                            const studentName = safeName(r.student_name, `Student ${shortId(r.student_id)}`)
-                                            const pct = computePercent(r.percentage)
-                                            const formId = typeof r.form_id === "string" ? r.form_id : null
-                                            const schema = formId ? schemaByFormId.get(formId) ?? null : null
-                                            const labelMap = schema ? buildQuestionLabelMap(schema) : null
-
-                                            return (
-                                                <Card key={r.student_evaluation_id} className="overflow-hidden">
-                                                    <CardHeader className="space-y-2">
-                                                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                                                            <div className="min-w-0">
-                                                                <div className="truncate text-sm font-semibold">{studentName}</div>
-                                                                <div className="truncate text-xs text-muted-foreground">{r.student_email ?? ""}</div>
-                                                            </div>
-                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                <Badge variant={statusBadgeVariant(r.status)} className="capitalize">
-                                                                    {r.status}
-                                                                </Badge>
-                                                                {pct !== null ? (
-                                                                    <Badge variant="secondary" className="font-normal">
-                                                                        {pct.toFixed(1)}%
-                                                                    </Badge>
-                                                                ) : (
-                                                                    <Badge variant="outline" className="font-normal">
-                                                                        —
-                                                                    </Badge>
-                                                                )}
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                                            <span>
-                                                                Form:{" "}
-                                                                <span className="font-medium text-foreground">
-                                                                    {safeName(r.form_title, "Pinned form")}
-                                                                </span>
-                                                                {typeof r.form_version === "number" ? ` (v${r.form_version})` : ""}
-                                                            </span>
-                                                            {r.submitted_at ? <span>• Submitted: {fmtDateTime(r.submitted_at)}</span> : null}
-                                                            {r.locked_at ? <span>• Locked: {fmtDateTime(r.locked_at)}</span> : null}
-                                                        </div>
-
-                                                        {pct !== null ? (
-                                                            <div className="space-y-1">
-                                                                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                                                    <span>Score</span>
-                                                                    <span>{pct.toFixed(1)}%</span>
-                                                                </div>
-                                                                <Progress value={pct} />
-                                                            </div>
-                                                        ) : null}
-                                                    </CardHeader>
-
-                                                    <CardContent className="space-y-3">
-                                                        {preview.student.includeAnswers ? (
-                                                            <Accordion type="single" collapsible className="w-full">
-                                                                <AccordionItem value="answers" className="rounded-lg border px-2">
-                                                                    <AccordionTrigger className="px-3">Answers</AccordionTrigger>
-                                                                    <AccordionContent className="px-3 pb-3">
-                                                                        <AnswerList answers={r.answers} labelMap={labelMap} />
-                                                                    </AccordionContent>
-                                                                </AccordionItem>
-                                                            </Accordion>
-                                                        ) : (
-                                                            <div className="text-sm text-muted-foreground">Answers are hidden by preview options.</div>
-                                                        )}
-                                                    </CardContent>
-                                                </Card>
-                                            )
-                                        })}
-                                    </div>
-                                </div>
-                            )}
-                        </TabsContent>
-                    </Tabs>
-                )}
+                        </ScrollArea>
+                    </div>
+                </div>
             </DialogContent>
         </Dialog>
     )
