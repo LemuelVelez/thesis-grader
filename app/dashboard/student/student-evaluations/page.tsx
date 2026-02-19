@@ -22,6 +22,27 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Label } from "@/components/ui/label"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+    Command,
+    CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
+} from "@/components/ui/command"
 import { toast } from "sonner"
 import {
     ArrowRight,
@@ -32,10 +53,15 @@ import {
     Lock,
     Clock3,
     Sparkles,
+    PlusCircle,
+    Check,
+    CalendarClock,
 } from "lucide-react"
 
 type StudentEvaluationItem = {
     id: string
+    schedule_id?: string | null
+    form_id?: string | null
     status: string
     title: string | null
     group_title: string | null
@@ -66,6 +92,15 @@ type ScoreSummary = {
     rating_questions: number
 }
 
+type ScheduleOption = {
+    id: string
+    scheduled_at: string | null
+    room: string | null
+    group_title: string | null
+    program: string | null
+    term: string | null
+}
+
 const STATUS_FILTERS = ["all", "pending", "submitted", "locked"] as const
 
 const BTN_CURSOR = "cursor-pointer"
@@ -83,6 +118,18 @@ const SCHEMA_ENDPOINT_CANDIDATES = [
     "/api/student-evaluations/active-form",
     "/api/students/me/student-evaluations/schema",
     "/api/students/current/student-evaluations/schema",
+]
+
+// Best-effort: try to fetch schedules for the student so they can self-create (ensure) a feedback evaluation
+// using the ACTIVE feedback form pinned by the backend.
+const SCHEDULE_ENDPOINT_CANDIDATES = [
+    "/api/student/defense-schedules/my",
+    "/api/student/defense-schedules/me",
+    "/api/student/defense-schedules",
+    "/api/defense-schedules/my",
+    "/api/defense-schedules/me",
+    "/api/students/me/defense-schedules",
+    "/api/students/current/defense-schedules",
 ]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -220,13 +267,13 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
         raw
 
     const schedule =
-        (isRecord(source.schedule) && source.schedule) ||
+        (isRecord((source as any).schedule) && (source as any).schedule) ||
         (isRecord((source as any).defense_schedule) && (source as any).defense_schedule) ||
         (isRecord((source as any).defenseSchedule) && (source as any).defenseSchedule) ||
         null
 
     const group =
-        (isRecord(source.group) && source.group) ||
+        (isRecord((source as any).group) && (source as any).group) ||
         (isRecord((source as any).thesis_group) && (source as any).thesis_group) ||
         (isRecord((source as any).thesisGroup) && (source as any).thesisGroup) ||
         null
@@ -234,8 +281,13 @@ function normalizeEvaluation(raw: unknown): StudentEvaluationItem | null {
     const id = toStringSafe(source.id ?? raw.id)
     if (!id) return null
 
+    const scheduleId =
+        toStringSafe((source as any).schedule_id ?? (source as any).scheduleId ?? schedule?.id) ?? null
+
     return {
         id,
+        schedule_id: scheduleId,
+        form_id: toStringSafe((source as any).form_id ?? (source as any).formId) ?? null,
         status: toStringSafe(source.status ?? raw.status) ?? "pending",
         title:
             toNullableString(
@@ -374,8 +426,8 @@ function collectRequiredKeys(schema: unknown): string[] {
 
         if (!isRecord(node)) return
 
-        if (Array.isArray(node.required)) {
-            for (const k of node.required) {
+        if (Array.isArray((node as any).required)) {
+            for (const k of (node as any).required as unknown[]) {
                 if (typeof k === "string" && k.trim()) keys.add(k.trim())
             }
         }
@@ -477,10 +529,33 @@ function computeScoreSummary(
 function extractSchemaObject(payload: unknown): Record<string, unknown> | null {
     if (!payload) return null
     if (isRecord(payload)) {
-        const candidate = (payload as any).schema ?? (payload as any).item ?? (payload as any).data ?? (payload as any).result ?? payload
+        const candidate =
+            (payload as any).schema ??
+            (payload as any).item ??
+            (payload as any).data ??
+            (payload as any).result ??
+            payload
         return isRecord(candidate) ? (candidate as Record<string, unknown>) : isRecord(payload) ? (payload as Record<string, unknown>) : null
     }
     return null
+}
+
+function extractSeedAnswersTemplate(payload: unknown): Record<string, unknown> {
+    if (!payload || !isRecord(payload)) return {}
+    const candidates = [
+        (payload as any).seedAnswersTemplate,
+        (payload as any).seed_answers_template,
+        (payload as any).seedAnswers,
+        (payload as any).template,
+        isRecord((payload as any).data) ? (payload as any).data.seedAnswersTemplate : undefined,
+        isRecord((payload as any).result) ? (payload as any).result.seedAnswersTemplate : undefined,
+    ]
+
+    for (const c of candidates) {
+        const obj = toJsonObject(c)
+        if (obj && Object.keys(obj).length > 0) return obj
+    }
+    return {}
 }
 
 function getSchemaTitle(schema: Record<string, unknown> | null): string {
@@ -572,11 +647,95 @@ async function hydrateMissingContext(
     return { items: merged, hydratedCount: map.size }
 }
 
+/* ---------------------- SCHEDULE PICKER (ASSIGN/ENSURE) --------------------- */
+
+function extractScheduleArrayPayload(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload
+    if (!isRecord(payload)) return []
+
+    if (Array.isArray((payload as any).items)) return (payload as any).items
+    if (Array.isArray((payload as any).schedules)) return (payload as any).schedules
+    if (Array.isArray((payload as any).defense_schedules)) return (payload as any).defense_schedules
+
+    if (isRecord((payload as any).data)) {
+        const d = (payload as any).data
+        if (Array.isArray(d.items)) return d.items
+        if (Array.isArray(d.schedules)) return d.schedules
+        if (Array.isArray(d.defense_schedules)) return d.defense_schedules
+    }
+
+    if (isRecord((payload as any).result)) {
+        const r = (payload as any).result
+        if (Array.isArray(r.items)) return r.items
+        if (Array.isArray(r.schedules)) return r.schedules
+        if (Array.isArray(r.defense_schedules)) return r.defense_schedules
+    }
+
+    return []
+}
+
+function normalizeScheduleOption(raw: unknown): ScheduleOption | null {
+    if (!isRecord(raw)) return null
+
+    const source =
+        (isRecord((raw as any).schedule) && (raw as any).schedule) ||
+        (isRecord((raw as any).defense_schedule) && (raw as any).defense_schedule) ||
+        raw
+
+    const id = toStringSafe((source as any).id ?? (raw as any).id)
+    if (!id) return null
+
+    const group =
+        (isRecord((source as any).group) && (source as any).group) ||
+        (isRecord((source as any).thesis_group) && (source as any).thesis_group) ||
+        (isRecord((source as any).thesisGroup) && (source as any).thesisGroup) ||
+        null
+
+    const scheduled_at =
+        toNullableString((source as any).scheduled_at ?? (source as any).scheduledAt ?? (source as any).date_time ?? (source as any).dateTime) ??
+        null
+
+    const room = toNullableString((source as any).room ?? (source as any).venue ?? (source as any).location) ?? null
+
+    const group_title =
+        toNullableString(
+            (source as any).group_title ??
+            (source as any).groupTitle ??
+            group?.title ??
+            (group as any)?.name,
+        ) ?? null
+
+    const program = toNullableString((source as any).program ?? group?.program) ?? null
+    const term = toNullableString((source as any).term ?? group?.term) ?? null
+
+    return { id, scheduled_at, room, group_title, program, term }
+}
+
+function schedulePrimaryLabel(s: ScheduleOption): string {
+    return s.group_title ?? "Defense schedule"
+}
+
+function scheduleSecondaryLabel(s: ScheduleOption): string {
+    const when = s.scheduled_at ? formatDateTime(s.scheduled_at) : "Not scheduled yet"
+    const room = s.room ? ` • ${s.room}` : ""
+    const prog = s.program ? `${s.program}` : ""
+    const term = s.term ? ` • ${s.term}` : ""
+    const meta = prog ? ` • ${prog}${term}` : term
+    return `${when}${room}${meta}`
+}
+
+function isUuidLikeSimple(value: string): boolean {
+    const v = value.trim()
+    if (!v) return false
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+}
+
 export default function StudentEvaluationsPage() {
     const router = useRouter()
 
     const [evaluations, setEvaluations] = React.useState<StudentEvaluationItem[]>([])
     const [schema, setSchema] = React.useState<Record<string, unknown> | null>(null)
+    const [seedAnswersTemplate, setSeedAnswersTemplate] = React.useState<Record<string, unknown>>({})
 
     const [loading, setLoading] = React.useState(true)
     const [refreshing, setRefreshing] = React.useState(false)
@@ -642,7 +801,6 @@ export default function StudentEvaluationsPage() {
                         return tb - ta
                     })
 
-                // If list payload is missing schedule/group context, hydrate missing items from detail endpoint.
                 setEvaluations(parsed)
                 loaded = true
 
@@ -673,11 +831,15 @@ export default function StudentEvaluationsPage() {
         const res = await fetchFirstOk<unknown>(SCHEMA_ENDPOINT_CANDIDATES, { cache: "no-store" })
         if (!res.ok) {
             setSchema(null)
+            setSeedAnswersTemplate({})
             throw new Error(res.error)
         }
 
         const parsed = extractSchemaObject(res.payload)
         setSchema(parsed)
+
+        const seed = extractSeedAnswersTemplate(res.payload)
+        setSeedAnswersTemplate(seed)
     }, [])
 
     const loadAll = React.useCallback(
@@ -761,6 +923,138 @@ export default function StudentEvaluationsPage() {
         [router],
     )
 
+    /* -------------------------- ASSIGN/ENSURE FLOW -------------------------- */
+
+    const [assignOpen, setAssignOpen] = React.useState(false)
+    const [assignTab, setAssignTab] = React.useState<"pick" | "manual">("pick")
+
+    const [schedules, setSchedules] = React.useState<ScheduleOption[]>([])
+    const [loadingSchedules, setLoadingSchedules] = React.useState(false)
+    const [scheduleError, setScheduleError] = React.useState<string | null>(null)
+
+    const [schedulePickerOpen, setSchedulePickerOpen] = React.useState(false)
+    const [selectedScheduleId, setSelectedScheduleId] = React.useState<string>("")
+    const [manualScheduleId, setManualScheduleId] = React.useState<string>("")
+
+    const [creating, setCreating] = React.useState(false)
+
+    const loadSchedules = React.useCallback(async (opts?: { toastOnDone?: boolean }) => {
+        const showToast = !!opts?.toastOnDone
+        setLoadingSchedules(true)
+        setScheduleError(null)
+
+        const res = await fetchFirstOk<unknown>(SCHEDULE_ENDPOINT_CANDIDATES, { cache: "no-store" })
+        if (!res.ok) {
+            setSchedules([])
+            setScheduleError(res.error)
+            setLoadingSchedules(false)
+            if (showToast) toast.error(res.error)
+            return
+        }
+
+        const parsed = extractScheduleArrayPayload(res.payload)
+            .map(normalizeScheduleOption)
+            .filter((x): x is ScheduleOption => x !== null)
+            .sort((a, b) => {
+                const ta = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0
+                const tb = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0
+                return tb - ta
+            })
+
+        setSchedules(parsed)
+        setLoadingSchedules(false)
+        if (showToast) toast.success("Schedules refreshed.")
+    }, [])
+
+    React.useEffect(() => {
+        if (!assignOpen) return
+        // Load schedules when dialog opens (best-effort)
+        void loadSchedules()
+    }, [assignOpen, loadSchedules])
+
+    const ensureEvaluationForSchedule = React.useCallback(async (scheduleId: string) => {
+        const cleaned = scheduleId.trim()
+        if (!cleaned) throw new Error("Please select a schedule first.")
+
+        // Primary endpoint is /api/student-evaluations (self ensure supported by backend).
+        // Use ACTIVE schema seed template to initialize answers (best UX).
+        const body: Record<string, unknown> = {
+            schedule_id: cleaned,
+        }
+        if (seedAnswersTemplate && Object.keys(seedAnswersTemplate).length > 0) {
+            body.seedAnswers = seedAnswersTemplate
+        }
+
+        const res = await fetch("/api/student-evaluations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        })
+
+        const payload = (await res.json().catch(() => null)) as unknown
+        if (!res.ok) {
+            const msg = await readErrorMessage(res, payload)
+            throw new Error(msg)
+        }
+
+        const single = extractSingleItemPayload(payload)
+        const normalized = normalizeEvaluation(single)
+        return normalized
+    }, [seedAnswersTemplate])
+
+    const onCreateAndOpen = React.useCallback(async () => {
+        const chosen =
+            assignTab === "manual" ? manualScheduleId.trim() : selectedScheduleId.trim()
+
+        if (assignTab === "manual" && chosen && !isUuidLikeSimple(chosen)) {
+            toast.error("Schedule ID must be a valid UUID.")
+            return
+        }
+
+        setCreating(true)
+        try {
+            const created = await ensureEvaluationForSchedule(chosen)
+            await loadAll() // refresh list
+            setAssignOpen(false)
+
+            if (created?.id) {
+                toast.success("Feedback form is ready.")
+                openEvaluation(created.id)
+                return
+            }
+
+            toast.success("Feedback form created. Refreshing your list.")
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "Failed to create feedback form."
+            toast.error(msg)
+        } finally {
+            setCreating(false)
+        }
+    }, [assignTab, ensureEvaluationForSchedule, loadAll, manualScheduleId, openEvaluation, selectedScheduleId])
+
+    const formMetaBadges = (
+        <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="gap-2">
+                <ClipboardList className="h-4 w-4" />
+                Active form
+            </Badge>
+            <Badge variant="outline">{schemaQuestionCount} question(s)</Badge>
+            <Badge variant="outline">{requiredKeys.length} required</Badge>
+            <Badge variant="outline">{ratingQuestions.length} rating item(s)</Badge>
+        </div>
+    )
+
+    const selectedSchedule = React.useMemo(() => {
+        const id = selectedScheduleId.trim()
+        if (!id) return null
+        return schedules.find((s) => s.id === id) ?? null
+    }, [schedules, selectedScheduleId])
+
+    const schedulePickerButtonLabel = React.useMemo(() => {
+        if (selectedSchedule) return schedulePrimaryLabel(selectedSchedule)
+        return loadingSchedules ? "Loading schedules…" : "Select a defense schedule"
+    }, [loadingSchedules, selectedSchedule])
+
     return (
         <DashboardLayout
             title="Student Feedback"
@@ -790,10 +1084,185 @@ export default function StudentEvaluationsPage() {
                                     <Input
                                         placeholder="Search by thesis/group, room, program, term, status, or score"
                                         value={search}
-                                        onChange={(e) => setSearch(e.target.value)}
+                                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
                                         className="pl-9"
                                     />
                                 </div>
+
+                                <Dialog open={assignOpen} onOpenChange={(open) => {
+                                    setAssignOpen(open)
+                                    if (!open) {
+                                        setAssignTab("pick")
+                                        setSchedulePickerOpen(false)
+                                        setSelectedScheduleId("")
+                                        setManualScheduleId("")
+                                        setScheduleError(null)
+                                    }
+                                }}>
+                                    <DialogTrigger asChild>
+                                        <Button
+                                            variant="default"
+                                            disabled={loading || refreshing}
+                                            className={["gap-2", BTN_CURSOR].join(" ")}
+                                        >
+                                            <PlusCircle className="h-4 w-4" />
+                                            New feedback
+                                        </Button>
+                                    </DialogTrigger>
+
+                                    <DialogContent className="sm:max-w-lg">
+                                        <DialogHeader className="space-y-2">
+                                            <DialogTitle className="text-base">Start a new feedback form</DialogTitle>
+                                            <DialogDescription>
+                                                This will create your student feedback evaluation using the <span className="font-semibold text-foreground">active feedback form</span> (and the backend will pin the correct form version for your schedule).
+                                            </DialogDescription>
+                                            <div className="pt-1">{formMetaBadges}</div>
+                                        </DialogHeader>
+
+                                        <Tabs value={assignTab} onValueChange={(v) => setAssignTab(v as "pick" | "manual")}>
+                                            <TabsList className="grid w-full grid-cols-2">
+                                                <TabsTrigger value="pick" className={BTN_CURSOR}>Choose schedule</TabsTrigger>
+                                                <TabsTrigger value="manual" className={BTN_CURSOR}>Enter schedule ID</TabsTrigger>
+                                            </TabsList>
+
+                                            <TabsContent value="pick" className="mt-4 space-y-3">
+                                                <div className="flex flex-col gap-2">
+                                                    <Label className="text-xs text-muted-foreground">Defense schedule</Label>
+
+                                                    <Popover open={schedulePickerOpen} onOpenChange={setSchedulePickerOpen}>
+                                                        <PopoverTrigger asChild>
+                                                            <Button
+                                                                variant="outline"
+                                                                role="combobox"
+                                                                className={["w-full justify-between", BTN_CURSOR].join(" ")}
+                                                                disabled={loadingSchedules}
+                                                            >
+                                                                <span className="truncate">{schedulePickerButtonLabel}</span>
+                                                                <CalendarClock className="ml-2 h-4 w-4 opacity-60" />
+                                                            </Button>
+                                                        </PopoverTrigger>
+                                                        <PopoverContent className="w-full p-0" align="start">
+                                                            <Command>
+                                                                <CommandInput placeholder="Search schedules…" />
+                                                                <CommandList>
+                                                                    <CommandEmpty>
+                                                                        {loadingSchedules ? "Loading…" : "No schedules found."}
+                                                                    </CommandEmpty>
+                                                                    <CommandGroup heading={`Schedules (${schedules.length})`}>
+                                                                        {schedules.map((s) => {
+                                                                            const active = s.id === selectedScheduleId
+                                                                            return (
+                                                                                <CommandItem
+                                                                                    key={s.id}
+                                                                                    value={`${schedulePrimaryLabel(s)} ${scheduleSecondaryLabel(s)} ${s.id}`}
+                                                                                    onSelect={() => {
+                                                                                        setSelectedScheduleId(s.id)
+                                                                                        setSchedulePickerOpen(false)
+                                                                                    }}
+                                                                                    className={BTN_CURSOR}
+                                                                                >
+                                                                                    <div className="flex w-full items-start justify-between gap-3">
+                                                                                        <div className="min-w-0">
+                                                                                            <p className="truncate text-sm font-medium">
+                                                                                                {schedulePrimaryLabel(s)}
+                                                                                            </p>
+                                                                                            <p className="truncate text-xs text-muted-foreground">
+                                                                                                {scheduleSecondaryLabel(s)}
+                                                                                            </p>
+                                                                                        </div>
+                                                                                        {active ? <Check className="h-4 w-4" /> : null}
+                                                                                    </div>
+                                                                                </CommandItem>
+                                                                            )
+                                                                        })}
+                                                                    </CommandGroup>
+                                                                </CommandList>
+                                                            </Command>
+                                                        </PopoverContent>
+                                                    </Popover>
+
+                                                    {selectedSchedule ? (
+                                                        <div className="rounded-md border bg-muted/10 p-3 text-xs text-muted-foreground">
+                                                            <div className="flex flex-col gap-1">
+                                                                <span className="font-medium text-foreground">
+                                                                    {schedulePrimaryLabel(selectedSchedule)}
+                                                                </span>
+                                                                <span>{scheduleSecondaryLabel(selectedSchedule)}</span>
+                                                                <span className="font-mono opacity-80">{selectedSchedule.id}</span>
+                                                            </div>
+                                                        </div>
+                                                    ) : null}
+
+                                                    {scheduleError ? (
+                                                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                                                            {scheduleError}
+                                                            <div className="mt-2">
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="outline"
+                                                                    onClick={() => void loadSchedules({ toastOnDone: true })}
+                                                                    className={BTN_CURSOR}
+                                                                >
+                                                                    Try again
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+                                                    ) : null}
+
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            onClick={() => void loadSchedules({ toastOnDone: true })}
+                                                            disabled={loadingSchedules}
+                                                            className={["gap-2", BTN_CURSOR].join(" ")}
+                                                        >
+                                                            <RefreshCw className={["h-4 w-4", loadingSchedules ? "animate-spin" : ""].join(" ")} />
+                                                            Refresh schedules
+                                                        </Button>
+
+                                                        <p className="text-xs text-muted-foreground">
+                                                            If you don’t see your schedule, use the “Enter schedule ID” tab.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </TabsContent>
+
+                                            <TabsContent value="manual" className="mt-4 space-y-3">
+                                                <div className="space-y-2">
+                                                    <Label className="text-xs text-muted-foreground">Schedule ID (UUID)</Label>
+                                                    <Input
+                                                        value={manualScheduleId}
+                                                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setManualScheduleId(e.target.value)}
+                                                        placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
+                                                    />
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Paste the defense schedule ID. We’ll create your feedback form using the active feedback form.
+                                                    </p>
+                                                </div>
+                                            </TabsContent>
+                                        </Tabs>
+
+                                        <DialogFooter className="gap-2 sm:gap-0">
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => setAssignOpen(false)}
+                                                className={BTN_CURSOR}
+                                                disabled={creating}
+                                            >
+                                                Cancel
+                                            </Button>
+                                            <Button
+                                                onClick={() => void onCreateAndOpen()}
+                                                disabled={creating || (assignTab === "pick" ? !selectedScheduleId.trim() : !manualScheduleId.trim())}
+                                                className={["gap-2", BTN_CURSOR].join(" ")}
+                                            >
+                                                {creating ? "Creating…" : "Create & open"}
+                                                <ArrowRight className="h-4 w-4" />
+                                            </Button>
+                                        </DialogFooter>
+                                    </DialogContent>
+                                </Dialog>
 
                                 <Button
                                     variant="outline"
@@ -911,8 +1380,32 @@ export default function StudentEvaluationsPage() {
                                 ))
                             ) : filtered.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                                        No feedback forms found.
+                                    <TableCell colSpan={6} className="h-28">
+                                        <div className="flex flex-col items-center justify-center gap-3 text-center">
+                                            <div className="space-y-1">
+                                                <p className="text-sm font-semibold">No feedback forms found</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    If you already have a defense schedule, you can create your feedback form using the active feedback form.
+                                                </p>
+                                            </div>
+                                            <div className="flex flex-wrap items-center justify-center gap-2">
+                                                <Button
+                                                    onClick={() => setAssignOpen(true)}
+                                                    className={["gap-2", BTN_CURSOR].join(" ")}
+                                                >
+                                                    <PlusCircle className="h-4 w-4" />
+                                                    Create feedback
+                                                </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => void loadAll({ toastOnDone: true })}
+                                                    className={["gap-2", BTN_CURSOR].join(" ")}
+                                                >
+                                                    <RefreshCw className="h-4 w-4" />
+                                                    Refresh
+                                                </Button>
+                                            </div>
+                                        </div>
                                     </TableCell>
                                 </TableRow>
                             ) : (
