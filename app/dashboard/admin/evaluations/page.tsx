@@ -353,12 +353,78 @@ type StudentFeedbackScheduleResponse = {
     error?: string
 }
 
+type StudentFeedbackAssignMeta = {
+    usedFormId?: string | null
+    usedFormTitle?: string | null
+    usedFormVersion?: number | null
+    repinned?: boolean
+    warning?: string | null
+    useActiveForm?: boolean
+    forceActiveForm?: boolean
+}
+
 type StudentFeedbackAssignResponse = {
     scheduleId?: string
     groupId?: string
+    formId?: string | null
     counts?: { created?: number; updated?: number; existing?: number }
+    meta?: StudentFeedbackAssignMeta
     message?: string
     error?: string
+    code?: string
+}
+
+type StudentFeedbackFormLite = {
+    id: string
+    key: string | null
+    version: number | null
+    title: string
+    description: string | null
+    active: boolean
+}
+
+type StudentFeedbackFormsListResponse = {
+    items?: unknown
+    count?: unknown
+    warning?: unknown
+    message?: unknown
+    error?: unknown
+}
+
+type StudentFeedbackSchemaResponse = {
+    seedAnswersTemplate?: unknown
+    item?: unknown
+    schema?: unknown
+    warning?: unknown
+    message?: unknown
+    error?: unknown
+}
+
+type EvaluationPreviewScheduleMeta = {
+    scheduleId: string | null
+    groupTitle: string | null
+    pinnedFormId: string | null
+}
+
+function normalizeStudentFeedbackForm(raw: unknown): StudentFeedbackFormLite | null {
+    if (!isRecord(raw)) return null
+    const id = getString(raw.id)
+    if (!id) return null
+
+    const title = getString(raw.title) ?? "Student Feedback Form"
+    const key = getString(raw.key) ?? null
+    const version = getNumber(raw.version)
+    const description = raw.description === null ? null : (getString(raw.description) ?? null)
+    const active = Boolean(raw.active)
+
+    return {
+        id,
+        key,
+        version,
+        title,
+        description,
+        active,
+    }
 }
 
 function safeTryRefreshCtx(ctx: AdminEvaluationsPageState) {
@@ -401,10 +467,27 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
     const [scheduleId, setScheduleId] = React.useState<string>(guessedScheduleId ?? "")
     const [overwritePending, setOverwritePending] = React.useState(false)
 
+    // NEW (ACTIVE FORM UX)
+    const [forceActiveForm, setForceActiveForm] = React.useState(false)
+    const [forms, setForms] = React.useState<StudentFeedbackFormLite[]>([])
+    const [formsWarning, setFormsWarning] = React.useState<string | null>(null)
+    const [loadingForms, setLoadingForms] = React.useState(false)
+
+    const [seedAnswersTemplate, setSeedAnswersTemplate] = React.useState<Record<string, unknown> | null>(null)
+    const [loadingSchema, setLoadingSchema] = React.useState(false)
+
+    const [scheduleMeta, setScheduleMeta] = React.useState<EvaluationPreviewScheduleMeta>({
+        scheduleId: null,
+        groupTitle: null,
+        pinnedFormId: null,
+    })
+    const [loadingScheduleMeta, setLoadingScheduleMeta] = React.useState(false)
+
     const [checking, setChecking] = React.useState(false)
     const [assigning, setAssigning] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
     const [info, setInfo] = React.useState<StudentFeedbackScheduleResponse | null>(null)
+    const [lastAssignMeta, setLastAssignMeta] = React.useState<StudentFeedbackAssignMeta | null>(null)
 
     React.useEffect(() => {
         if (!scheduleId && guessedScheduleId) setScheduleId(guessedScheduleId)
@@ -412,6 +495,168 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
     }, [guessedScheduleId])
 
     const canUseSchedule = scheduleId.trim().length > 0 && isUuidLike(scheduleId)
+
+    const formsById = React.useMemo(() => {
+        const m = new Map<string, StudentFeedbackFormLite>()
+        for (const f of forms) m.set(f.id, f)
+        return m
+    }, [forms])
+
+    const activeForm = React.useMemo(() => {
+        const act = forms.find((f) => f.active)
+        return act ?? null
+    }, [forms])
+
+    const pinnedForm = React.useMemo(() => {
+        if (!scheduleMeta.pinnedFormId) return null
+        return formsById.get(scheduleMeta.pinnedFormId) ?? null
+    }, [formsById, scheduleMeta.pinnedFormId])
+
+    const pinnedVsActiveMismatch = React.useMemo(() => {
+        if (!canUseSchedule) return false
+        if (!activeForm?.id) return false
+        if (!scheduleMeta.pinnedFormId) return false
+        return scheduleMeta.pinnedFormId !== activeForm.id
+    }, [activeForm?.id, canUseSchedule, scheduleMeta.pinnedFormId])
+
+    const loadForms = React.useCallback(async () => {
+        setLoadingForms(true)
+        setFormsWarning(null)
+
+        try {
+            const res = await fetch(`/api/admin/student-feedback/forms`, { cache: "no-store" })
+            let payload: unknown = {}
+            try {
+                payload = await res.json()
+            } catch {
+                payload = {}
+            }
+
+            if (!res.ok) {
+                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
+                throw new Error(msg)
+            }
+
+            const p = payload as StudentFeedbackFormsListResponse
+            const warning = getString(p.warning) ?? null
+            if (warning) setFormsWarning(warning)
+
+            const rawItems = (isRecord(payload) && Array.isArray((payload as any).items)) ? ((payload as any).items as unknown[]) : []
+            const normalized = rawItems
+                .map((it) => normalizeStudentFeedbackForm(it))
+                .filter((x): x is StudentFeedbackFormLite => x !== null)
+
+            setForms(normalized)
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to load student feedback forms."
+            setForms([])
+            setFormsWarning(null)
+            toast.error("Forms load failed", { description: message })
+        } finally {
+            setLoadingForms(false)
+        }
+    }, [])
+
+    const loadSchemaSeed = React.useCallback(async () => {
+        setLoadingSchema(true)
+        try {
+            const res = await fetch(`/api/admin/student-feedback/schema`, { cache: "no-store" })
+            let payload: unknown = {}
+            try {
+                payload = await res.json()
+            } catch {
+                payload = {}
+            }
+
+            if (!res.ok) {
+                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
+                throw new Error(msg)
+            }
+
+            const p = payload as StudentFeedbackSchemaResponse
+            const seed = p.seedAnswersTemplate
+            if (isRecord(seed)) {
+                setSeedAnswersTemplate(seed as Record<string, unknown>)
+            } else {
+                // keep null so assignment can still proceed (backend may handle defaults)
+                setSeedAnswersTemplate(null)
+            }
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to load seed answers template."
+            setSeedAnswersTemplate(null)
+            toast.error("Schema load failed", { description: message })
+        } finally {
+            setLoadingSchema(false)
+        }
+    }, [])
+
+    const loadScheduleMeta = React.useCallback(async () => {
+        const id = scheduleId.trim()
+        if (!isUuidLike(id)) return
+
+        setLoadingScheduleMeta(true)
+        try {
+            const qs = new URLSearchParams({
+                includeStudentAnswers: "false",
+                includePanelistScores: "false",
+                includePanelistComments: "false",
+            })
+
+            const res = await fetch(`/api/admin/evaluation-previews/${id}?${qs.toString()}`, {
+                cache: "no-store",
+            })
+
+            let payload: unknown = {}
+            try {
+                payload = await res.json()
+            } catch {
+                payload = {}
+            }
+
+            if (!res.ok) {
+                const msg = extractApiMessage(payload) || `Request failed (${res.status})`
+                throw new Error(msg)
+            }
+
+            const preview = isRecord(payload) && isRecord((payload as any).preview) ? ((payload as any).preview as Record<string, unknown>) : null
+            const schedule = preview && isRecord(preview.schedule) ? (preview.schedule as Record<string, unknown>) : null
+
+            const pinnedFormId =
+                getString(schedule?.student_feedback_form_id) ??
+                getString(schedule?.studentFeedbackFormId) ??
+                null
+
+            const groupTitle =
+                getString(schedule?.group_title) ??
+                getString(schedule?.groupTitle) ??
+                null
+
+            setScheduleMeta({
+                scheduleId: id,
+                groupTitle,
+                pinnedFormId,
+            })
+        } catch {
+            // best-effort only; do not block assignment UX
+            setScheduleMeta((prev) => ({
+                ...prev,
+                scheduleId: id,
+            }))
+        } finally {
+            setLoadingScheduleMeta(false)
+        }
+    }, [scheduleId])
+
+    React.useEffect(() => {
+        // Initial load for best UX
+        void loadForms()
+        void loadSchemaSeed()
+    }, [loadForms, loadSchemaSeed])
+
+    React.useEffect(() => {
+        if (!canUseSchedule) return
+        void loadScheduleMeta()
+    }, [canUseSchedule, loadScheduleMeta])
 
     const doCheck = React.useCallback(async () => {
         const id = scheduleId.trim()
@@ -440,6 +685,9 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
             }
 
             setInfo(payload as StudentFeedbackScheduleResponse)
+
+            // Also refresh pinned form metadata (best UX for “active form assignment”)
+            void loadScheduleMeta()
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to check student feedback assignments."
             setError(message)
@@ -448,7 +696,7 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
         } finally {
             setChecking(false)
         }
-    }, [scheduleId])
+    }, [loadScheduleMeta, scheduleId])
 
     const doAssign = React.useCallback(async () => {
         const id = scheduleId.trim()
@@ -465,7 +713,12 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    // IMPORTANT: assignment should use ACTIVE feedback form (backend defaults true, we send explicitly for clarity)
+                    useActiveForm: true,
+                    forceActiveForm,
                     overwritePending,
+                    // Best UX: seed answers template so students always see the active form structure immediately
+                    ...(seedAnswersTemplate ? { seedAnswers: seedAnswersTemplate } : {}),
                 }),
             })
 
@@ -486,13 +739,33 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
             const updated = p.counts?.updated ?? 0
             const existing = p.counts?.existing ?? 0
 
-            toast.success("Student feedback assigned", {
-                description: `Created: ${created} • Updated: ${updated} • Existing: ${existing}`,
+            const meta = (p.meta && isRecord(p.meta) ? (p.meta as StudentFeedbackAssignMeta) : null) ?? null
+            setLastAssignMeta(meta)
+
+            const usedTitle = meta?.usedFormTitle ?? null
+            const usedVersion = meta?.usedFormVersion ?? null
+            const repinned = Boolean(meta?.repinned)
+            const warning = meta?.warning ?? null
+
+            const parts: string[] = []
+            parts.push(`Created: ${created}`)
+            parts.push(`Updated: ${updated}`)
+            parts.push(`Existing: ${existing}`)
+
+            if (usedTitle) parts.push(`Form: ${usedTitle}${typeof usedVersion === "number" ? ` (v${usedVersion})` : ""}`)
+            else if (activeForm?.title) parts.push(`Form: ${activeForm.title}${typeof activeForm.version === "number" ? ` (v${activeForm.version})` : ""}`)
+
+            if (repinned) parts.push("Pinned schedule → active form")
+            if (warning) parts.push(warning)
+
+            toast.success("Student feedback assigned (Active Form)", {
+                description: parts.join(" • "),
             })
 
             // Refresh admin page datasets (best-effort) and re-check counts for immediate UI accuracy.
             safeTryRefreshCtx(ctx)
             await doCheck()
+            await loadScheduleMeta()
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to assign student feedback."
             setError(message)
@@ -500,7 +773,7 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
         } finally {
             setAssigning(false)
         }
-    }, [ctx, doCheck, overwritePending, scheduleId])
+    }, [activeForm?.title, activeForm?.version, ctx, doCheck, forceActiveForm, loadScheduleMeta, overwritePending, scheduleId, seedAnswersTemplate])
 
     const count = info?.count ?? info?.statusCounts?.total ?? 0
     const pending = info?.statusCounts?.pending ?? 0
@@ -512,48 +785,183 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
     return (
         <Card>
             <CardHeader className="space-y-1">
-                <CardTitle className="text-base">Student Feedback Sync</CardTitle>
+                <CardTitle className="text-base">Student Feedback Assignment (Active Form)</CardTitle>
                 <CardDescription>
-                    If bulk assignment says “completed” but the group shows “No student feedback evaluations”, use this to verify and sync
-                    assignments for the selected schedule.
+                    Assign student feedback evaluations using the <span className="font-medium text-foreground">currently active</span> feedback form. This keeps student evaluations consistent per schedule (no mixed versions).
                 </CardDescription>
             </CardHeader>
 
             <CardContent className="space-y-3">
+                {formsWarning ? (
+                    <Alert>
+                        <AlertTitle>Forms storage warning</AlertTitle>
+                        <AlertDescription>{formsWarning}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                {!loadingForms && forms.length === 0 ? (
+                    <Alert variant="destructive">
+                        <AlertTitle>No active feedback form detected</AlertTitle>
+                        <AlertDescription>
+                            Student evaluation assignment requires an <span className="font-medium">active</span> feedback form.
+                            Please create/activate a feedback form in the admin feedback forms area, then return here to assign evaluations.
+                        </AlertDescription>
+                    </Alert>
+                ) : null}
+
                 <div className="grid gap-3 md:grid-cols-3">
                     <div className="md:col-span-2 space-y-2">
-                        <Label htmlFor="scheduleId">Schedule ID</Label>
+                        <div className="flex items-center justify-between gap-2">
+                            <Label htmlFor="scheduleId">Schedule ID</Label>
+                            <div className="flex items-center gap-2">
+                                {guessedScheduleId ? (
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => {
+                                            setScheduleId(guessedScheduleId)
+                                            toast.message("Using selected schedule", { description: "Schedule ID was filled from your current admin selection." })
+                                        }}
+                                        disabled={assigning || checking}
+                                    >
+                                        Use selected
+                                    </Button>
+                                ) : null}
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => {
+                                        void loadForms()
+                                        void loadSchemaSeed()
+                                        if (canUseSchedule) void loadScheduleMeta()
+                                        toast.message("Refreshing active form data", { description: "Reloading active feedback form and seed template." })
+                                    }}
+                                    disabled={assigning || checking || loadingForms || loadingSchema}
+                                >
+                                    Refresh forms
+                                </Button>
+                            </div>
+                        </div>
+
                         <Input
                             id="scheduleId"
                             value={scheduleId}
                             onChange={(e) => setScheduleId(e.target.value)}
                             placeholder="Paste defense schedule UUID..."
                         />
+
                         {!scheduleId.trim() ? (
                             <p className="text-xs text-muted-foreground">
                                 Tip: open any evaluation preview, copy the <span className="font-medium text-foreground">Schedule ID</span>, then paste here.
                             </p>
                         ) : null}
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            {loadingForms ? (
+                                <div className="h-6 w-44 animate-pulse rounded-md bg-muted/60" />
+                            ) : activeForm ? (
+                                <Badge variant="secondary">
+                                    Active Form: {activeForm.title}{typeof activeForm.version === "number" ? ` (v${activeForm.version})` : ""}
+                                </Badge>
+                            ) : (
+                                <Badge variant="destructive">Active Form: Not found</Badge>
+                            )}
+
+                            {loadingScheduleMeta ? (
+                                <div className="h-6 w-40 animate-pulse rounded-md bg-muted/60" />
+                            ) : scheduleMeta.groupTitle ? (
+                                <Badge variant="secondary">Group: {scheduleMeta.groupTitle}</Badge>
+                            ) : null}
+
+                            {loadingScheduleMeta ? null : scheduleMeta.pinnedFormId ? (
+                                pinnedForm ? (
+                                    <Badge variant={pinnedForm.active ? "secondary" : "outline"}>
+                                        Pinned Form: {pinnedForm.title}{typeof pinnedForm.version === "number" ? ` (v${pinnedForm.version})` : ""}
+                                    </Badge>
+                                ) : (
+                                    <Badge variant="outline">Pinned Form ID: {scheduleMeta.pinnedFormId}</Badge>
+                                )
+                            ) : canUseSchedule ? (
+                                <Badge variant="outline">Pinned Form: (none yet)</Badge>
+                            ) : null}
+
+                            {pinnedVsActiveMismatch ? (
+                                <Badge variant="destructive">Pinned ≠ Active</Badge>
+                            ) : null}
+                        </div>
+
+                        {pinnedVsActiveMismatch ? (
+                            <Alert>
+                                <AlertTitle>Schedule is pinned to a different form</AlertTitle>
+                                <AlertDescription>
+                                    This schedule is pinned to a different feedback form than the current active form. When you click{" "}
+                                    <span className="font-medium text-foreground">Assign now</span>, the system will repin to the active form{" "}
+                                    <span className="font-medium text-foreground">only if it’s safe</span> (no submitted/locked student feedback yet).
+                                    If there are already submitted/locked evaluations, it will keep the pinned form to prevent mixed-version data.
+                                </AlertDescription>
+                            </Alert>
+                        ) : null}
+
+                        {lastAssignMeta?.warning ? (
+                            <Alert>
+                                <AlertTitle>Assignment notice</AlertTitle>
+                                <AlertDescription>{lastAssignMeta.warning}</AlertDescription>
+                            </Alert>
+                        ) : null}
                     </div>
 
                     <div className="space-y-2">
                         <Label className="block">Options</Label>
-                        <div className="flex items-center justify-between rounded-md border p-3">
-                            <div className="space-y-0.5">
-                                <p className="text-sm font-medium">Overwrite pending</p>
-                                <p className="text-xs text-muted-foreground">Re-seed pending feedback only</p>
+
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between rounded-md border p-3">
+                                <div className="space-y-0.5">
+                                    <p className="text-sm font-medium">Overwrite pending</p>
+                                    <p className="text-xs text-muted-foreground">Re-seed pending feedback only</p>
+                                </div>
+                                <Switch
+                                    checked={overwritePending}
+                                    onCheckedChange={(v) => setOverwritePending(Boolean(v))}
+                                />
                             </div>
-                            <Switch
-                                checked={overwritePending}
-                                onCheckedChange={(v) => setOverwritePending(Boolean(v))}
-                            />
+
+                            <div className="flex items-center justify-between rounded-md border p-3">
+                                <div className="space-y-0.5">
+                                    <p className="text-sm font-medium">Force active form</p>
+                                    <p className="text-xs text-muted-foreground">Fail if schedule has submitted/locked</p>
+                                </div>
+                                <Switch
+                                    checked={forceActiveForm}
+                                    onCheckedChange={(v) => setForceActiveForm(Boolean(v))}
+                                />
+                            </div>
+
+                            {forceActiveForm ? (
+                                <Alert variant="destructive">
+                                    <AlertTitle>Force mode enabled</AlertTitle>
+                                    <AlertDescription>
+                                        If this schedule already has <span className="font-medium">submitted/locked</span> student feedback,
+                                        assignment will fail (409) instead of falling back to the pinned form. Use only when you intend
+                                        to keep strict “active form only” consistency.
+                                    </AlertDescription>
+                                </Alert>
+                            ) : null}
+
+                            <div className="rounded-md border p-3">
+                                <p className="text-sm font-medium">Seed template</p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    {loadingSchema ? "Loading seed answers template..." : seedAnswersTemplate ? "Ready (active schema template loaded)" : "Not loaded (assignment may still work)"}
+                                </p>
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 {error ? (
                     <Alert variant="destructive">
-                        <AlertTitle>Student feedback sync failed</AlertTitle>
+                        <AlertTitle>Student feedback assignment failed</AlertTitle>
                         <AlertDescription>{error}</AlertDescription>
                     </Alert>
                 ) : null}
@@ -572,7 +980,7 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
                         <AlertTitle>No student feedback assignments found</AlertTitle>
                         <AlertDescription>
                             Students <span className="font-medium text-foreground">cannot submit feedback</span> unless a feedback form is assigned to them for this schedule.
-                            Click <span className="font-medium text-foreground">Assign now</span> to create the missing assignments for the group.
+                            Click <span className="font-medium text-foreground">Assign now</span> to create the missing assignments using the active form.
                         </AlertDescription>
                     </Alert>
                 ) : null}
@@ -588,7 +996,7 @@ function StudentFeedbackSyncCard({ ctx }: { ctx: AdminEvaluationsPageState }) {
 
                     <Button
                         onClick={() => void doAssign()}
-                        disabled={!canUseSchedule || assigning || checking}
+                        disabled={!canUseSchedule || assigning || checking || (forms.length > 0 && !activeForm)}
                     >
                         {assigning ? "Assigning..." : "Assign now"}
                     </Button>
