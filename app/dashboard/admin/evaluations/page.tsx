@@ -1109,21 +1109,20 @@ function ScheduleCard(props: {
 
             <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">Schedule ID:</span>{" "}
+                    <span className="font-medium text-foreground">IDs:</span>{" "}
                     <TooltipProvider>
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <span className="cursor-help">{shortId(schedule.id)}</span>
+                                <span className="cursor-help">Schedule {shortId(schedule.id)}</span>
                             </TooltipTrigger>
                             <TooltipContent>{schedule.id}</TooltipContent>
                         </Tooltip>
                     </TooltipProvider>
                     {" • "}
-                    <span className="font-medium text-foreground">Group ID:</span>{" "}
                     <TooltipProvider>
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <span className="cursor-help">{shortId(schedule.group_id)}</span>
+                                <span className="cursor-help">Group {shortId(schedule.group_id)}</span>
                             </TooltipTrigger>
                             <TooltipContent>{schedule.group_id}</TooltipContent>
                         </Tooltip>
@@ -1185,8 +1184,22 @@ function PreviewDialog(props: {
     const [schemaByFormId, setSchemaByFormId] = React.useState<Map<string, StudentFeedbackFormSchema>>(new Map())
     const [loadingSchemas, setLoadingSchemas] = React.useState(false)
 
+    // Prevent maximum update depth:
+    // - keep a ref to the latest map so we can compute "missing formIds" without depending on state in the callback
+    const schemaByFormIdRef = React.useRef<Map<string, StudentFeedbackFormSchema>>(new Map())
+    React.useEffect(() => {
+        schemaByFormIdRef.current = schemaByFormId
+    }, [schemaByFormId])
+
+    const loadingSchemasRef = React.useRef(false)
+    React.useEffect(() => {
+        loadingSchemasRef.current = loadingSchemas
+    }, [loadingSchemas])
+
     const loadSchemasForPreview = React.useCallback(async () => {
         if (!preview?.student?.items?.length) return
+        if (loadingSchemasRef.current) return
+
         const formIds = Array.from(
             new Set(
                 preview.student.items
@@ -1196,11 +1209,14 @@ function PreviewDialog(props: {
         )
         if (formIds.length === 0) return
 
+        const missing = formIds.filter((formId) => !schemaByFormIdRef.current.has(formId))
+        if (missing.length === 0) return
+
         setLoadingSchemas(true)
         try {
-            const next = new Map(schemaByFormId)
-            for (const formId of formIds) {
-                if (next.has(formId)) continue
+            const fetched = new Map<string, StudentFeedbackFormSchema>()
+
+            for (const formId of missing) {
                 try {
                     const data = await apiJsonFirst<any>(
                         [
@@ -1210,7 +1226,7 @@ function PreviewDialog(props: {
                         { method: "GET" }
                     )
                     const schema = (data?.item?.schema ?? data?.item ?? data?.schema ?? {}) as StudentFeedbackFormSchema
-                    next.set(formId, schema)
+                    fetched.set(formId, schema)
                 } catch {
                     // fallback to active schema
                     try {
@@ -1219,17 +1235,30 @@ function PreviewDialog(props: {
                             { method: "GET" }
                         )
                         const schema = (data?.item ?? data?.schema ?? {}) as StudentFeedbackFormSchema
-                        next.set(formId, schema)
+                        fetched.set(formId, schema)
                     } catch {
                         // ignore
                     }
                 }
             }
-            setSchemaByFormId(next)
+
+            if (fetched.size > 0) {
+                setSchemaByFormId((prev) => {
+                    let changed = false
+                    const next = new Map(prev)
+                    for (const [k, v] of fetched.entries()) {
+                        if (!next.has(k)) {
+                            next.set(k, v)
+                            changed = true
+                        }
+                    }
+                    return changed ? next : prev
+                })
+            }
         } finally {
             setLoadingSchemas(false)
         }
-    }, [preview, schemaByFormId])
+    }, [preview])
 
     React.useEffect(() => {
         if (!open) return
@@ -1245,19 +1274,13 @@ function PreviewDialog(props: {
     const title = safeName(schedule.group_title, `Group ${shortId(schedule.group_id)}`)
 
     return (
-        <Dialog
-            open={open}
-            onOpenChange={(v) => {
-                setOpen(v)
-            }}
-        >
+        <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
                 <Button
                     type="button"
                     variant="secondary"
                     className="w-full sm:w-auto"
                     disabled={previewLoading}
-                    onClick={() => setOpen(true)}
                 >
                     {previewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Eye className="mr-2 h-4 w-4" />}
                     Preview
@@ -1694,9 +1717,9 @@ function AssignSheet(props: {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open])
 
+    const { includeStudentAnswers, includePanelistScores, includePanelistComments } = props.previewOptions
     const reloadPreview = React.useCallback(async () => {
         const scheduleId = schedule.id
-        const { includeStudentAnswers, includePanelistScores, includePanelistComments } = props.previewOptions
         const data = await apiJsonFirst<any>(
             [
                 `/api/admin/evaluation-previews/schedule/${scheduleId}?includeStudentAnswers=${includeStudentAnswers}&includePanelistScores=${includePanelistScores}&includePanelistComments=${includePanelistComments}`,
@@ -1706,7 +1729,7 @@ function AssignSheet(props: {
         )
         const p = (data?.preview ?? data?.item ?? data) as AdminEvaluationPreview
         props.onPreviewUpdated(p)
-    }, [schedule.id, props.previewOptions, props])
+    }, [schedule.id, includeStudentAnswers, includePanelistScores, includePanelistComments, props])
 
     const assignPanelists = async () => {
         setBusy(true)
@@ -1817,15 +1840,17 @@ function AssignSheet(props: {
             <SheetContent className="w-full sm:max-w-xl">
                 <SheetHeader>
                     <SheetTitle className="truncate">Assign Evaluations</SheetTitle>
-                    <SheetDescription className="space-y-1">
-                        <div className="truncate">
+
+                    {/* SheetDescription renders a <p>, so avoid <div> inside it to prevent hydration errors */}
+                    <SheetDescription className="flex flex-col gap-1">
+                        <span className="truncate">
                             <span className="font-medium text-foreground">{groupTitle}</span>
-                        </div>
-                        <div className="text-xs">
+                        </span>
+                        <span className="text-xs">
                             {fmtDateTime(schedule.scheduled_at)}
                             {schedule.room ? ` • ${schedule.room}` : ""} •{" "}
                             <span className="capitalize">{String(schedule.status)}</span>
-                        </div>
+                        </span>
                     </SheetDescription>
                 </SheetHeader>
 
