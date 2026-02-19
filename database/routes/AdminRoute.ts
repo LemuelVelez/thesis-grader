@@ -367,6 +367,17 @@ async function dispatchAdminStudentFeedbackRequest(
                 listBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId',
                 summaryBySchedule: 'GET /api/admin/student-feedback/schedule/:scheduleId/summary',
                 assignForSchedule: 'POST /api/admin/student-feedback/schedule/:scheduleId/assign',
+                aliases: [
+                    'student-evaluations/*',
+                    'student_evaluations/*',
+                    'student-evaluation/*',
+                ],
+                assignOptions: {
+                    useActiveForm:
+                        'boolean (default true) - assign using CURRENT active feedback form; pins schedule when safe',
+                    forceActiveForm:
+                        'boolean (default false) - if true, fail (409) when schedule already has submitted/locked evals and form would switch',
+                },
             },
         });
     }
@@ -677,10 +688,27 @@ async function dispatchAdminStudentFeedbackRequest(
             if (!body) return json400('Invalid JSON body.');
 
             const studentIds = parseUuidArrayFromBody(body.studentIds ?? body.student_ids);
-            const overwritePendingRaw = body.overwritePending ?? body.overwrite_pending ?? body.overwrite ?? body.reset;
+
+            const overwritePendingRaw =
+                body.overwritePending ?? body.overwrite_pending ?? body.overwrite ?? body.reset;
+
             const overwritePending = typeof overwritePendingRaw === 'boolean'
                 ? overwritePendingRaw
                 : (parseBoolean(typeof overwritePendingRaw === 'string' ? overwritePendingRaw : null) ?? false);
+
+            const useActiveFormRaw =
+                body.useActiveForm ?? body.use_active_form ?? body.activeForm ?? body.useActive ?? body.use_active;
+
+            const useActiveForm = typeof useActiveFormRaw === 'boolean'
+                ? useActiveFormRaw
+                : (parseBoolean(typeof useActiveFormRaw === 'string' ? useActiveFormRaw : null) ?? true);
+
+            const forceActiveFormRaw =
+                body.forceActiveForm ?? body.force_active_form ?? body.forceActive ?? body.force_active;
+
+            const forceActiveForm = typeof forceActiveFormRaw === 'boolean'
+                ? forceActiveFormRaw
+                : (parseBoolean(typeof forceActiveFormRaw === 'string' ? forceActiveFormRaw : null) ?? false);
 
             const seedAnswersRaw =
                 body.seedAnswers ??
@@ -691,35 +719,77 @@ async function dispatchAdminStudentFeedbackRequest(
 
             const seedAnswers = toJsonObject(seedAnswersRaw);
 
-            const result = await controller.assignStudentFeedbackFormsForSchedule(
-                scheduleId as UUID,
-                {
-                    studentIds: studentIds.length > 0 ? studentIds : undefined,
-                    overwritePending,
-                    seedAnswers: seedAnswers as any,
-                    initialStatus: 'pending',
-                },
-            );
+            try {
+                const result = await controller.assignStudentFeedbackFormsForSchedule(
+                    scheduleId as UUID,
+                    {
+                        studentIds: studentIds.length > 0 ? studentIds : undefined,
+                        overwritePending,
+                        seedAnswers: seedAnswers as any,
+                        initialStatus: 'pending',
+                        useActiveForm,
+                        forceActiveForm,
+                    } as any,
+                );
 
-            if (!result) return json404Entity('Defense schedule');
+                if (!result) return json404Entity('Defense schedule');
 
-            const status = result.counts.created > 0 ? 201 : 200;
-            return NextResponse.json(
-                {
-                    scheduleId: result.scheduleId,
-                    groupId: result.groupId,
-                    counts: result.counts,
-                    created: result.created,
-                    updated: result.updated,
-                    existing: result.existing,
-                    targetedStudentIds: result.targetedStudentIds,
-                    message:
-                        result.counts.created > 0
-                            ? 'Student feedback forms assigned successfully.'
-                            : 'No new student feedback forms were created.',
-                },
-                { status },
-            );
+                const status = result.counts.created > 0 ? 201 : 200;
+
+                const meta = {
+                    usedFormId: (result as any).usedFormId ?? result.formId ?? null,
+                    usedFormTitle: (result as any).usedFormTitle ?? null,
+                    usedFormVersion: (result as any).usedFormVersion ?? null,
+                    repinned: (result as any).repinned ?? false,
+                    warning: (result as any).warning ?? null,
+                    useActiveForm,
+                    forceActiveForm,
+                };
+
+                const message =
+                    result.counts.created > 0
+                        ? `Student evaluations assigned successfully${meta.usedFormTitle ? ` using "${meta.usedFormTitle}"` : ''}.`
+                        : `No new student evaluations were created${meta.usedFormTitle ? ` (using "${meta.usedFormTitle}")` : ''}.`;
+
+                return NextResponse.json(
+                    {
+                        scheduleId: result.scheduleId,
+                        groupId: result.groupId,
+                        formId: result.formId,
+                        counts: result.counts,
+                        created: result.created,
+                        updated: result.updated,
+                        existing: result.existing,
+                        targetedStudentIds: result.targetedStudentIds,
+                        meta,
+                        message,
+                    },
+                    { status },
+                );
+            } catch (error: any) {
+                const message = toErrorMessage(error);
+                const status = typeof error?.status === 'number' ? error.status : undefined;
+                const code = typeof error?.code === 'string' ? error.code : undefined;
+
+                if (status === 409) {
+                    return NextResponse.json(
+                        {
+                            error: 'Cannot assign student evaluations.',
+                            code: code ?? 'CONFLICT',
+                            message,
+                        },
+                        { status: 409 },
+                    );
+                }
+
+                return NextResponse.json(
+                    {
+                        error: 'Failed to assign student evaluations.',
+                        message,
+                    },
+                    { status: 500 },
+                );
+            }
         }
 
         return json404Api();
@@ -775,6 +845,7 @@ export async function dispatchAdminRequest(
         return dispatchAdminEvaluationPreviewsRequest(req, t.slice(1), services);
     }
 
+    // Student evaluation assignment uses ACTIVE feedback forms (aliases supported)
     if (
         seg0 === 'student-feedback' ||
         seg0 === 'student-feedback-forms' ||
@@ -782,7 +853,11 @@ export async function dispatchAdminRequest(
         seg0 === 'student_feedback_forms' ||
         seg0 === 'feedback' ||
         seg0 === 'feedback-forms' ||
-        seg0 === 'feedback_forms'
+        seg0 === 'feedback_forms' ||
+        seg0 === 'student-evaluations' ||
+        seg0 === 'student-evaluation' ||
+        seg0 === 'student_evaluations' ||
+        seg0 === 'student_evaluation'
     ) {
         return dispatchAdminStudentFeedbackRequest(req, t.slice(1), services);
     }

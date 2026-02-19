@@ -39,6 +39,21 @@ import {
     getStudentRankings,
 } from './RankingSupport';
 
+function nowIso(): string {
+    return new Date().toISOString();
+}
+
+class HttpError extends Error {
+    status: number;
+    code: string;
+
+    constructor(status: number, code: string, message: string) {
+        super(message);
+        this.status = status;
+        this.code = code;
+    }
+}
+
 function stripUndefined<T extends object>(input: T): Partial<T> {
     const out: Partial<T> = {};
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
@@ -185,6 +200,33 @@ export interface AdminEvaluationPreview {
     };
 }
 
+/* ------------------------- ASSIGNMENT (ACTIVE FORM) ------------------------ */
+
+export type AssignStudentFeedbackFormsAdminInput = AssignStudentFeedbackFormsInput & {
+    /**
+     * If true, assignment will (when safe) pin the defense schedule to the CURRENT active feedback form,
+     * then create/update student_evaluations using that active form.
+     * Default: true (admin assignment should use active feedback form).
+     */
+    useActiveForm?: boolean;
+
+    /**
+     * If true, and there are already submitted/locked student evaluations on this schedule that would be
+     * affected by switching the pinned form, the request will fail with 409 instead of falling back to the
+     * existing pinned form for data consistency.
+     * Default: false.
+     */
+    forceActiveForm?: boolean;
+};
+
+export type AssignStudentFeedbackFormsWithMetaResult = AssignStudentFeedbackFormsResult & {
+    usedFormId: UUID | null;
+    usedFormTitle: string | null;
+    usedFormVersion: number | null;
+    repinned: boolean;
+    warning: string | null;
+};
+
 export class AdminController {
     private readonly studentFeedback: StudentFeedbackService;
 
@@ -247,11 +289,144 @@ export class AdminController {
         return this.studentFeedback.activateForm(id);
     }
 
+    async getActiveStudentFeedbackForm(): Promise<StudentFeedbackFormRow | null> {
+        return this.studentFeedback.getActiveForm();
+    }
+
+    /**
+     * Assign student evaluations for a schedule using the ACTIVE feedback form.
+     *
+     * Behavior:
+     * - Default (useActiveForm=true): uses the CURRENT active feedback form at assignment time.
+     * - Pins defense_schedules.student_feedback_form_id to the active form when safe.
+     * - Safety guard: if there are already submitted/locked evaluations and switching forms would mix versions,
+     *   we keep the existing pinned form (warning) unless forceActiveForm=true (then 409).
+     *
+     * Returns assignment result + metadata for better admin UX messaging.
+     */
     async assignStudentFeedbackFormsForSchedule(
         scheduleId: UUID,
-        input: AssignStudentFeedbackFormsInput = {},
-    ): Promise<AssignStudentFeedbackFormsResult | null> {
-        return this.studentFeedback.assignForSchedule(scheduleId, input);
+        input: AssignStudentFeedbackFormsAdminInput = {},
+    ): Promise<AssignStudentFeedbackFormsWithMetaResult | null> {
+        const useActiveForm = input.useActiveForm ?? true;
+        const forceActiveForm = input.forceActiveForm ?? false;
+
+        // Strip admin-only flags before passing to StudentFeedbackService
+        const {
+            useActiveForm: _useActiveForm,
+            forceActiveForm: _forceActiveForm,
+            ...serviceInput
+        } = input as any;
+
+        if (!useActiveForm) {
+            const result = await this.studentFeedback.assignForSchedule(
+                scheduleId,
+                serviceInput as AssignStudentFeedbackFormsInput,
+            );
+            if (!result) return null;
+
+            return {
+                ...result,
+                usedFormId: result.formId ?? null,
+                usedFormTitle: null,
+                usedFormVersion: null,
+                repinned: false,
+                warning: null,
+            };
+        }
+
+        const schedule = await this.services.defense_schedules.findById(scheduleId);
+        if (!schedule) return null;
+
+        const activeForm = await this.studentFeedback.getActiveForm();
+        if (!activeForm || activeForm.active !== true) {
+            throw new HttpError(
+                409,
+                'NO_ACTIVE_STUDENT_FEEDBACK_FORM',
+                'No active student feedback form found. Please activate a feedback form before assigning student evaluations.',
+            );
+        }
+
+        let pinnedForm: StudentFeedbackFormRow | null = null;
+        if (schedule.student_feedback_form_id) {
+            pinnedForm = await this.services.student_feedback_forms.findById(
+                schedule.student_feedback_form_id,
+            );
+        }
+
+        const pinnedIsValid = !!pinnedForm;
+        const pinnedIsActive = pinnedForm?.active === true;
+
+        const needsRePin =
+            !schedule.student_feedback_form_id ||
+            schedule.student_feedback_form_id !== activeForm.id ||
+            !pinnedIsValid ||
+            !pinnedIsActive;
+
+        let repinned = false;
+        let warning: string | null = null;
+
+        if (needsRePin) {
+            // If there are already submitted/locked evaluations, switching forms can cause mixed-version data.
+            // Keep current pinned form for consistency unless forceActiveForm=true.
+            const existing = await this.services.student_evaluations.listBySchedule(scheduleId);
+            const hasSubmittedOrLocked = existing.some((e) => {
+                const st = String(e.status ?? '').toLowerCase();
+                return st === 'submitted' || st === 'locked';
+            });
+
+            if (hasSubmittedOrLocked) {
+                if (forceActiveForm) {
+                    throw new HttpError(
+                        409,
+                        'SCHEDULE_HAS_SUBMITTED_EVALS',
+                        'This schedule already has submitted/locked student evaluations. For data consistency, you cannot switch the pinned feedback form. Create a new schedule or reset pending evaluations first.',
+                    );
+                }
+
+                // Best UX: keep existing pinned form if it exists (even if inactive), otherwise fall back to active
+                // without changing the schedule pin (to avoid surprising changes).
+                warning =
+                    'Schedule already has submitted/locked student evaluations; keeping the existing pinned form for consistency.';
+            } else {
+                // Safe to repin schedule to the current active form
+                await this.services.defense_schedules.updateOne(
+                    { id: scheduleId },
+                    {
+                        student_feedback_form_id: activeForm.id,
+                        updated_at: nowIso(),
+                    } as any,
+                );
+
+                schedule.student_feedback_form_id = activeForm.id;
+                pinnedForm = activeForm;
+                repinned = true;
+            }
+        }
+
+        const result = await this.studentFeedback.assignForSchedule(
+            scheduleId,
+            serviceInput as AssignStudentFeedbackFormsInput,
+        );
+        if (!result) return null;
+
+        // Determine which form was used by the service result (it reports formId)
+        const usedFormId = (result.formId ?? null) as UUID | null;
+
+        // Try to resolve title/version quickly (prefer pinned/active already in memory)
+        let usedForm: StudentFeedbackFormRow | null = null;
+        if (pinnedForm && pinnedForm.id === usedFormId) usedForm = pinnedForm;
+        else if (activeForm.id === usedFormId) usedForm = activeForm;
+        else if (usedFormId) usedForm = await this.services.student_feedback_forms.findById(usedFormId);
+
+        return {
+            ...result,
+            usedFormId,
+            usedFormTitle: usedForm?.title ?? null,
+            usedFormVersion: typeof usedForm?.version === 'number' ? usedForm.version : null,
+            repinned,
+            warning,
+        };
     }
 
     /**
